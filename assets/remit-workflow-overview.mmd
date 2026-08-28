@@ -1,0 +1,16 @@
+%%{init: {"theme":"base","themeVariables":{"fontFamily":"Inter, Segoe UI, Microsoft YaHei, sans-serif","fontSize":"16px","primaryColor":"#f8fafc","primaryTextColor":"#0f172a","primaryBorderColor":"#94a3b8","lineColor":"#64748b","tertiaryColor":"#f7fee7"},"flowchart":{"curve":"linear","nodeSpacing":24,"rankSpacing":36,"htmlLabels":true}}}%%
+flowchart LR
+    A["上传题面<br/>和附件"] --> B["读题、识图<br/>与拆问"]
+    B --> C["数据画像<br/>与文献方法卡"]
+    C --> D{"人工确认<br/>题意"}
+    D --> E["方法检索<br/>与模型评审"]
+    E --> F["Pilot<br/>真实试跑"]
+    F --> G{"人工确认<br/>选型"}
+    G --> H["正式求解<br/>与论文写作"]
+    H --> I["评委复审<br/>与最终门禁"]
+    I --> J{"人工验收<br/>并交付"}
+
+    classDef stage fill:#f8fafc,stroke:#94a3b8,color:#0f172a,stroke-width:1.4px;
+    classDef human fill:#f7fee7,stroke:#84a800,color:#243000,stroke-width:1.8px;
+    class A,B,C,E,F,H,I stage;
+    class D,G,J human;

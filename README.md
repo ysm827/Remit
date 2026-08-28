@@ -57,18 +57,11 @@ Remit 把题面理解、数据检查、文献研究、模型选择、代码执�
 
 ## 工作流程
 
-```mermaid
-flowchart TD
-    A[上传题面和附件] --> B[读题、识图与拆问]
-    B --> C[数据画像与文献方法卡]
-    C --> D{人工确认题意}
-    D --> E[方法检索与模型评审]
-    E --> F[Pilot 真实试跑]
-    F --> G{人工确认选型}
-    G --> H[正式求解与论文写作]
-    H --> I[评委复审与最终门禁]
-    I --> J{人工验收并交付}
-```
+<p align="center">
+  <a href="./assets/remit-workflow-overview.svg">
+    <img src="./assets/remit-workflow-overview.svg" alt="Remit 从赛题上传到人工验收的横向工作流程" width="1100" />
+  </a>
+</p>
 
 每个阶段都会把产物写入当前任务目录。审核通过后继续，发现问题时可以退回相应节点；
 中断后则从检查点恢复。想了解题面校正、三级方法检索、模型评审组、Pilot 和终稿门禁的
