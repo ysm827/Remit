@@ -11,8 +11,23 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
-      frontend-minor-and-patch:
-        patterns: ["*"]
+      vue-runtime:
+        patterns: ["vue", "vue-router", "@vueuse/core"]
+        update-types: [minor, patch]
+      pinia:
+        patterns: ["pinia", "pinia-plugin-persistedstate"]
+        update-types: [minor, patch]
+      vite:
+        patterns: ["vite", "@vitejs/plugin-vue"]
+        update-types: [minor, patch]
+      typescript:
+        patterns: ["typescript", "vue-tsc", "@vue/tsconfig", "@types/node"]
+        update-types: [minor, patch]
+      katex:
+        patterns: ["katex", "@types/katex"]
+        update-types: [minor, patch]
+      marked:
+        patterns: ["marked", "@types/marked"]
         update-types: [minor, patch]
     ignore:
       - dependency-name: "*"
