@@ -47,7 +47,9 @@ class StartServicesDependencyTests(unittest.TestCase):
                 encoding="utf-8",
                 errors="replace",
                 capture_output=True,
-                timeout=15,
+                # Keep the failure assertion strict while allowing for a slow
+                # first PowerShell process on a fresh Windows CI runner.
+                timeout=45,
                 check=False,
             )
 

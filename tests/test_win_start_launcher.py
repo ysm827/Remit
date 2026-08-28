@@ -41,7 +41,11 @@ class WindowsLauncherTests(unittest.TestCase):
             encoding="utf-8",
             errors="replace",
             capture_output=True,
-            timeout=15,
+            # GitHub-hosted Windows runners can spend more than 15 seconds on
+            # the first PowerShell startup while Defender scans the fresh
+            # checkout. The launcher still has to exit successfully; this only
+            # avoids treating a cold runner as a product failure.
+            timeout=45,
             check=False,
         )
         self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
