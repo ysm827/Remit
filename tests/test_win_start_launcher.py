@@ -47,6 +47,12 @@ class WindowsLauncherTests(unittest.TestCase):
         self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
         self.assertIn("LAUNCHER_CHECK_OK", process.stdout)
 
+    def test_launcher_propagates_check_failure_code(self) -> None:
+        text = LAUNCHER.read_text(encoding="utf-8").lower()
+
+        self.assertIn("enabledelayedexpansion", text)
+        self.assertIn("exit /b !errorlevel!", text)
+
 
 if __name__ == "__main__":
     unittest.main()

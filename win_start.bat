@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul
 
 rem Resolve paths from this file so double-clicking works from any directory.
@@ -14,7 +14,7 @@ if not exist "%LAUNCHER%" (
 
 if /i "%~1"=="--check" (
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%LAUNCHER%" -Check
-    exit /b %errorlevel%
+    exit /b !errorlevel!
 )
 
 set "MODE="
