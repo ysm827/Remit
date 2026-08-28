@@ -1,5 +1,10 @@
 # Source and licensing notice
 
+Remit-owned source in the current tree is offered under the repository's MIT
+License. This grant covers only material the Remit contributors have the right
+to license. Dependencies, generated components, and bundled runtime files keep
+their own licenses as described in `THIRD_PARTY_NOTICES.md`.
+
 Remit's current source tree has undergone a source-provenance audit and targeted
 independent reimplementation against
 [MathModelAgent](https://github.com/jihe520/MathModelAgent). Earlier Remit

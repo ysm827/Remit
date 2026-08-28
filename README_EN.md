@@ -1,52 +1,85 @@
 # Remit
 
 <p align="center">
-  <img src="./assets/remit-icon.png" alt="Remit mark" width="160" />
+  <img src="./assets/remit-icon.png" alt="Remit mark" width="150" />
 </p>
 
-Remit is a local-first workbench for mathematical modeling. It organizes problem analysis, model design, code execution, result validation, and paper writing into an inspectable and recoverable multi-agent workflow.
+<p align="center">
+  A local-first, inspectable, and recoverable mathematical-modeling workbench
+</p>
 
-## Capabilities
+<p align="center">
+  <a href="https://github.com/zhou2030109-glitch/Remit/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zhou2030109-glitch/Remit/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" /></a>
+  <a href="./README.md">中文</a>
+</p>
 
-- Four-stage agent workflow for coordination, modeling, coding, and writing.
-- Independent provider, model, key, and base URL configuration per agent.
-- Local MATLAB execution with Python fallback.
-- Task-scoped storage for code, figures, checkpoints, logs, and papers.
-- Resume, approval, retry, and model-revision workflows.
-- Immutable source extraction plus per-question structured analysis of objectives, data, variables, constraints, outputs, dependencies, risks, and validation requirements.
-- Attachment scouting and literature research before data-verified problem understanding is submitted for approval.
-- Hierarchical domain → subdomain → method retrieval with explainable Top-K candidates per question.
-- Optional model council, web search, OpenAlex, RAG, and E2B integrations.
+Remit organizes problem interpretation, data inspection, model design, code
+execution, validation, and paper writing into a multi-agent workflow with human
+approval checkpoints. The project is at version `0.1.x`; APIs and workflows may
+still change.
+
+## Features
+
+- staged Coordinator, Modeler, Coder, and Writer collaboration;
+- OpenAI Chat/Responses, Anthropic, Gemini, and compatible provider adapters;
+- task-scoped files, messages, checkpoints, deliverables, and resume support;
+- local Python or MATLAB execution with optional E2B sandboxing;
+- problem-PDF extraction, figure interpretation, attachment scouting, method
+  retrieval, and open literature discovery;
+- model review, quality gates, and traceable paper delivery.
+
+See [the architecture guide](docs/architecture.md) for module boundaries and
+workflow details.
+
+## Requirements
+
+- Windows 10/11 for the desktop launcher, or a Docker Compose environment;
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/);
+- Node.js 20+ and pnpm 10;
+- Redis for the complete workflow. Windows source mode can use the bundled
+  Redis runtime files.
+
+Provider calls may incur external API charges. Some workflows execute
+model-generated code; run Remit only on a trusted workstation and inspect your
+inputs.
 
 ## Quick start
 
-### Windows
-
-1. Copy `backend/.env.example` to `backend/.env.dev` and configure your model provider.
-2. Install backend and frontend dependencies.
-3. Run `win_start.bat`.
-4. Open <http://127.0.0.1:15173>.
+### Windows from source
 
 ```powershell
-cd backend
-uv sync
+git clone https://github.com/zhou2030109-glitch/Remit.git
+cd Remit
 
-cd ..\frontend
-pnpm install
+Copy-Item backend/.env.example backend/.env.dev
+
+cd backend
+uv sync --frozen
+
+cd ../frontend
+pnpm install --frozen-lockfile
 
 cd ..
-.\win_start.bat
+./win_start.bat
 ```
 
-Use `win_stop.bat` to stop the local services.
+Open <http://127.0.0.1:15173>. Backend API documentation is available at
+<http://127.0.0.1:18000/docs>. Run `win_stop.bat` to stop all services.
 
-### Docker
+### Docker Compose
 
 ```bash
+cp backend/.env.example backend/.env.dev
 docker compose up --build
 ```
 
+The default ports are `15173` for the frontend, `18000` for the backend, and
+`16379` for Redis.
+
 ## Model configuration
+
+Edit your local `backend/.env.dev`. Each core role uses the same field shape:
 
 ```dotenv
 COORDINATOR_API_TYPE=openai-responses
@@ -56,39 +89,53 @@ COORDINATOR_BASE_URL=https://your-provider.example/
 COORDINATOR_MAX_TOKENS=8192
 ```
 
-Use the same fields with the `MODELER`, `CODER`, and `WRITER` prefixes. See [configuration](./docs/configuration.md) for all supported fields.
+Replace `COORDINATOR` with `MODELER`, `CODER`, or `WRITER` as needed. See the
+[configuration guide](docs/configuration.md) for all fields. Never commit a
+`.env` file or real credentials.
 
-Never commit `backend/.env.dev` or `backend/.env.council`.
+## Synthetic example
 
-## Project layout
-
-```text
-backend/      FastAPI, workflow, agents, providers, and interpreters
-frontend/     Vue 3 workbench
-tools/        Windows desktop shell, launchers, and local Redis
-assets/       Remit brand assets
-docs/         Architecture and configuration documentation
-tests/        Windows launcher regression tests
-```
-
-Task artifacts are stored in `backend/project/work_dir/<task-id>/`. Service logs are stored in `logs/`.
+The repository includes only a project-authored synthetic community-cooling
+dataset, not third-party contest statements or attachments. Create a demo task
+with `POST /example` and `{"example_id": "urban-cooling"}`, or upload your own
+problem and data through the UI.
 
 ## Development
 
 ```powershell
 cd backend
-.\.venv\Scripts\python.exe -m ruff check app
-.\.venv\Scripts\python.exe -m pytest tests
+uv run ruff check app tests
+uv run pytest tests -q
 
-cd ..\frontend
+cd ../frontend
+pnpm run lint
 pnpm run build
-npx biome check src
+
+cd ..
+backend/.venv/Scripts/python.exe -m pytest tests -q
 ```
+
+To build the Windows installer, run `tools/package_win.ps1`. Its default output
+is `Remit/build/output/RemitSetup.exe` under the current user's local application
+data directory.
 
 ## Security boundary
 
-Remit is designed for a trusted local workstation. Add authentication, tenant isolation, and a hardened network boundary before exposing it to an untrusted network.
+Remit targets a trusted, single-user local environment. It does not provide the
+authentication, authorization, or execution isolation required for a public
+multi-tenant service. See [SECURITY.md](SECURITY.md) for private vulnerability
+reporting and deployment guidance.
 
-## Branding
+## Contributing and license
 
-The Remit name, mark, and product copy are original to this project.
+Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md)
+and the [community code of conduct](CODE_OF_CONDUCT.md) first. Remit-owned
+source and synthetic example data are available under the [MIT License](LICENSE).
+Dependencies and bundled runtime files retain their respective licenses; see
+[third-party notices](THIRD_PARTY_NOTICES.md).
+
+The current source was audited and independently reworked against
+MathModelAgent. Rebuilding branch history does not change the provenance of
+earlier published revisions. See [NOTICE.md](NOTICE.md) and the
+[source-provenance audit](docs/originality-audit.md) for the technical scope and
+limitations. Those documents are transparent disclosures, not legal opinions.

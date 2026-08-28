@@ -34,7 +34,6 @@ import asyncio
 from pathlib import Path
 from typing import Any, Dict, Literal, Tuple
 from fastapi import HTTPException
-from icecream import ic  # type: ignore[import-unresolved]
 from app.schemas.request import ExampleRequest
 from pydantic import BaseModel, Field
 from app.config.setting import USER_CONFIG_PATH, settings, ApiType
@@ -297,9 +296,10 @@ async def submit_bundled_example(
 ):
     task_id = create_task_id()
     workspace = Path(create_work_dir(task_id))
-    example_dir = Path("app", "example", "example", example_request.source)
-    ic(str(example_dir))
-    ques_all = seed_example(example_dir, workspace)
+    try:
+        ques_all = seed_example(example_request.example_id, workspace)
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
     return await _schedule_new_task(
         background_tasks,
         task_id=task_id,

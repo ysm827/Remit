@@ -2,8 +2,8 @@
 ; 用法: ISCC.exe remit.iss /DStageDir=<staging根目录> /DOutDir=<输出目录>
 
 #define MyAppName "Remit 数学建模工作台"
-#define MyAppVersion "1.0.0"
-#define MyAppPublisher "Remit"
+#define MyAppVersion "0.1.0"
+#define MyAppPublisher "Remit contributors"
 
 [Setup]
 AppId={{6E2F9ACA-4B3A-4F7E-9D1C-2B5A8E61D0F3}}
@@ -21,6 +21,7 @@ PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 SetupIconFile={#StageDir}\Remit\assets\remit-m-icon.ico
+LicenseFile={#StageDir}\Remit\LICENSE
 DisableProgramGroupPage=yes
 RestartIfNeededByRun=no
 

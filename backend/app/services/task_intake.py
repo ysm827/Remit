@@ -6,8 +6,19 @@ from shutil import copy2
 from fastapi import UploadFile
 
 
-def seed_example(source_dir: Path, destination: Path) -> str:
-    """Copy one bundled example into a fresh workspace and return its question."""
+_EXAMPLE_ROOT = Path(__file__).resolve().parents[1] / "example"
+_EXAMPLE_CATALOG = {
+    "urban-cooling": "urban_cooling",
+}
+
+
+def seed_example(example_id: str, destination: Path) -> str:
+    """Copy a project-owned example into a workspace and return its question."""
+    try:
+        source_dir = _EXAMPLE_ROOT / _EXAMPLE_CATALOG[example_id]
+    except KeyError as error:
+        raise ValueError(f"未知的内置示例：{example_id}") from error
+
     question_path = source_dir / "questions.txt"
     question = question_path.read_text(encoding="utf-8")
     for candidate in source_dir.iterdir():

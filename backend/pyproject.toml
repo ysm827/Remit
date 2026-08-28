@@ -3,6 +3,7 @@ name = "remit-backend"
 version = "0.1.0"
 description = "Backend services for the Remit mathematical modeling workbench"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     # Web 框架与实时通道
@@ -65,6 +66,11 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.9.10",
 ]
+
+[project.urls]
+Homepage = "https://github.com/zhou2030109-glitch/Remit"
+Repository = "https://github.com/zhou2030109-glitch/Remit"
+Issues = "https://github.com/zhou2030109-glitch/Remit/issues"
 
 [tool.ruff]
 line-length = 88

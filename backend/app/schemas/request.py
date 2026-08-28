@@ -11,7 +11,6 @@ class ExampleRequest(BaseModel):
     """按示例赛题发起建模的请求体。"""
 
     example_id: str
-    source: str
 
 
 class Problem(BaseModel):

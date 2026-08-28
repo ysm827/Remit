@@ -3,6 +3,7 @@
 Audit date: 2026-08-28
 Remit baseline commit: `ac1340ad422e2d7c6187eae619b78bcbd997af4a`
 MathModelAgent reference commit: `83d8783187a2d29dda1b046cb667009cc50c8203`
+Audited Remit root commit: `c7cb1ae98386494086369a27edd3a16ed892f1c7`
 
 ## Baseline finding
 
@@ -34,7 +35,7 @@ six-significant-line fingerprints anywhere in the pinned MathModelAgent tree.
 The result changed as follows:
 
 - baseline: 1,237 of 28,217 significant lines (4.38%), in 48 files;
-- remediated working tree: 279 of 28,072 significant lines (0.99%), in 22
+- audited root tree: 279 of 28,072 significant lines (0.99%), in 22
   files;
 - remediated frontend hits: 194 lines;
 - remediated backend hits: 85 lines.
@@ -93,7 +94,7 @@ flow is not an independent replacement.
 
 ## Verification
 
-The remediated working tree passed:
+The audited root tree passed:
 
 - Ruff checks for `backend/app`;
 - all 190 backend tests;
@@ -105,6 +106,12 @@ The remediated working tree passed:
 
 The only emitted notices were an upstream Jupyter path deprecation warning and
 an outdated Browserslist-data advisory; neither is a test or build failure.
+
+Later release-preparation changes removed third-party contest statements and
+attachments, added project-authored synthetic example data, restricted the
+built-in-example API to a fixed catalog, and added open-source governance files.
+The numeric fingerprint result above remains the reproducible result for the
+pinned audited root commit rather than a claim about every future revision.
 
 ## Clean replacement criteria
 

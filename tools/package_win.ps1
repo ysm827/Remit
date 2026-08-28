@@ -2,21 +2,23 @@
 # 用法: powershell -NoProfile -ExecutionPolicy Bypass -File tools\package_win.ps1
 # 产物: <BuildRoot>\output\RemitSetup.exe
 #
-# 原理：把现有 Python 3.13 基础安装 + 后端虚拟环境 site-packages 合并为"便携运行时"，
+# 原理：把虚拟环境对应的基础 Python + site-packages 合并为"便携运行时"，
 # 前端以静态文件形式由后端直接托管，Redis 使用包内二进制，MATLAB 缺失时自动回退 Python。
 
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = "C:\Users\33845\Desktop\Remit",
-    [string]$BuildRoot = "E:\codex\remit-build",
+    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$BuildRoot = (Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "Remit\build"),
+    [string]$BasePython = "",
     [switch]$SkipFrontendBuild,
     [switch]$SkipInstaller,
-    [switch]$SkipSourceProtection
+    [switch]$BytecodeOnly
 )
 
 $ErrorActionPreference = "Stop"
 
-$BasePython = "C:\Users\33845\AppData\Local\Programs\Python\Python313"
+$RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
+$BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
 $VenvDir = Join-Path $RepoRoot "backend\.venv"
 $Stage = Join-Path $BuildRoot "staging\Remit"
 $InnoDir = Join-Path $BuildRoot "tools\InnoSetup"
@@ -71,8 +73,14 @@ Write-Host "========== Remit 打包开始 =========="
 Assert-Path -Path $RepoRoot -Message "仓库根目录不存在"
 Assert-Path -Path (Join-Path $RepoRoot "backend\app\main.py") -Message "后端代码缺失"
 Assert-Path -Path (Join-Path $VenvDir "Scripts\python.exe") -Message "后端虚拟环境缺失"
-Assert-Path -Path $BasePython -Message "基础 Python 3.13 安装目录缺失"
+$VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+if ([string]::IsNullOrWhiteSpace($BasePython)) {
+    $BasePython = (& $VenvPython -c "import sys; print(sys.base_prefix)").Trim()
+}
+$BasePython = [IO.Path]::GetFullPath($BasePython)
+Assert-Path -Path $BasePython -Message "基础 Python 安装目录缺失"
 Assert-Path -Path (Join-Path $BasePython "python.exe") -Message "基础 Python 可执行文件缺失"
+$PythonVersion = (& (Join-Path $BasePython "python.exe") --version).Trim()
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
@@ -98,13 +106,16 @@ New-Item -ItemType Directory -Force -Path $Stage | Out-Null
 # ---------- 3. 复制后端代码与资源 ----------
 Write-Host "[2/7] 复制后端代码与资源..."
 Invoke-Robocopy (Join-Path $RepoRoot "backend\app") (Join-Path $Stage "backend\app") -ExcludeDirs @("__pycache__", ".pytest_cache", ".ruff_cache") -ExcludeFiles @("*.pyc")
-Invoke-Robocopy (Join-Path $RepoRoot "backend\fonts") (Join-Path $Stage "backend\fonts")
+$FontDirectory = Join-Path $RepoRoot "backend\fonts"
+if (Test-Path -LiteralPath $FontDirectory -PathType Container) {
+    Invoke-Robocopy $FontDirectory (Join-Path $Stage "backend\fonts")
+}
 New-Item -ItemType Directory -Force -Path (Join-Path $Stage "backend\project\work_dir") | Out-Null
 New-Item -ItemType Directory -Force -Path (Join-Path $Stage "backend\project\repair_backups") | Out-Null
 
-# ---------- 3.5 源码保护：后端源码编译为字节码，安装包内不携带 .py 明文 ----------
-if (-not $SkipSourceProtection) {
-    Write-Host "[2.5/7] 编译后端为字节码（源码保护）..."
+# ---------- 3.5 可选的仅字节码分发（不改变源码许可证） ----------
+if ($BytecodeOnly) {
+    Write-Host "[2.5/7] 编译后端为字节码..."
     $StageAppDir = Join-Path $Stage "backend\app"
     & (Join-Path $BasePython "python.exe") -m compileall -q -b $StageAppDir
     if ($LASTEXITCODE -ne 0) { throw "后端字节码编译失败" }
@@ -165,29 +176,38 @@ foreach ($redisFile in @("redis-server.exe", "redis-cli.exe", "msys-2.0.dll", "m
     Copy-Item -LiteralPath (Join-Path $RepoRoot "tools\redis\$redisFile") -Destination $redisDst -Force
 }
 Copy-Item -LiteralPath (Join-Path $RepoRoot "tools\remit_prod_app.py") -Destination (Join-Path $Stage "tools\remit_prod_app.py") -Force
-if (-not $SkipSourceProtection) {
-    & (Join-Path $BasePython "python.exe") -m compileall -q -b (Join-Path $Stage "tools\remit_prod_app.py")
-    if ($LASTEXITCODE -ne 0) { throw "启动器字节码编译失败" }
+& (Join-Path $BasePython "python.exe") -m compileall -q -b (Join-Path $Stage "tools\remit_prod_app.py")
+if ($LASTEXITCODE -ne 0) { throw "启动器字节码编译失败" }
+if ($BytecodeOnly) {
     Remove-Item -LiteralPath (Join-Path $Stage "tools\remit_prod_app.py") -Force
-    if (-not (Test-Path -LiteralPath (Join-Path $Stage "tools\remit_prod_app.pyc"))) {
-        throw "启动器字节码未生成"
-    }
+}
+if (-not (Test-Path -LiteralPath (Join-Path $Stage "tools\remit_prod_app.pyc"))) {
+    throw "启动器字节码未生成"
 }
 Copy-Item -LiteralPath (Join-Path $RepoRoot "tools\启动Remit.bat") -Destination (Join-Path $Stage "启动Remit.bat") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "tools\停止Remit.bat") -Destination (Join-Path $Stage "停止Remit.bat") -Force
-Copy-Item -LiteralPath (Join-Path $RepoRoot "NOTICE.md") -Destination (Join-Path $Stage "NOTICE.md") -Force
+foreach ($noticeFile in @("LICENSE", "NOTICE.md", "THIRD_PARTY_NOTICES.md")) {
+    Copy-Item -LiteralPath (Join-Path $RepoRoot $noticeFile) -Destination (Join-Path $Stage $noticeFile) -Force
+}
+Invoke-Robocopy (Join-Path $RepoRoot "tools\redis\LICENCES") (Join-Path $Stage "tools\redis\LICENCES")
 New-Item -ItemType Directory -Force -Path (Join-Path $Stage "logs") | Out-Null
 
 # 版本信息
-$gitHash = ""
+$gitHash = "unknown"
 try { $gitHash = (git -C $RepoRoot rev-parse --short HEAD).Trim() } catch {}
+$SourceLayout = if ($BytecodeOnly) {
+    "Python 文件以字节码形式分发；对应源码见公开仓库，MIT 许可不变"
+}
+else {
+    "Python 源码随安装包分发"
+}
 Write-Utf8NoBom -Path (Join-Path $Stage "VERSION.txt") -Lines @(
-    "Remit 打包版本 1.0.0",
+    "Remit 打包版本 0.1.0",
     "构建时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
     "来源提交: $gitHash",
-    "内置 Python 3.13.3 + Redis + 前端静态文件",
-    "源码保护: 后端与启动器已编译为字节码 (.pyc)，不携带明文 .py 源码",
-    "来源与许可: 请阅读随附 NOTICE.md"
+    "内置 $PythonVersion + Redis + 前端静态文件",
+    "源码形式: $SourceLayout",
+    "来源与许可: 请阅读随附 LICENSE、NOTICE.md 与 THIRD_PARTY_NOTICES.md"
 )
 
 # ---------- 7. 使用说明 ----------
@@ -220,11 +240,12 @@ Write-Utf8NoBom -Path (Join-Path $Stage "使用说明.txt") -Lines @(
     "  2. 图表中文乱码：任务工作目录会自动放入中文字体，无需手动处理。",
     "  3. 想彻底卸载：使用系统的【添加或删除程序】卸载 Remit。",
     "  4. 日志位置：安装目录 logs\ 目录。",
-    "  5. 源码保护：安装包已把 Python 源码编译为字节码，不包含可读的 .py 源文件。",
+    "  5. 源码与许可证：请阅读安装目录中的 LICENSE、NOTICE.md 与 THIRD_PARTY_NOTICES.md。",
     "",
     "五、来源与许可",
     "  当前源码已完成针对 MathModelAgent 的独立实现整改。",
     "  早期版本来源、扫描边界和许可提示请阅读安装目录中的 NOTICE.md。",
+    "  当前 Remit 自有源码使用 MIT License；第三方文件保留各自许可。",
     ""
 )
 

@@ -43,8 +43,6 @@ services:
     container_name: remit_frontend
     ports:
       - "15173:5173"
-    env_file:
-      - ./frontend/.env.development
     volumes:
       - ./frontend:/app
       # 匿名卷隔离容器内依赖，防止被主机 node_modules 覆盖

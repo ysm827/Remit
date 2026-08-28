@@ -1,92 +1,78 @@
 # Remit
 
 <p align="center">
-  <img src="./assets/remit-icon.png" alt="Remit 标志" width="160" />
+  <img src="./assets/remit-icon.png" alt="Remit 标志" width="150" />
 </p>
 
-Remit 是一个本地优先的数学建模工作台。它把赛题分析、模型设计、代码执行、结果验证和论文写作组织成可检查、可恢复的多智能体工作流。
+<p align="center">
+  本地优先、可检查、可恢复的数学建模工作台
+</p>
 
-## 核心能力
+<p align="center">
+  <a href="https://github.com/zhou2030109-glitch/Remit/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zhou2030109-glitch/Remit/actions/workflows/ci.yml/badge.svg" /></a>
+  <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" /></a>
+  <a href="./README_EN.md">English</a>
+</p>
 
-- 四角色协作：协调、建模、编码和写作 Agent 分阶段交付。
-- 多模型接入：每个 Agent 可独立配置 API 类型、模型、密钥与中转地址。
-- 本地执行：支持 MATLAB，无法使用时可回退到 Python。
-- 任务工作区：代码、图表、状态、日志和论文成果按任务保存。
-- 中断恢复：支持检查点、继续执行、人工审批和失败重试。
-- 层级方法检索：为每个小问按“领域 → 子领域 → 方法”返回可解释 Top-K 候选。
-- 文献全文精读与方法卡：按小问筛选论文、抓取开放获取全文、提取可落地方法。
-- 赛题 PDF 识图：插图、坐标图与扫描页由多模态模型转成文字，与正文同等参与建模。
-- 可选增强：模型评审组、Tavily 搜索、OpenAlex、RAG 与 E2B。
+Remit 把赛题理解、数据检查、模型设计、代码执行、结果验证和论文写作组织成一个带人工
+确认节点的多智能体流程。项目处于 `0.1.x` 阶段，接口与工作流仍可能调整。
 
-## 工作流
+## 特性
 
-```text
-题目输入
-  → 原题忠实提取（源字段只读）
-  → Coordinator 逐题结构化初步分析
-  → 附件数据侦察与文献调研（全文精读 + 方法卡）
-  → 基于真实证据校正题目理解并人工审批
-  → Remit 方法库逐题检索 Top-K
-  → Modeler 设计与修订模型
-  → Coder 编写、执行并验证代码
-  → Writer 汇总证据并生成论文
-  → 人工验收与成果导出
-```
+- Coordinator、Modeler、Coder、Writer 四角色分阶段协作；
+- OpenAI Chat/Responses、Anthropic、Gemini 等兼容接入，每个角色可独立配置；
+- 任务级文件、消息、检查点和交付物管理，支持中断恢复与人工审批；
+- 本地 Python/MATLAB 执行，可选 E2B 沙箱；
+- 赛题 PDF 文本与插图解析、附件侦察、方法检索和开放文献检索；
+- 模型评审、质量门和可追踪的论文交付流程。
 
-更详细的模块说明见 [架构文档](./docs/architecture.md)。
+工作流与模块边界见 [架构文档](docs/architecture.md)。
 
-## 快速启动
+## 运行要求
 
-### Windows 桌面模式
+- Windows 10/11（桌面启动器）或支持 Docker Compose 的系统；
+- Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)；
+- Node.js 20+ 与 pnpm 10；
+- 完整工作流需要 Redis。Windows 源码模式可使用仓库内置的 Redis 运行文件。
 
-1. 将 `backend/.env.example` 复制为 `backend/.env.dev`，填写模型配置。
-2. 确保 `backend/.venv` 和 `frontend/node_modules` 已准备好。
-3. 双击 `win_start.bat`。
-4. 浏览器模式访问 <http://127.0.0.1:15173>；后端状态位于 <http://127.0.0.1:18000>。
+模型调用会产生第三方 API 费用。部分工作流会执行模型生成的代码，请仅在可信本机环境
+运行并检查输入数据。
 
-启动器会自动启动本地 Redis、FastAPI 后端和 Vue 前端。使用 `win_stop.bat` 可停止服务。
+## 快速开始
 
-### 从源码运行
+### Windows 源码模式
 
 ```powershell
-cd backend
-uv sync
+git clone https://github.com/zhou2030109-glitch/Remit.git
+cd Remit
 
-cd ..\frontend
-pnpm install
+Copy-Item backend/.env.example backend/.env.dev
+
+cd backend
+uv sync --frozen
+
+cd ../frontend
+pnpm install --frozen-lockfile
 
 cd ..
-.\win_start.bat
+./win_start.bat
 ```
 
-### Docker
+访问 <http://127.0.0.1:15173>。后端 API 文档位于
+<http://127.0.0.1:18000/docs>。运行 `win_stop.bat` 停止服务。
+
+### Docker Compose
 
 ```bash
+cp backend/.env.example backend/.env.dev
 docker compose up --build
 ```
 
-Docker Compose 从 `backend/.env.dev` 加载后端配置。
-
-## 打包发布（Windows 安装包）
-
-一键生成可分发的桌面安装包：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\package_win.ps1
-```
-
-要点：
-
-- **输入**：`backend/.venv`（Python 3.13 虚拟环境，含全部依赖）、`frontend/node_modules`、基础 Python 3.13（`%LocalAppData%\Programs\Python\Python313`）、`tools/redis`（捆绑的 Windows 二进制）。
-- **产物**：`E:\codex\remit-build\output\RemitSetup.exe`（Inno Setup；可通过脚本参数 `-BuildRoot` 修改输出目录）。
-- 安装包内置 Python 运行时与 Redis，前端以静态文件由后端直接托管（FastAPI SPA 回退），目标电脑**无需安装 Node、Python**。
-- **MATLAB**：默认 `CODE_EXECUTION_BACKEND=matlab`、`MATLAB_FALLBACK_TO_PYTHON=true`；目标电脑没有 MATLAB 时自动回退到内置 Python 执行环境，功能完整。
-- 安装包**不含模型密钥**：用户首次打开后在界面右上角「API 配置」对话框填写（仅保存在内存，不落盘）。
-- 生成的安装包使用固定 GUID，可覆盖升级；卸载时自动停止后台服务。
+前端默认端口为 `15173`，后端为 `18000`，Redis 为 `16379`。
 
 ## 模型配置
 
-四个核心 Agent 使用相同的字段结构：
+编辑本地的 `backend/.env.dev`。四个核心角色采用相同字段结构：
 
 ```dotenv
 COORDINATOR_API_TYPE=openai-responses
@@ -96,53 +82,62 @@ COORDINATOR_BASE_URL=https://your-provider.example/
 COORDINATOR_MAX_TOKENS=8192
 ```
 
-将 `COORDINATOR` 分别替换为 `MODELER`、`CODER`、`WRITER` 即可配置其他 Agent。完整字段、模型评审组和可选服务见 [配置文档](./docs/configuration.md)。
+把 `COORDINATOR` 替换为 `MODELER`、`CODER`、`WRITER` 即可分别配置。完整字段见
+[配置文档](docs/configuration.md)。不要提交任何 `.env` 文件或真实密钥。
 
-不要提交 `backend/.env.dev` 或 `backend/.env.council`；它们已经列入 `.gitignore`。
+## 合成示例
 
-## 项目结构
-
-```text
-backend/      FastAPI、工作流、Agent、模型调用与执行器
-frontend/     Vue 3 工作台
-tools/        Windows 桌面壳、服务启动器和本地 Redis
-assets/       Remit 品牌资产
-docs/         架构与配置文档
-tests/        Windows 启动器回归测试
-```
-
-运行产生的任务文件位于 `backend/project/work_dir/<task-id>/`，服务日志位于 `logs/`。
+仓库只附带项目自写的社区降温合成数据，不包含第三方比赛题面或附件。可通过
+`POST /example` 并传入 `{"example_id": "urban-cooling"}` 创建演示任务，也可以直接在
+界面上传自己的题目和数据。
 
 ## 开发与验证
 
 ```powershell
-# 后端
 cd backend
-.\.venv\Scripts\python.exe -m ruff check app
-.\.venv\Scripts\python.exe -m pytest tests
+uv run ruff check app tests
+uv run pytest tests -q
 
-# 前端
-cd ..\frontend
+cd ../frontend
+pnpm run lint
 pnpm run build
-npx biome check src
 
-# Windows 启动器
 cd ..
-.\win_start.bat --check
+backend/.venv/Scripts/python.exe -m pytest tests -q
 ```
 
-## 数据与安全
+Windows 安装包可通过以下命令生成，默认产物位于当前用户本地应用数据目录下的
+`Remit/build/output/RemitSetup.exe`：
 
-- API 密钥由本地环境文件或当前进程内的运行时配置提供。
-- 前端不会把模型密钥持久化到浏览器存储。
-- 任务目录可能包含题目、数据、生成代码和论文，请按敏感数据处理。
-- 当前应用面向可信本机环境；暴露到公网前需要另行增加认证、权限隔离和网络边界。
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools/package_win.ps1
+```
 
-## 品牌与版权
+## 项目结构
 
-Remit 名称、图标和产品文案为本项目自有内容。
+```text
+backend/      FastAPI、工作流、Agent、模型接入与执行器
+frontend/     Vue 3 + TypeScript 工作台
+tools/        Windows 启动、打包工具与 Redis 运行文件
+assets/       Remit 品牌资源
+docs/         架构、配置与来源审计文档
+tests/        仓库级启动器和配置契约测试
+```
 
-当前源码已完成针对 MathModelAgent 的来源审计与独立实现整改；严格六行指纹扫描剩余
-命中均已分类为协议、框架或通用界面结构。本仓库曾公开过早期版本，现有分支历史虽已
-重建，但技术整改和历史重建都不等于法律上的“完全原创”保证。比较提交、扫描结果与
-许可提示见 [NOTICE.md](NOTICE.md) 和 [docs/originality-audit.md](docs/originality-audit.md)。
+任务数据写入 `backend/project/work_dir/<task-id>/`，日志写入 `logs/`，两者均不应提交。
+
+## 安全边界
+
+Remit 面向可信的单用户本机环境，不具备公网多租户服务所需的认证、授权和执行隔离。
+公开部署前必须补充安全边界。漏洞请按 [安全策略](SECURITY.md) 私下报告。
+
+## 参与和许可证
+
+欢迎提交 Issue 与 Pull Request。开始前请阅读 [贡献指南](CONTRIBUTING.md) 和
+[社区行为准则](CODE_OF_CONDUCT.md)。Remit 自有源码与合成示例采用
+[MIT License](LICENSE)；依赖和捆绑运行文件保留各自许可证，详见
+[第三方声明](THIRD_PARTY_NOTICES.md)。
+
+当前源码经过针对 MathModelAgent 的来源审计和独立实现整改；早期公开版本的来源事实不
+因分支历史重建而改变。技术范围、残余分类和限制见 [NOTICE.md](NOTICE.md) 与
+[来源审计](docs/originality-audit.md)。这些材料用于透明披露，不构成法律结论。
