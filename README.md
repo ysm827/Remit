@@ -142,3 +142,14 @@ Remit 面向可信的单用户本机环境，不具备公网多租户服务所�
 当前源码经过针对 MathModelAgent 的来源审计和独立实现整改；早期公开版本的来源事实不
 因分支历史重建而改变。技术范围、残余分类和限制见 [NOTICE.md](NOTICE.md) 与
 [来源审计](docs/originality-audit.md)。这些材料用于透明披露，不构成法律结论。
+
+## 加入交流群
+
+想交流 Remit 的使用、数学建模工作流或一起参与开发，可以扫码加入微信群
+**Remit（数模 agent）**。欢迎分享建议、问题和实际使用体验。
+
+<p align="center">
+  <img src="./assets/remit-wechat-group.png" alt="Remit 数模 Agent 微信交流群二维码" width="360" />
+</p>
+
+> 微信群二维码有效期较短，当前图片标注为 9 月 4 日前有效；过期后会在仓库更新。
