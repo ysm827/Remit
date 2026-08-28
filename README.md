@@ -1,33 +1,79 @@
-# Remit
+<div align="center">
+  <img src="./assets/remit-icon.png" alt="Remit 标志" width="140" />
+  <h1>Remit</h1>
+  <p><strong>本地优先、可检查、可恢复的数学建模工作台</strong></p>
+  <p>让 Agent 像一支数模队伍一样协作，让人始终握着题意、选型和交付的决定权。</p>
+  <p>
+    <a href="https://github.com/zhou2030109-glitch/Remit/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zhou2030109-glitch/Remit/actions/workflows/ci.yml/badge.svg" /></a>
+    <img alt="Python 3.12+" src="https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white" />
+    <img alt="Vue 3" src="https://img.shields.io/badge/Vue-3-42B883?logo=vuedotjs&logoColor=white" />
+    <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" /></a>
+    <a href="./README_EN.md"><img alt="English" src="https://img.shields.io/badge/English-README-64748B" /></a>
+  </p>
+  <p>
+    <a href="#项目亮点">项目亮点</a> ·
+    <a href="#工作流程">工作流程</a> ·
+    <a href="#快速开始">快速开始</a> ·
+    <a href="#模型配置">模型配置</a> ·
+    <a href="./docs/workflow.md">完整介绍</a> ·
+    <a href="#加入交流群">社区交流</a>
+  </p>
+</div>
+
+---
+
+Remit 把题面理解、数据检查、文献研究、模型选择、代码执行、结果验证和论文写作组织成
+一条带人工确认节点的多 Agent 工作流。它不只给出一段答案，而是把每一步产生的分析、
+证据、代码、图表和交付物放进同一个项目工作区，方便检查、返修和恢复。
 
 <p align="center">
-  <img src="./assets/remit-icon.png" alt="Remit 标志" width="150" />
+  <img src="./assets/remit-workbench-overview.png" alt="Remit 数学建模工作台主页" width="1100" />
 </p>
+<p align="center"><sub>Remit 工作台主页：项目进度、待人工确认、运行状态和 Agent 协作链集中在同一页。</sub></p>
 
-<p align="center">
-  本地优先、可检查、可恢复的数学建模工作台
-</p>
+主页用来回答四个最直接的问题：现在做到哪一步了、哪些结果正在等人确认、执行环境是否
+正常、四个核心 Agent 正在怎样协作。进入项目后，题目、数据、文献、模型、代码、结果和
+论文分别有独立视图，不需要在一条很长的聊天记录里寻找产物。
 
-<p align="center">
-  <a href="https://github.com/zhou2030109-glitch/Remit/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zhou2030109-glitch/Remit/actions/workflows/ci.yml/badge.svg" /></a>
-  <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" /></a>
-  <a href="./README_EN.md">English</a>
-</p>
+> Remit 目前处于 `0.1.x` 阶段，接口与工作流仍可能调整。完整工作流需要模型接口，
+> 部分步骤会真实执行模型生成的代码，请只在可信环境中使用并保留人工检查。
 
-Remit 把赛题理解、数据检查、模型设计、代码执行、结果验证和论文写作组织成一个带人工
-确认节点的多智能体流程。项目处于 `0.1.x` 阶段，接口与工作流仍可能调整。
+## 项目亮点
 
-## 特性
+- **四个核心角色分工**：Coordinator 忠实读题，Modeler 设计与复核模型，Coder 真实运行
+  代码，Writer 只使用通过检查的结果写论文；
+- **从数据和文献回头校正题意**：先扫描附件、检索开放文献并提取方法卡，再修正逐题理解，
+  避免从错误前提出发一路跑到底；
+- **候选模型必须下场比较**：每问先安排包含 baseline 的 Pilot，在相同数据划分和指标下
+  真实试跑，再从跑通的候选中定案；
+- **证据链贯穿交付**：方法推荐、文献采用、代码输出、图表、论文数字和质量报告能够相互
+  对照，不把“模型说过”当成计算证据；
+- **人工节点真正可退回**：题意、选型、Pilot、各小问和终稿都能暂停审批，带着累计意见
+  返回具体节点，而不是整项任务重来；
+- **本地优先且可恢复**：每个任务拥有独立目录、检查点和审批历史；MATLAB 优先、Python
+  备用，也可以选择 E2B 沙箱；
+- **模型接入可组合**：兼容 OpenAI Chat/Responses、Anthropic 和 Gemini，各角色可独立选择
+  供应商、模型、上下文和推理强度。
 
-- Coordinator、Modeler、Coder、Writer 四角色分阶段协作；
-- OpenAI Chat/Responses、Anthropic、Gemini 等兼容接入，每个角色可独立配置；
-- 任务级文件、消息、检查点和交付物管理，支持中断恢复与人工审批；
-- 本地 Python/MATLAB 执行，可选 E2B 沙箱；
-- 赛题 PDF 文本与插图解析、附件侦察、方法检索和开放文献检索；
-- 模型评审、质量门和可追踪的论文交付流程。
+## 工作流程
 
-想完整了解项目为什么做、一道赛题怎样从上传走到交付，可以看
-[Remit 项目介绍](docs/workflow.md)；模块边界见 [架构文档](docs/architecture.md)。
+```mermaid
+flowchart LR
+    A[上传题面和附件] --> B[读题、识图与拆问]
+    B --> C[数据画像与文献方法卡]
+    C --> D{人工确认题意}
+    D --> E[方法检索与模型评审]
+    E --> F[Pilot 真实试跑]
+    F --> G{人工确认选型}
+    G --> H[正式求解与论文写作]
+    H --> I[评委复审与最终门禁]
+    I --> J{人工验收并交付}
+```
+
+每个阶段都会把产物写入当前任务目录。审核通过后继续，发现问题时可以退回相应节点；
+中断后则从检查点恢复。想了解题面校正、三级方法检索、模型评审组、Pilot 和终稿门禁的
+完整细节，请阅读 [Remit 项目介绍](docs/workflow.md)；模块边界见
+[架构文档](docs/architecture.md)。
 
 ## 运行要求
 
