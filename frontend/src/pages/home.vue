@@ -45,7 +45,7 @@ import {
 	Settings2,
 	Trash2,
 } from "lucide-vue-next";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 
 const taskStore = useTaskStore();
@@ -86,6 +86,7 @@ function nodeStateLabel(status: ResumeNode["status"]): string {
 }
 
 const continueActionLabel = computed(() => {
+	if (taskStore.taskHistoryLoadError) return "重新加载";
 	if (!recentTask.value) return "开始建模";
 	switch (recentTask.value.status) {
 		case "failed":
@@ -110,6 +111,7 @@ const stoppedCount = computed(
 );
 const heroTitle = computed(() => {
 	if (recentTask.value) return displayTitle(recentTask.value.title);
+	if (taskStore.taskHistoryLoadError) return "暂时读不到项目";
 	if (isLoading.value) return "正在载入项目…";
 	return "创建第一个建模项目";
 });
@@ -129,6 +131,10 @@ async function retryLoadHistory(): Promise<void> {
 	await taskStore.loadTaskHistory();
 }
 
+function statsOrDash(value: number): string | number {
+	return taskStore.taskHistoryLoadError ? "—" : value;
+}
+
 const recentTask = computed(() => taskStore.taskHistory[0] ?? null);
 const recentTasks = computed(() => taskStore.taskHistory.slice(0, 4));
 const reviewTasks = computed(() =>
@@ -138,9 +144,12 @@ const reviewTasks = computed(() =>
 );
 
 // 四个核心角色的真实配置就绪状态：不展示模型名，只告诉队员"哪一环还没接上"。
+type ReadinessPhase = "loading" | "ready" | "error";
+const agentReadinessPhase = ref<ReadinessPhase>("loading");
 const agentReadiness = ref<Record<string, boolean>>({});
 
 async function loadAgentReadiness(): Promise<void> {
+	agentReadinessPhase.value = "loading";
 	try {
 		const response = await getApiConfigStatus();
 		const agents = response.data?.agents ?? {};
@@ -150,9 +159,21 @@ async function loadAgentReadiness(): Promise<void> {
 				Boolean(status?.configured),
 			]),
 		);
+		agentReadinessPhase.value = "ready";
 	} catch {
+		agentReadinessPhase.value = "error";
 		agentReadiness.value = {};
 	}
+}
+
+function agentState(key: string): { label: string; state: string } {
+	if (agentReadinessPhase.value === "loading")
+		return { label: "查询中", state: "loading" };
+	if (agentReadinessPhase.value === "error")
+		return { label: "状态未知", state: "unknown" };
+	return agentReadiness.value[key]
+		? { label: "就绪", state: "ready" }
+		: { label: "未配置", state: "unset" };
 }
 
 onMounted(() => {
@@ -170,6 +191,31 @@ async function loadResumeNodes(taskId: string): Promise<void> {
 		resumeNodes.value = [];
 	}
 }
+
+// 存在活跃任务时轮询刷新，避免死监控屏；空闲时完全停止。
+const hasActiveTask = computed(() =>
+	taskStore.taskHistory.some((task) =>
+		["running", "awaiting_approval"].includes(task.status),
+	),
+);
+let historyPollTimer: number | undefined;
+watch(
+	hasActiveTask,
+	(active) => {
+		if (active && historyPollTimer === undefined) {
+			historyPollTimer = window.setInterval(() => {
+				void taskStore.loadTaskHistory();
+			}, 30_000);
+		} else if (!active && historyPollTimer !== undefined) {
+			window.clearInterval(historyPollTimer);
+			historyPollTimer = undefined;
+		}
+	},
+	{ immediate: true },
+);
+onBeforeUnmount(() => {
+	if (historyPollTimer !== undefined) window.clearInterval(historyPollTimer);
+});
 
 watch(
 	() => recentTask.value?.task_id,
@@ -377,7 +423,7 @@ onMounted(async () => {
 					>
 						<Settings2 aria-hidden="true" />
 					</button>
-					<button type="button" class="create-button" @click="createProjectOpen = true">
+					<button type="button" class="create-button" aria-label="创建项目" @click="createProjectOpen = true">
 						<span>创建项目</span>
 						<Plus aria-hidden="true" />
 					</button>
@@ -434,6 +480,7 @@ onMounted(async () => {
 								v-for="node in displayResumeNodes"
 								:key="node.node_id"
 								class="workflow-chip"
+								:class="node.status === 'interrupted' ? 'workflow-chip-interrupted' : ''"
 								:data-state="node.status"
 								:title="nodeStateLabel(node.status)"
 							>
@@ -454,6 +501,16 @@ onMounted(async () => {
 							<span>{{ continueActionLabel }}</span>
 							<ChevronRight aria-hidden="true" />
 						</RouterLink>
+						<button
+							v-else-if="taskStore.taskHistoryLoadError"
+							type="button"
+							class="continue-action"
+							aria-label="重新加载项目列表"
+							@click="retryLoadHistory"
+						>
+							<span>{{ continueActionLabel }}</span>
+							<ChevronRight aria-hidden="true" />
+						</button>
 						<button v-else type="button" class="continue-action" @click="createProjectOpen = true">
 							<span>{{ continueActionLabel }}</span>
 							<ChevronRight aria-hidden="true" />
@@ -511,9 +568,9 @@ onMounted(async () => {
 						</header>
 						
 						<dl>
-							<div><dt>运行</dt><dd class="mono-data">{{ runningCount }}</dd></div>
-							<div><dt>待确认</dt><dd class="mono-data">{{ approvalCount }}</dd></div>
-							<div><dt>完成</dt><dd class="mono-data">{{ completedCount }}</dd></div>
+							<div><dt>运行</dt><dd class="mono-data">{{ statsOrDash(runningCount) }}</dd></div>
+							<div><dt>待确认</dt><dd class="mono-data">{{ statsOrDash(approvalCount) }}</dd></div>
+							<div><dt>完成</dt><dd class="mono-data">{{ statsOrDash(completedCount) }}</dd></div>
 						</dl>
 					</article>
 
@@ -523,9 +580,9 @@ onMounted(async () => {
 							<Gauge aria-hidden="true" />
 						</header>
 						<div class="resource-list">
-							<div><span>需处理</span><strong class="mono-data">{{ failedCount }}</strong></div>
-							<div><span>已暂停</span><strong class="mono-data">{{ stoppedCount }}</strong></div>
-							<div><span>历史项目</span><strong class="mono-data">{{ taskStore.taskHistory.length }}</strong></div>
+							<div><span>需处理</span><strong class="mono-data">{{ statsOrDash(failedCount) }}</strong></div>
+							<div><span>已暂停</span><strong class="mono-data">{{ statsOrDash(stoppedCount) }}</strong></div>
+							<div><span>历史项目</span><strong class="mono-data">{{ statsOrDash(taskStore.taskHistory.length) }}</strong></div>
 						</div>
 						<button
 							type="button"
@@ -542,10 +599,10 @@ onMounted(async () => {
 							<span>{{ recentTask ? statusConfig[recentTask.status].label : "待命" }}</span>
 						</header>
 						<ul class="agent-layout">
-							<li><CircleDot aria-hidden="true" /><span>Coordinator</span><small>编排</small><span class="agent-state" :data-ready="agentReadiness.coordinator ?? null">{{ agentReadiness.coordinator ? "就绪" : "未配置" }}</span></li>
-							<li><Network aria-hidden="true" /><span>Modeler</span><small>建模</small><span class="agent-state" :data-ready="agentReadiness.modeler ?? null">{{ agentReadiness.modeler ? "就绪" : "未配置" }}</span></li>
-							<li><Command aria-hidden="true" /><span>Coder</span><small>计算</small><span class="agent-state" :data-ready="agentReadiness.coder ?? null">{{ agentReadiness.coder ? "就绪" : "未配置" }}</span></li>
-							<li><FileText aria-hidden="true" /><span>Writer</span><small>写作</small><span class="agent-state" :data-ready="agentReadiness.writer ?? null">{{ agentReadiness.writer ? "就绪" : "未配置" }}</span></li>
+							<li><CircleDot aria-hidden="true" /><span>Coordinator</span><small>编排</small><span class="agent-state" :data-state="agentState('coordinator').state">{{ agentState('coordinator').label }}</span></li>
+							<li><Network aria-hidden="true" /><span>Modeler</span><small>建模</small><span class="agent-state" :data-state="agentState('modeler').state">{{ agentState('modeler').label }}</span></li>
+							<li><Command aria-hidden="true" /><span>Coder</span><small>计算</small><span class="agent-state" :data-state="agentState('coder').state">{{ agentState('coder').label }}</span></li>
+							<li><FileText aria-hidden="true" /><span>Writer</span><small>写作</small><span class="agent-state" :data-state="agentState('writer').state">{{ agentState('writer').label }}</span></li>
 						</ul>
 					</article>
 				</section>
@@ -1280,11 +1337,12 @@ a {
 	opacity: 1;
 }
 
-.workflow-chip[data-state="interrupted"] {
+.workflow-chip-interrupted {
 	border-color: rgb(240 162 148 / 0.55);
+	background: transparent;
 }
 
-.workflow-chip[data-state="interrupted"] .workflow-dot {
+.workflow-chip-interrupted .workflow-dot {
 	background: #f0a294;
 	opacity: 1;
 }
@@ -1298,12 +1356,14 @@ a {
 	border-color: rgb(20 24 20 / 0.14);
 }
 
-:global(.dark .workflow-chip[data-state="interrupted"]) {
+:global(.dark .workflow-chip-interrupted) {
 	border-color: rgb(179 64 47 / 0.5);
+	background: transparent;
 }
 
-:global(.dark .workflow-chip[data-state="interrupted"]) .workflow-dot {
+:global(.dark .workflow-chip-interrupted .workflow-dot) {
 	background: #b3402f;
+	opacity: 1;
 }
 
 :global(.dark .workflow-chip small) {
@@ -1708,7 +1768,7 @@ a {
 	border: 1px solid rgb(255 255 255 / 0.28);
 	border-radius: 999px;
 	padding: 5px 8px;
-	font-size: 10.5px;
+	font-size: 11px;
 }
 
 .agent-layout {
@@ -1759,17 +1819,33 @@ a {
 	border: 1px solid rgb(255 255 255 / 0.18);
 	border-radius: 999px;
 	padding: 2px 7px;
-	font-size: 10px;
+	font-size: 11px;
 }
 
-.agent-state[data-ready="true"] {
+.agent-state[data-state="ready"] {
 	border-color: rgb(231 255 47 / 0.35);
 	color: var(--acid);
 }
 
-.agent-state[data-ready="false"] {
+.agent-state[data-state="unset"] {
 	border-color: rgb(240 162 148 / 0.4);
 	color: #f0a294;
+}
+
+.agent-state[data-state="loading"],
+.agent-state[data-state="unknown"] {
+	border-color: rgb(255 255 255 / 0.18);
+	color: rgb(244 245 239 / 0.72);
+}
+
+:global(.dark .agent-state[data-state="unset"]) {
+	border-color: rgb(179 64 47 / 0.5);
+	color: #b3402f;
+}
+
+:global(.dark .agent-state[data-state="loading"]),
+:global(.dark .agent-state[data-state="unknown"]) {
+	color: rgb(21 24 21 / 0.62);
 }
 
 .recent-section {
