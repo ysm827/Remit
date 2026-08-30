@@ -19,12 +19,16 @@ uv sync
 # 启动开发服务器（需要先启动 Redis）
 ENV=DEV uvicorn app.main:app --host 0.0.0.0 --port 18000 --ws-ping-interval 60 --ws-ping-timeout 120 --reload
 
-# 测试
-.\.venv\Scripts\python.exe -m pytest tests -q
-
-# Lint
-.\.venv\Scripts\python.exe -m ruff check app
+# 测试与 Lint（Windows 将 .venv/bin/python 换成 .venv\Scripts\python.exe）
+.venv/bin/python -m pytest tests -q
+.venv/bin/python -m ruff check app
 ```
+
+### 一键启动服务（Redis + 后端 + 前端）
+
+- macOS / Linux：`bash tools/start_services.sh`（`--check` 只校验依赖），
+  停止用 `bash tools/stop_services.sh`；Windows 用 `win_start.bat` / `win_stop.bat`。
+- 端口契约固定：Redis 16379 / 后端 18000 / 前端 15173。
 
 ### 前端
 

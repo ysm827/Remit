@@ -447,6 +447,10 @@ def load_font(work_dir: Path, size: int) -> ImageFont.FreeTypeFont | ImageFont.I
         backend_root / "fonts" / "SimHei.ttf",
         backend_root / "fonts" / "msyh.ttc",
         Path("C:/Windows/Fonts/simhei.ttf"),
+        Path("/System/Library/Fonts/PingFang.ttc"),
+        Path("/System/Library/Fonts/Supplemental/Songti.ttc"),
+        Path("/System/Library/Fonts/Hiragino Sans GB.ttc"),
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
     ]
     for candidate in candidates:
         if candidate.exists():

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 START_SERVICES = PROJECT_ROOT / "tools" / "start_services.ps1"
 
 
+@unittest.skipUnless(
+    sys.platform == "win32",
+    "start_services.ps1 requires Windows venv/redis layout and powershell.exe; "
+    "POSIX environments are covered by test_posix_start_launcher.py",
+)
 class StartServicesDependencyTests(unittest.TestCase):
     def test_launcher_rejects_ports_owned_by_another_project(self) -> None:
         text = START_SERVICES.read_text(encoding="utf-8")

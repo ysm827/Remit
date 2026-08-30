@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -11,6 +12,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = PROJECT_ROOT / "win_start.bat"
 
 
+@unittest.skipUnless(
+    sys.platform == "win32",
+    "win_start.bat drives cmd.exe/PowerShell and only runs on Windows; "
+    "POSIX environments are covered by test_posix_start_launcher.py",
+)
 class WindowsLauncherTests(unittest.TestCase):
     def test_launcher_anchors_itself_to_project_root(self) -> None:
         text = LAUNCHER.read_text(encoding="utf-8")

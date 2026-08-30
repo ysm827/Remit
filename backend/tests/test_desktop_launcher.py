@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from urllib.parse import urlparse
@@ -20,6 +21,10 @@ def load_desktop_module():
     return module
 
 
+@unittest.skipUnless(
+    sys.platform == "win32",
+    "桌面壳使用 Win32 API（ctypes.windll/pythonnet），仅 Windows 可加载",
+)
 class DesktopLauncherTests(unittest.TestCase):
     def test_desktop_sets_explicit_windows_app_identity(self) -> None:
         """解释器承载的窗口必须有独立 AppID，否则任务栏显示 Python 图标。"""
