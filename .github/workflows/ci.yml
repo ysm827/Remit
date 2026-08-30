@@ -14,7 +14,15 @@ concurrency:
 
 jobs:
   backend-and-launchers:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            venv-python: "backend\\.venv\\Scripts\\python.exe"
+          - os: macos-latest
+            venv-python: "backend/.venv/bin/python"
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -41,11 +49,14 @@ jobs:
       - name: Test backend
         working-directory: backend
         run: uv run pytest tests -q
+      - name: Install Redis for POSIX launcher check
+        if: runner.os == 'macOS'
+        run: brew install redis
       - name: Prepare frontend dependencies for launcher check
         working-directory: frontend
         run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Test Windows launchers and repository contracts
-        run: backend\.venv\Scripts\python.exe -m pytest tests -q
+      - name: Test launchers and repository contracts
+        run: ${{ matrix.venv-python }} -m pytest tests -q
 
   frontend:
     runs-on: ubuntu-latest
