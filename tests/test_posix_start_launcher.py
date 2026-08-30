@@ -168,10 +168,13 @@ class PosixStartLauncherTests(unittest.TestCase):
             shutil.copy2(START_SERVICES, launcher)
             launcher.chmod(0o755)
 
-            redis_bin = root / "tools" / "redis" / "redis-server"
-            redis_bin.parent.mkdir(parents=True)
-            redis_bin.write_text(
-                """#!/usr/bin/env bash
+            # CI 中优先验证系统真实 Redis；仅在开发机未安装 Redis 时使用
+            # Python TCP 替身，使失败传播测试仍可独立运行。
+            if shutil.which("redis-server") is None:
+                redis_bin = root / "tools" / "redis" / "redis-server"
+                redis_bin.parent.mkdir(parents=True)
+                redis_bin.write_text(
+                    """#!/usr/bin/env bash
 port=16379
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -181,9 +184,9 @@ while [ "$#" -gt 0 ]; do
 done
 exec python3 -m http.server "$port" --bind 127.0.0.1
 """,
-                encoding="utf-8",
-            )
-            redis_bin.chmod(0o755)
+                    encoding="utf-8",
+                )
+                redis_bin.chmod(0o755)
 
             backend_python = root / "backend" / ".venv" / "bin" / "python"
             backend_python.parent.mkdir(parents=True)
