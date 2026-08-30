@@ -17,6 +17,7 @@ import {
 import { useToast } from "@/components/ui/toast";
 import ApiDialog from "@/pages/chat/components/ApiDialog.vue";
 import { useTaskStore } from "@/stores/task";
+import { displayTitle } from "@/utils/title";
 import { isAxiosError } from "axios";
 import {
 	AlertCircle,
@@ -188,7 +189,10 @@ async function confirmTaskDeletion(): Promise<void> {
 	try {
 		await taskStore.deleteTask(task.task_id);
 		taskPendingDelete.value = null;
-		toast({ title: "项目已删除", description: `“${task.title}”已永久删除。` });
+		toast({
+			title: "项目已删除",
+			description: `“${displayTitle(task.title, 60)}”已永久删除。`,
+		});
 	} catch (error) {
 		const responseData = isAxiosError(error)
 			? (error.response?.data as { detail?: string } | undefined)
@@ -345,7 +349,7 @@ onMounted(async () => {
 					<article class="current-project-card">
 						<div class="project-copy">
 							<p>当前项目</p>
-							<h1>{{ recentTask?.title || "创建第一个建模项目" }}</h1>
+							<h1>{{ displayTitle(recentTask?.title) || "创建第一个建模项目" }}</h1>
 							<div class="project-progress">
 								<strong class="mono-data">{{ currentProgress }}%</strong>
 								<div class="progress-track" aria-hidden="true">
@@ -433,7 +437,7 @@ onMounted(async () => {
 								class="review-row"
 							>
 								<span class="review-icon"><AlertCircle aria-hidden="true" /></span>
-								<strong>{{ task.title }}</strong>
+								<strong>{{ displayTitle(task.title, 30) }}</strong>
 								<small>{{ formatTaskTime(task.updated_at) }}</small>
 								<ChevronRight aria-hidden="true" />
 							</RouterLink>
@@ -531,14 +535,14 @@ onMounted(async () => {
 								<span>{{ statusConfig[task.status].label }}</span>
 								<button
 									type="button"
-									:aria-label="`删除项目：${task.title}`"
+									:aria-label="`删除项目：${displayTitle(task.title, 60)}`"
 									@click="taskPendingDelete = task"
 								>
 									<Trash2 aria-hidden="true" />
 								</button>
 							</div>
 							<RouterLink :to="`/project/${task.task_id}/overview`">
-								<h3>{{ task.title }}</h3>
+								<h3>{{ displayTitle(task.title, 36) }}</h3>
 								<div class="recent-progress">
 									<strong class="mono-data">{{ statusConfig[task.status].progress }}%</strong>
 									<span><i :style="{ width: `${statusConfig[task.status].progress}%` }" /></span>
@@ -574,7 +578,7 @@ onMounted(async () => {
 				<DialogHeader>
 					<DialogTitle>永久删除这个项目？</DialogTitle>
 					<DialogDescription class="pt-1 leading-6">
-						<span class="block font-medium text-foreground">{{ taskPendingDelete?.title }}</span>
+						<span class="block font-medium text-foreground">{{ displayTitle(taskPendingDelete?.title, 60) }}</span>
 						<span class="mt-1 block">消息、附件和生成文件都会删除，无法撤销。</span>
 					</DialogDescription>
 				</DialogHeader>
@@ -1391,10 +1395,10 @@ a {
 }
 
 :global(.dark .soft-glass) {
-	border-color: rgb(255 255 255 / 0.06);
-	background: var(--acid);
-	box-shadow: 0 28px 64px -44px rgb(194 225 0 / 0.36);
-	color: #111;
+	border-color: rgb(231 255 47 / 0.26);
+	background: linear-gradient(160deg, #242a20, #161913);
+	box-shadow: 0 28px 64px -44px rgb(0 0 0 / 0.62);
+	color: #f2f4ec;
 	backdrop-filter: none;
 }
 
@@ -1434,17 +1438,11 @@ a {
 	font-weight: 800;
 }
 
-:global(.dark .count-mark) {
-	background: rgb(17 19 16 / 0.1);
-}
-
 .review-list {
 	display: grid;
 	gap: 10px;
 	margin-top: 18px;
-}
-
-.review-row {
+}.review-row {
 	display: grid;
 	min-height: 72px;
 	grid-template-columns: 42px minmax(0, 1fr) auto 15px;
@@ -1459,7 +1457,9 @@ a {
 }
 
 :global(.dark .review-row) {
-	background: rgb(255 255 255 / 0.82);
+	border-color: rgb(255 255 255 / 0.09);
+	background: rgb(255 255 255 / 0.05);
+	color: #eef0ea;
 }
 
 .review-icon {
@@ -1469,6 +1469,11 @@ a {
 	place-items: center;
 	border-radius: 50%;
 	background: rgb(17 19 17 / 0.055);
+}
+
+:global(.dark .review-icon) {
+	background: rgb(231 255 47 / 0.13);
+	color: var(--acid);
 }
 
 .review-icon svg {
@@ -1489,6 +1494,10 @@ a {
 	white-space: nowrap;
 }
 
+:global(.dark .review-row small) {
+	color: rgb(244 245 239 / 0.62);
+}
+
 .review-row > svg {
 	width: 14px;
 	height: 14px;
@@ -1504,13 +1513,17 @@ a {
 }
 
 :global(.dark .review-empty) {
-	color: #30342f;
+	color: rgb(244 245 239 / 0.66);
 }
 
 .review-empty svg {
 	width: 34px;
 	height: 34px;
 	color: #8ba300;
+}
+
+:global(.dark .review-empty svg) {
+	color: var(--acid);
 }
 
 .review-empty strong {
@@ -1663,8 +1676,8 @@ a {
 .agent-card {
 	position: relative;
 	overflow: hidden;
-	background: #879185;
-	color: white;
+	background: #2e342c;
+	color: #f4f5ef;
 }
 
 .agent-card::after {
@@ -1679,7 +1692,7 @@ a {
 }
 
 .agent-card > header span {
-	border: 1px solid rgb(255 255 255 / 0.2);
+	border: 1px solid rgb(255 255 255 / 0.28);
 	border-radius: 999px;
 	padding: 5px 8px;
 	font-size: 9px;
@@ -1705,18 +1718,19 @@ a {
 	grid-template-columns: 17px minmax(0, 1fr) auto;
 	align-items: center;
 	gap: 8px;
-	font-size: 10px;
+	font-size: 11px;
 }
 
 .agent-layout li svg {
 	width: 15px;
 	height: 15px;
-	opacity: 0.74;
+	color: var(--acid);
+	opacity: 0.92;
 }
 
 .agent-layout li small {
-	opacity: 0.56;
-	font-size: 8px;
+	color: rgb(244 245 239 / 0.68);
+	font-size: 9.5px;
 }
 
 .agent-visual {

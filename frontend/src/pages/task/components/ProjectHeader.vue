@@ -2,6 +2,7 @@
 import { Button } from "@/components/ui/button";
 import FilesSheet from "@/pages/task/components/FileSheet.vue";
 import type { ProjectStage, StageKey } from "@/pages/task/projectWorkspace";
+import { displayTitle } from "@/utils/title";
 import {
 	ArrowLeft,
 	Bot,
@@ -60,7 +61,10 @@ const statusLabel = {
 
       <span class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-slate-950 text-xs font-semibold text-white dark:bg-white dark:text-slate-950">M</span>
       <div class="min-w-0 max-w-72">
-        <h1 class="truncate text-sm font-semibold" :title="props.title">{{ props.title }}</h1>
+        <h1
+          class="truncate text-sm font-semibold"
+          :title="displayTitle(props.title, 120)"
+        >{{ displayTitle(props.title, 120) }}</h1>
         <div class="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">
           <span class="truncate font-mono">{{ props.taskId }}</span>
           <span class="inline-flex items-center gap-1">

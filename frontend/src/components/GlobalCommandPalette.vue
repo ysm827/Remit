@@ -9,6 +9,7 @@ import {
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { displayTitle } from "@/utils/title";
 import {
 	Command,
 	FolderOpen,
@@ -167,7 +168,7 @@ onBeforeUnmount(() =>
               <FolderOpen class="h-3.5 w-3.5" aria-hidden="true" />
             </span>
             <span class="min-w-0 flex-1 text-left">
-              <span class="block truncate text-sm">{{ task.title }}</span>
+              <span class="block truncate text-sm">{{ displayTitle(task.title, 60) }}</span>
               <span class="block text-[11px] text-muted-foreground">{{ task.message_count }} 条运行记录</span>
             </span>
           </Button>
