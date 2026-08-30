@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { getApiConfigStatus } from "@/apis/apiKeyApi";
 import {
 	type ResumeNode,
 	type TaskSummary,
@@ -27,7 +28,6 @@ import {
 	AlertCircle,
 	Bell,
 	Bot,
-	Box,
 	CheckCircle2,
 	ChevronRight,
 	CircleDot,
@@ -136,6 +136,28 @@ const reviewTasks = computed(() =>
 		.filter((task) => task.status === "awaiting_approval")
 		.slice(0, 3),
 );
+
+// 四个核心角色的真实配置就绪状态：不展示模型名，只告诉队员"哪一环还没接上"。
+const agentReadiness = ref<Record<string, boolean>>({});
+
+async function loadAgentReadiness(): Promise<void> {
+	try {
+		const response = await getApiConfigStatus();
+		const agents = response.data?.agents ?? {};
+		agentReadiness.value = Object.fromEntries(
+			Object.entries(agents).map(([key, status]) => [
+				key,
+				Boolean(status?.configured),
+			]),
+		);
+	} catch {
+		agentReadiness.value = {};
+	}
+}
+
+onMounted(() => {
+	void loadAgentReadiness();
+});
 
 const resumeNodes = ref<ResumeNode[]>([]);
 
@@ -519,18 +541,12 @@ onMounted(async () => {
 							<h2>Agent 协作链</h2>
 							<span>{{ recentTask ? statusConfig[recentTask.status].label : "待命" }}</span>
 						</header>
-						<div class="agent-layout">
-							<ul>
-								<li><CircleDot aria-hidden="true" /><span>Coordinator</span><small>编排</small></li>
-								<li><Network aria-hidden="true" /><span>Modeler</span><small>建模</small></li>
-								<li><Command aria-hidden="true" /><span>Coder</span><small>计算</small></li>
-								<li><FileText aria-hidden="true" /><span>Writer</span><small>写作</small></li>
-							</ul>
-							<div class="agent-visual" aria-hidden="true">
-								<Box />
-								<span v-for="index in 6" :key="index" :style="{ '--i': index }" />
-							</div>
-						</div>
+						<ul class="agent-layout">
+							<li><CircleDot aria-hidden="true" /><span>Coordinator</span><small>编排</small><span class="agent-state" :data-ready="agentReadiness.coordinator ?? null">{{ agentReadiness.coordinator ? "就绪" : "未配置" }}</span></li>
+							<li><Network aria-hidden="true" /><span>Modeler</span><small>建模</small><span class="agent-state" :data-ready="agentReadiness.modeler ?? null">{{ agentReadiness.modeler ? "就绪" : "未配置" }}</span></li>
+							<li><Command aria-hidden="true" /><span>Coder</span><small>计算</small><span class="agent-state" :data-ready="agentReadiness.coder ?? null">{{ agentReadiness.coder ? "就绪" : "未配置" }}</span></li>
+							<li><FileText aria-hidden="true" /><span>Writer</span><small>写作</small><span class="agent-state" :data-ready="agentReadiness.writer ?? null">{{ agentReadiness.writer ? "就绪" : "未配置" }}</span></li>
+						</ul>
 					</article>
 				</section>
 
@@ -1730,31 +1746,30 @@ a {
 	font-size: 11px;
 }
 
-.agent-visual {
-	position: relative;
-	display: grid;
-	place-items: center;
+.agent-layout {
+	grid-template-columns: 1fr;
+	gap: 10px;
 }
 
-.agent-visual > svg {
-	position: relative;
-	z-index: 2;
-	width: 58px;
-	height: 58px;
-	filter: drop-shadow(0 14px 18px rgb(20 25 21 / 0.28));
-	stroke-width: 1;
+.agent-layout li {
+	grid-template-columns: 17px minmax(0, 1fr) auto auto;
 }
 
-.agent-visual span {
-	--angle: calc(var(--i) * 60deg);
-	position: absolute;
-	left: calc(50% + cos(var(--angle)) * 54px);
-	top: calc(50% + sin(var(--angle)) * 54px);
-	width: 8px;
-	height: 8px;
-	border: 1px solid rgb(255 255 255 / 0.7);
-	border-radius: 50%;
-	background: rgb(255 255 255 / 0.58);
+.agent-state {
+	border: 1px solid rgb(255 255 255 / 0.18);
+	border-radius: 999px;
+	padding: 2px 7px;
+	font-size: 10px;
+}
+
+.agent-state[data-ready="true"] {
+	border-color: rgb(231 255 47 / 0.35);
+	color: var(--acid);
+}
+
+.agent-state[data-ready="false"] {
+	border-color: rgb(240 162 148 / 0.4);
+	color: #f0a294;
 }
 
 .recent-section {
