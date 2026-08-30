@@ -104,15 +104,33 @@ class PosixStartLauncherTests(unittest.TestCase):
             vite.touch()
             (root / "frontend" / "package.json").write_text("{}\n", encoding="utf-8")
 
-            process = subprocess.Popen(
+            redis_server = shutil.which("redis-server")
+            external_command = (
                 [
+                    redis_server,
+                    "--port",
+                    str(REDIS_PORT),
+                    "--bind",
+                    "127.0.0.1",
+                    "--save",
+                    "",
+                    "--appendonly",
+                    "no",
+                    "--dir",
+                    str(root),
+                ]
+                if redis_server
+                else [
                     sys.executable,
                     "-m",
                     "http.server",
                     str(REDIS_PORT),
                     "--bind",
                     "127.0.0.1",
-                ],
+                ]
+            )
+            process = subprocess.Popen(
+                external_command,
                 # 即使外部服务恰好从仓库根目录启动，也不能仅凭 cwd 认领。
                 cwd=root,
                 stdout=subprocess.DEVNULL,
