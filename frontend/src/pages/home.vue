@@ -2085,7 +2085,7 @@ a {
 
 	.page-heading,
 	.nav-search,
-	.nav-actions > .icon-button:nth-of-type(2) {
+	.nav-actions > button[aria-label="模型设置"] {
 		display: none;
 	}
 
@@ -2140,7 +2140,7 @@ a {
 
 @media (max-width: 680px) {
 	.create-button span,
-	.nav-actions > .icon-button:nth-of-type(2) {
+	.nav-actions > button[aria-label="模型设置"] {
 		display: none;
 	}
 

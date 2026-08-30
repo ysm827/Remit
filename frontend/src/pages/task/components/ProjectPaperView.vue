@@ -41,7 +41,6 @@ const totalCharacters = computed(() =>
     <header class="shrink-0 border-b bg-card px-5 py-4 lg:px-6">
       <div class="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p class="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Paper workspace</p>
           <h1 id="paper-view-title" class="mt-1 text-lg font-semibold tracking-tight">论文写作与版本预览</h1>
           <p class="mt-1 text-xs text-muted-foreground">按工作流目录组织真实论文片段，公式、表格和图像引用保持 Markdown 渲染。</p>
         </div>
