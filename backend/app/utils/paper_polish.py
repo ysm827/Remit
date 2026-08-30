@@ -447,9 +447,12 @@ def load_font(work_dir: Path, size: int) -> ImageFont.FreeTypeFont | ImageFont.I
         backend_root / "fonts" / "SimHei.ttf",
         backend_root / "fonts" / "msyh.ttc",
         Path("C:/Windows/Fonts/simhei.ttf"),
-        Path("/System/Library/Fonts/PingFang.ttc"),
-        Path("/System/Library/Fonts/Supplemental/Songti.ttc"),
+        # macOS：PingFang.ttc 受 SIP 保护无法被 PIL 读取，选用实测可打开的字体
+        Path("/System/Library/Fonts/STHeiti Medium.ttc"),
         Path("/System/Library/Fonts/Hiragino Sans GB.ttc"),
+        Path("/System/Library/Fonts/Supplemental/Songti.ttc"),
+        Path("/Library/Fonts/Arial Unicode.ttf"),
+        Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
         Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
     ]
     for candidate in candidates:
