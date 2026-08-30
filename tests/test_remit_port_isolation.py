@@ -41,6 +41,21 @@ class RemitPortIsolationTests(unittest.TestCase):
         self.assertIn('"--port", "$BackendPort"', start)
         self.assertIn("--port {1} --strictPort", start)
 
+    def test_posix_launchers_use_dedicated_ports(self) -> None:
+        start = (PROJECT_ROOT / "tools" / "start_services.sh").read_text(
+            encoding="utf-8"
+        )
+        stop = (PROJECT_ROOT / "tools" / "stop_services.sh").read_text(
+            encoding="utf-8"
+        )
+
+        for script in (start, stop):
+            self.assertIn("REDIS_PORT=16379", script)
+            self.assertIn("BACKEND_PORT=18000", script)
+            self.assertIn("FRONTEND_PORT=15173", script)
+        self.assertIn("--port \"$BACKEND_PORT\"", start)
+        self.assertIn('--port "$FRONTEND_PORT" --strictPort', start)
+
     def test_local_environment_points_to_dedicated_ports(self) -> None:
         backend_env = read_dotenv(PROJECT_ROOT / "backend" / ".env.example")
         frontend_env = read_dotenv(

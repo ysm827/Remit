@@ -7,6 +7,7 @@ import importlib
 import io
 import json
 import os
+import platform
 import re
 import shutil
 import sys
@@ -66,22 +67,32 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
         if path_match:
             return str(Path(path_match).resolve())
 
-        roots = [
-            Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "MATLAB",
-            Path("D:/Program Files/MATLAB"),
-        ]
+        roots: list[Path] = []
+        glob_pattern = "R*/bin/matlab"
+        if sys.platform == "darwin":
+            # macOS 官方安装包位于 /Applications/MATLAB_R20xx?.app
+            roots.append(Path("/Applications"))
+            glob_pattern = "MATLAB_R*.app/bin/matlab"
+        elif os.name == "nt":
+            roots = [
+                Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "MATLAB",
+                Path("D:/Program Files/MATLAB"),
+            ]
+            glob_pattern = "R*/bin/matlab.exe"
+        else:
+            roots.append(Path("/usr/local/MATLAB"))
         candidates = [
             executable
             for root in roots
             if root.is_dir()
-            for executable in root.glob("R*/bin/matlab.exe")
+            for executable in root.glob(glob_pattern)
             if executable.is_file()
         ]
         return str(sorted(candidates, reverse=True)[0]) if candidates else None
 
     @property
     def matlab_root(self) -> Path:
-        """从 ``<MATLAB>/bin/matlab.exe`` 解析 MATLAB 根目录。"""
+        """从 ``<MATLAB>/bin/matlab``（平台可执行文件）解析 MATLAB 根目录。"""
         if not self.executable:
             raise MatlabUnavailableError("未找到 MATLAB 可执行文件")
         executable = Path(self.executable).resolve()
@@ -137,30 +148,83 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
         self._write_metadata()
         logger.info(f"MATLAB 常驻计算后端可用: {self.executable} ({self.version})")
 
-    def _load_engine_module(self) -> Any:
-        """直接加载当前 MATLAB 安装附带的 Engine，不要求全局 pip 安装。"""
-        root = self.matlab_root
-        arch = "win64" if os.name == "nt" else "glnxa64"
+    @staticmethod
+    def _candidate_engine_architectures() -> list[str]:
+        """按本机平台给出 Engine 二进制目录的候选名，原生架构优先。
+
+        Intel Mac 目录名为 ``maci64``，Apple Silicon（R2023b 起）为
+        ``maca64``；旧版安装可能缺少其中一个，因此按序回退。
+        """
+        if os.name == "nt":
+            return ["win64"]
+        if sys.platform == "darwin":
+            # Python 扩展必须与当前解释器同架构；原生 arm64 进程无法加载
+            # maci64，Intel/Rosetta 进程也无法加载 maca64。
+            return ["maca64"] if platform.machine() == "arm64" else ["maci64"]
+        return ["glnxa64"]
+
+    @staticmethod
+    def _runtime_library_variable() -> str | None:
+        """返回当前平台供动态链接器查找 MATLAB 共享库的环境变量。"""
+        if sys.platform == "darwin":
+            return "DYLD_LIBRARY_PATH"
+        if os.name != "nt":
+            return "LD_LIBRARY_PATH"
+        return None
+
+    @staticmethod
+    def _prepend_environment_paths(name: str, paths: list[Path]) -> None:
+        """把存在的目录去重后前置到指定的路径型环境变量。"""
+        existing = [item for item in os.environ.get(name, "").split(os.pathsep) if item]
+        prefixes = [str(path) for path in paths if path.is_dir()]
+        os.environ[name] = os.pathsep.join(list(dict.fromkeys([*prefixes, *existing])))
+
+    @staticmethod
+    def _engine_paths_for_arch(root: Path, arch: str) -> tuple[Path, Path, Path, Path]:
+        """返回该架构下 Engine 加载所需的四个目录。"""
         engine_dist = root / "extern" / "engines" / "python" / "dist"
         engine_bin = engine_dist / "matlab" / "engine" / arch
         extern_bin = root / "extern" / "bin" / arch
         runtime_bin = root / "bin" / arch
-        required = (engine_dist, engine_bin, extern_bin, runtime_bin)
-        missing = [str(path) for path in required if not path.is_dir()]
-        if missing:
+        return engine_dist, engine_bin, extern_bin, runtime_bin
+
+    def _load_engine_module(self) -> Any:
+        """直接加载当前 MATLAB 安装附带的 Engine，不要求全局 pip 安装。"""
+        root = self.matlab_root
+        arch: str | None = None
+        missing_report: list[str] | None = None
+        engine_bin = extern_bin = runtime_bin = None
+        for candidate in self._candidate_engine_architectures():
+            paths = self._engine_paths_for_arch(root, candidate)
+            missing = [str(path) for path in paths if not path.is_dir()]
+            if not missing:
+                arch, engine_bin, extern_bin, runtime_bin = candidate, *paths[1:]
+                break
+            if missing_report is None:
+                missing_report = missing
+        if (
+            arch is None
+            or engine_bin is None
+            or extern_bin is None
+            or runtime_bin is None
+        ):
             raise MatlabUnavailableError(
-                "MATLAB Engine 组件不完整，缺少: " + ", ".join(missing)
+                "MATLAB Engine 组件不完整，缺少: " + ", ".join(missing_report or [])
             )
 
+        engine_dist = root / "extern" / "engines" / "python" / "dist"
+        system_bin = root / "sys" / "os" / arch
         os.environ["MWE_INSTALL"] = str(root)
         for path in (engine_dist, engine_bin, extern_bin):
             path_text = str(path)
             if path_text not in sys.path:
                 sys.path.insert(0, path_text)
 
-        path_prefixes = [str(runtime_bin), str(extern_bin), str(engine_bin)]
-        current_path = os.environ.get("PATH", "")
-        os.environ["PATH"] = os.pathsep.join(path_prefixes + [current_path])
+        runtime_paths = [runtime_bin, extern_bin, engine_bin, system_bin]
+        self._prepend_environment_paths("PATH", runtime_paths)
+        library_variable = self._runtime_library_variable()
+        if library_variable:
+            self._prepend_environment_paths(library_variable, runtime_paths)
         if hasattr(os, "add_dll_directory"):
             for path in (runtime_bin, extern_bin, engine_bin):
                 self._dll_handles.append(os.add_dll_directory(str(path)))

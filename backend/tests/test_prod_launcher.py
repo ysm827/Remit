@@ -21,6 +21,10 @@ def load_prod_launcher():
     return module
 
 
+@unittest.skipUnless(
+    sys.platform == "win32",
+    "安装版启动器依赖 Windows 打包布局与 taskkill，仅 Windows 可加载",
+)
 class ProductionLauncherTests(unittest.TestCase):
     def test_stop_services_falls_back_to_owned_port_processes(self) -> None:
         """PID 文件丢失时也必须清理本安装目录遗留的监听进程。"""

@@ -34,11 +34,14 @@ workflow details.
 
 ## Requirements
 
-- Windows 10/11 for the desktop launcher, or a Docker Compose environment;
+- Windows 10/11 for the desktop launcher, macOS 12+ or Linux via the shell
+  launcher, or a Docker Compose environment;
 - Python 3.12+ and [uv](https://docs.astral.sh/uv/);
 - Node.js 20+ and pnpm 10;
 - Redis for the complete workflow. Windows source mode can use the bundled
-  Redis runtime files.
+  Redis runtime files. On macOS use `brew install redis`; on Linux use the
+  distribution package manager. The launcher starts a dedicated instance on
+  port 16379 and never takes ownership of an external Redis process.
 
 Provider calls may incur external API charges. Some workflows execute
 model-generated code; run Remit only on a trusted workstation and inspect your
@@ -66,6 +69,32 @@ cd ..
 
 Open <http://127.0.0.1:15173>. Backend API documentation is available at
 <http://127.0.0.1:18000/docs>. Run `win_stop.bat` to stop all services.
+
+### macOS / Linux from source
+
+```bash
+git clone https://github.com/zhou2030109-glitch/Remit.git
+cd Remit
+
+cp backend/.env.example backend/.env.dev
+
+cd backend
+uv sync --frozen
+
+cd ../frontend
+pnpm install --frozen-lockfile
+
+cd ..
+bash tools/start_services.sh
+```
+
+Open <http://127.0.0.1:15173>. Backend API documentation is available at
+<http://127.0.0.1:18000/docs>. Run `bash tools/stop_services.sh` to stop all
+services. On macOS you can instead double-click `mac_start.command` /
+`mac_stop.command`. Install Redis and `lsof` first (`brew install redis` on
+macOS; use the distribution package manager on Linux). The launcher creates a
+missing `backend/.env.dev` automatically. `tools/start_services.sh --check`
+validates the launch dependencies at any time.
 
 ### Docker Compose
 
@@ -102,7 +131,7 @@ problem and data through the UI.
 
 ## Development
 
-```powershell
+```bash
 cd backend
 uv run ruff check app tests
 uv run pytest tests -q
@@ -112,7 +141,8 @@ pnpm run lint
 pnpm run build
 
 cd ..
-backend/.venv/Scripts/python.exe -m pytest tests -q
+# Repository-level launcher and config contract tests (Windows: .venv\Scripts\python.exe)
+backend/.venv/bin/python -m pytest tests -q
 ```
 
 To build the Windows installer, run `tools/package_win.ps1`. Its default output
