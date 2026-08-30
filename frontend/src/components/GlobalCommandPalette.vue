@@ -27,8 +27,9 @@ const props = withDefaults(
 	defineProps<{
 		tasks?: TaskSummary[];
 		contextActions?: Array<{ id: string; label: string; hint?: string }>;
+		pendingOnly?: boolean;
 	}>(),
-	{ tasks: () => [], contextActions: () => [] },
+	{ tasks: () => [], contextActions: () => [], pendingOnly: false },
 );
 
 const emit = defineEmits<{
@@ -51,6 +52,9 @@ const normalizedQuery = computed(() =>
 );
 const visibleTasks = computed(() =>
 	props.tasks
+		.filter((task) =>
+			props.pendingOnly ? task.status === "awaiting_approval" : true,
+		)
 		.filter((task) =>
 			normalizedQuery.value
 				? task.title.toLocaleLowerCase("zh-CN").includes(normalizedQuery.value)
@@ -114,7 +118,7 @@ onBeforeUnmount(() =>
         <Input
           v-model="query"
           class="h-12 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
-          placeholder="搜索项目或输入命令…"
+          :placeholder="pendingOnly ? '搜索待确认项目…' : '搜索项目或输入命令…'"
           aria-label="搜索命令和项目"
           autofocus
         />
@@ -156,7 +160,7 @@ onBeforeUnmount(() =>
         </template>
 
         <template v-if="visibleTasks.length">
-          <p class="mt-2 px-2 py-1.5 text-[11px] font-medium text-muted-foreground">最近项目</p>
+          <p class="mt-2 px-2 py-1.5 text-[11px] font-medium text-muted-foreground">{{ pendingOnly ? "待确认项目" : "最近项目" }}</p>
           <Button
             v-for="task in visibleTasks"
             :key="task.task_id"
