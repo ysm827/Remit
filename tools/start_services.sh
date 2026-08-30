@@ -106,6 +106,10 @@ pid_ppid() {
 	ps -p "$1" -o ppid= 2>/dev/null | tr -d '[:space:]'
 }
 
+pid_cwd() {
+	lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
+}
+
 # 判断监听进程是否属于启动器记录的服务进程树。仅凭命令名、端口或 cwd
 # 都可能误认用户自行启动的服务，因此必须以 logs/<name>.pid 为归属锚点。
 listener_belongs_to_service() {
@@ -121,6 +125,21 @@ listener_belongs_to_service() {
 		depth=$((depth + 1))
 	done
 	return 1
+}
+
+# nohup 在部分 macOS 版本上会让真正的监听进程脱离最初记录的 PID。
+# 端口启动前已经确认空闲，因此在本次启动等待期内，可用精确工作目录
+# 识别新监听进程，并把 PID 文件更新为实际监听者供后续安全停止。
+listener_matches_started_service() {
+	local name="$1" pid="$2" expected_cwd cwd
+	case "$name" in
+	redis) expected_cwd="$ROOT" ;;
+	backend) expected_cwd="$BACKEND_DIR" ;;
+	frontend) expected_cwd="$FRONTEND_DIR" ;;
+	*) return 1 ;;
+	esac
+	cwd="$(pid_cwd "$pid")"
+	[ "$cwd" = "$expected_cwd" ]
 }
 
 # $1=名称 $2=端口 $3=工作目录 其余为启动命令；端口被本项目进程占用时直接复用。
@@ -152,17 +171,20 @@ start_service() {
 }
 
 wait_for_port() {
-	local name="$1" port="$2" timeout="$3" waited=0 pid="" pids="" owned=0
+	local name="$1" port="$2" timeout="$3" waited=0 pid="" pids="" owned=0 owned_pid=""
 	while [ "$waited" -lt "$timeout" ]; do
 		pids="$(port_pids "$port" || true)"
 		if [ -n "$pids" ]; then
 			owned=0
+			owned_pid=""
 			for pid in $pids; do
-				if listener_belongs_to_service "$name" "$pid"; then
+				if listener_belongs_to_service "$name" "$pid" || listener_matches_started_service "$name" "$pid"; then
 					owned=1
+					owned_pid="$pid"
 				fi
 			done
 			if [ "$owned" = "1" ]; then
+				printf '%s' "$owned_pid" >"$LOG_DIR/$name.pid"
 				echo "[READY] $name is accepting connections on port $port."
 				return 0
 			fi

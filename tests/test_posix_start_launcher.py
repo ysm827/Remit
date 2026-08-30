@@ -75,6 +75,11 @@ class PosixStartLauncherTests(unittest.TestCase):
             "stop script must warn instead of killing foreign listeners",
         )
 
+    def test_start_script_records_the_actual_listener_pid(self) -> None:
+        text = START_SERVICES.read_text(encoding="utf-8")
+        self.assertIn("listener_matches_started_service", text)
+        self.assertIn('printf \'%s\' "$owned_pid" >"$LOG_DIR/$name.pid"', text)
+
     def test_external_listener_on_redis_port_is_rejected_and_not_stopped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             root = Path(temp_directory)
