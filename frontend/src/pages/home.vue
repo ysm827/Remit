@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import type { TaskSummary } from "@/apis/commonApi";
+import {
+	type ResumeNode,
+	type TaskSummary,
+	getResumeOptions,
+} from "@/apis/commonApi";
 import CreateProjectSheet from "@/components/CreateProjectSheet.vue";
 import GlobalCommandPalette from "@/components/GlobalCommandPalette.vue";
 import ServiceStatus from "@/components/ServiceStatus.vue";
@@ -21,7 +25,6 @@ import { displayTitle } from "@/utils/title";
 import { isAxiosError } from "axios";
 import {
 	AlertCircle,
-	BarChart3,
 	Bell,
 	Bot,
 	Box,
@@ -29,7 +32,6 @@ import {
 	ChevronRight,
 	CircleDot,
 	Command,
-	Database,
 	FileText,
 	FolderKanban,
 	Gauge,
@@ -70,12 +72,35 @@ const statusConfig: Record<
 	stopped: { label: "已暂停", hint: "可从检查点继续" },
 };
 
-const workflowSteps = [
-	{ label: "题目理解", icon: FileText },
-	{ label: "数据处理", icon: Database },
-	{ label: "模型设计", icon: Network },
-	{ label: "结果分析", icon: BarChart3 },
-];
+const displayResumeNodes = computed(() => resumeNodes.value.slice(0, 5));
+const resumeOverflow = computed(() =>
+	Math.max(resumeNodes.value.length - displayResumeNodes.value.length, 0),
+);
+
+function nodeStateLabel(status: ResumeNode["status"]): string {
+	return status === "completed"
+		? "已完成"
+		: status === "interrupted"
+			? "已中断"
+			: "待执行";
+}
+
+const continueActionLabel = computed(() => {
+	if (!recentTask.value) return "开始建模";
+	switch (recentTask.value.status) {
+		case "failed":
+			return "查看原因";
+		case "stopped":
+			return "恢复建模";
+		case "awaiting_approval":
+			return "去审阅";
+		case "completed":
+			return "查看成果";
+		default:
+			return "跟踪进度";
+	}
+});
+
 const failedCount = computed(
 	() => taskStore.taskHistory.filter((task) => task.status === "failed").length,
 );
@@ -88,15 +113,16 @@ const heroTitle = computed(() => {
 	if (isLoading.value) return "正在载入项目…";
 	return "创建第一个建模项目";
 });
-const commandPalettePendingOnly = ref(false);
+type PaletteFilter = "awaiting_approval" | "failed";
+const commandPaletteStatusFilter = ref<PaletteFilter | null>(null);
 
-function openPendingPalette(): void {
-	commandPalettePendingOnly.value = true;
+function openFilteredPalette(filter: PaletteFilter): void {
+	commandPaletteStatusFilter.value = filter;
 	commandPaletteOpen.value = true;
 }
 
 watch(commandPaletteOpen, (open) => {
-	if (!open) commandPalettePendingOnly.value = false;
+	if (!open) commandPaletteStatusFilter.value = null;
 });
 
 async function retryLoadHistory(): Promise<void> {
@@ -110,11 +136,36 @@ const reviewTasks = computed(() =>
 		.filter((task) => task.status === "awaiting_approval")
 		.slice(0, 3),
 );
+
+const resumeNodes = ref<ResumeNode[]>([]);
+
+async function loadResumeNodes(taskId: string): Promise<void> {
+	try {
+		const response = await getResumeOptions(taskId);
+		resumeNodes.value = response.data?.nodes ?? [];
+	} catch {
+		// 拿不到真实节点就整块隐藏，绝不回退到假流水线。
+		resumeNodes.value = [];
+	}
+}
+
+watch(
+	() => recentTask.value?.task_id,
+	(taskId) => {
+		resumeNodes.value = [];
+		if (taskId) void loadResumeNodes(taskId);
+	},
+	{ immediate: true },
+);
 const runningCount = computed(
 	() =>
 		taskStore.taskHistory.filter((task) => task.status === "running").length,
 );
-const approvalCount = computed(() => reviewTasks.value.length);
+const approvalCount = computed(
+	() =>
+		taskStore.taskHistory.filter((task) => task.status === "awaiting_approval")
+			.length,
+);
 const completedCount = computed(
 	() =>
 		taskStore.taskHistory.filter((task) => task.status === "completed").length,
@@ -262,7 +313,7 @@ onMounted(async () => {
 				<span class="profile-mark">R</span>
 				<span>
 					<strong>本地工作台</strong>
-					<small>已连接</small>
+					<small>本地运行</small>
 				</span>
 				<Settings2 aria-hidden="true" />
 			</button>
@@ -281,7 +332,7 @@ onMounted(async () => {
 				<button type="button" class="nav-search" @click="commandPaletteOpen = true">
 					<Search aria-hidden="true" />
 					<span>搜索项目或命令</span>
-					<kbd>⌘K</kbd>
+					<kbd>Ctrl/⌘ K</kbd>
 				</button>
 
 				<div class="nav-actions">
@@ -291,7 +342,7 @@ onMounted(async () => {
 						type="button"
 						class="icon-button"
 						aria-label="待确认事项"
-						@click="openPendingPalette"
+						@click="openFilteredPalette('awaiting_approval')"
 					>
 						<Bell aria-hidden="true" />
 						<span v-if="approvalCount" class="notification-dot">{{ approvalCount }}</span>
@@ -348,26 +399,29 @@ onMounted(async () => {
 									<circle cx="181" cy="84" r="3" />
 									<circle cx="149" cy="137" r="3" />
 								</g>
-								<polyline class="project-line" points="214,142 254,116 290,124 326,84 360,98 400,52" />
-								<g class="project-points">
-									<circle cx="214" cy="142" r="5" />
-									<circle cx="254" cy="116" r="5" />
-									<circle cx="290" cy="124" r="5" />
-									<circle cx="326" cy="84" r="5" />
-									<circle cx="360" cy="98" r="5" />
-									<circle cx="400" cy="52" r="5" />
-								</g>
+								
 							</svg>
 						</div>
 
-						<div class="workflow-line">
+						<div
+							v-if="displayResumeNodes.length"
+							class="workflow-line"
+							aria-label="工作流节点状态"
+						>
 							<div
-								v-for="step in workflowSteps"
-								class="workflow-step"
+								v-for="node in displayResumeNodes"
+								:key="node.node_id"
+								class="workflow-chip"
+								:data-state="node.status"
+								:title="nodeStateLabel(node.status)"
 							>
-								<span class="workflow-icon"><component :is="step.icon" aria-hidden="true" /></span>
-								<strong>{{ step.label }}</strong>
-															</div>
+								<span class="workflow-dot" aria-hidden="true" />
+								<strong>{{ node.label }}</strong>
+								<small>{{ nodeStateLabel(node.status) }}</small>
+							</div>
+							<span v-if="resumeOverflow" class="workflow-overflow mono-data">
+								+{{ resumeOverflow }}
+							</span>
 						</div>
 
 						<RouterLink
@@ -375,21 +429,21 @@ onMounted(async () => {
 							:to="`/project/${recentTask.task_id}/overview`"
 							class="continue-action"
 						>
-							<span>继续建模</span>
+							<span>{{ continueActionLabel }}</span>
 							<ChevronRight aria-hidden="true" />
 						</RouterLink>
 						<button v-else type="button" class="continue-action" @click="createProjectOpen = true">
-							<span>开始建模</span>
+							<span>{{ continueActionLabel }}</span>
 							<ChevronRight aria-hidden="true" />
 						</button>
 					</article>
 
 					<div class="quick-actions" aria-label="快捷操作">
-						<button type="button" class="quick-orb liquid-surface" @click="createProjectOpen = true">
+						<button type="button" class="quick-orb liquid-surface" aria-label="新建项目" @click="createProjectOpen = true">
 							<Plus aria-hidden="true" />
 							<span>新建项目</span>
 						</button>
-						<button type="button" class="quick-orb liquid-surface" @click="commandPaletteOpen = true">
+						<button type="button" class="quick-orb liquid-surface" aria-label="打开全局命令" @click="commandPaletteOpen = true">
 							<Command aria-hidden="true" />
 							<span>全局命令</span>
 						</button>
@@ -417,7 +471,7 @@ onMounted(async () => {
 							<CheckCircle2 aria-hidden="true" />
 							<strong>暂无待确认</strong>
 						</div>
-						<button type="button" class="review-more" @click="openPendingPalette">
+						<button type="button" class="review-more" @click="openFilteredPalette('awaiting_approval')">
 							<span>查看全部</span>
 							<ChevronRight aria-hidden="true" />
 						</button>
@@ -451,8 +505,11 @@ onMounted(async () => {
 							<div><span>已暂停</span><strong class="mono-data">{{ stoppedCount }}</strong></div>
 							<div><span>历史项目</span><strong class="mono-data">{{ taskStore.taskHistory.length }}</strong></div>
 						</div>
-						<button type="button" @click="settingsOpen = true">
-							<span>模型连接</span>
+						<button
+							type="button"
+							@click="failedCount ? openFilteredPalette('failed') : (settingsOpen = true)"
+						>
+							<span>{{ failedCount ? "查看需处理" : "模型连接" }}</span>
 							<ChevronRight aria-hidden="true" />
 						</button>
 					</article>
@@ -460,7 +517,7 @@ onMounted(async () => {
 					<article class="agent-card solid-card">
 						<header>
 							<h2>Agent 协作链</h2>
-							<span>{{ recentTask ? "已连接" : "待命" }}</span>
+							<span>{{ recentTask ? statusConfig[recentTask.status].label : "待命" }}</span>
 						</header>
 						<div class="agent-layout">
 							<ul>
@@ -538,7 +595,7 @@ onMounted(async () => {
 		<ApiDialog v-model:open="settingsOpen" />
 		<GlobalCommandPalette
 			v-model="commandPaletteOpen"
-			:pending-only="commandPalettePendingOnly"
+			:status-filter="commandPaletteStatusFilter"
 			:tasks="taskStore.taskHistory"
 			@new-project="createProjectOpen = true"
 			@settings="settingsOpen = true"
@@ -602,11 +659,11 @@ onMounted(async () => {
 	--graphite: #121513;
 	--graphite-soft: #1b201d;
 	--bone: #f4f3ec;
-	--sage: #8f998d;
 	--home-canvas: #f4f3ec;
 	--page-cut: #f4f3ec;
 	--home-ink: #111310;
 	--home-muted: #575c55;
+	--panel-muted: #575c55;
 	--panel: rgb(255 255 255 / 0.84);
 	--panel-border: rgb(20 24 20 / 0.1);
 	--desktop-content-max: 1440px;
@@ -804,7 +861,7 @@ a {
 
 .sidebar-profile small {
 	margin-top: 2px;
-	color: rgb(255 255 255 / 0.48);
+	color: rgb(255 255 255 / 0.66);
 	font-size: 11px;
 }
 
@@ -913,20 +970,6 @@ a {
 	font-size: clamp(19px, 1.8vw, 29px);
 	font-weight: 760;
 	letter-spacing: -0.02em;
-}
-
-.page-heading > span {
-	border: 1px solid rgb(154 179 0 / 0.64);
-	border-radius: 9px;
-	color: #879e00;
-	padding: 4px 7px;
-	font-family: ui-monospace, monospace;
-	font-size: 12px;
-	font-weight: 700;
-}
-
-:global(.dark .page-heading > span) {
-	color: var(--acid);
 }
 
 .nav-search {
@@ -1178,28 +1221,17 @@ a {
 	opacity: 0.5;
 }
 
-.project-line {
-	fill: none;
-	stroke: var(--acid);
-	stroke-width: 2.2;
-}
-
-.project-points circle {
-	fill: var(--acid);
-	stroke: #111;
-	stroke-width: 2;
-}
-
 .workflow-line {
 	position: relative;
 	z-index: 2;
-	display: grid;
+	display: flex;
 	grid-column: 1 / -1;
-	grid-template-columns: repeat(4, minmax(0, 1fr));
-	gap: 12px;
+	gap: 8px;
+	margin-top: 24px;
+	overflow-x: auto;
 	border: 1px solid rgb(255 255 255 / 0.11);
 	border-radius: 22px;
-	padding: 15px 18px;
+	padding: 13px 16px;
 }
 
 :global(.dark .workflow-line) {
@@ -1207,45 +1239,86 @@ a {
 	background: rgb(255 255 255 / 0.18);
 }
 
-.workflow-step {
-	position: relative;
-	display: grid;
-	grid-template-columns: 42px minmax(0, 1fr);
-	grid-template-rows: auto auto;
-	column-gap: 10px;
+.workflow-chip {
+	display: inline-flex;
+	flex: none;
 	align-items: center;
-}
-
-.workflow-step:not(:last-child)::after {
-	position: absolute;
-	right: -3px;
-	top: 20px;
-	width: 20%;
-	height: 1px;
-	background: currentColor;
-	content: "";
-	opacity: 0.22;
-}
-
-.workflow-icon {
-	display: grid;
-	grid-row: 1 / 3;
-	width: 42px;
-	height: 42px;
-	place-items: center;
-	border: 1px solid currentColor;
-	border-radius: 50%;
-	opacity: 0.8;
-}
-
-.workflow-icon svg {
-	width: 20px;
-	height: 20px;
-}
-
-.workflow-step strong {
+	gap: 8px;
+	border: 1px solid rgb(255 255 255 / 0.16);
+	border-radius: 999px;
+	color: inherit;
+	padding: 7px 12px;
 	font-size: 12px;
-	font-weight: 680;
+}
+
+.workflow-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: currentColor;
+	opacity: 0.4;
+}
+
+.workflow-chip[data-state="completed"] .workflow-dot {
+	background: var(--acid);
+	opacity: 1;
+}
+
+.workflow-chip[data-state="interrupted"] {
+	border-color: rgb(240 162 148 / 0.55);
+}
+
+.workflow-chip[data-state="interrupted"] .workflow-dot {
+	background: #f0a294;
+	opacity: 1;
+}
+
+.workflow-chip small {
+	color: rgb(244 245 239 / 0.72);
+	font-size: 11px;
+}
+
+:global(.dark .workflow-chip) {
+	border-color: rgb(20 24 20 / 0.14);
+}
+
+:global(.dark .workflow-chip[data-state="interrupted"]) {
+	border-color: rgb(179 64 47 / 0.5);
+}
+
+:global(.dark .workflow-chip[data-state="interrupted"]) .workflow-dot {
+	background: #b3402f;
+}
+
+:global(.dark .workflow-chip small) {
+	color: rgb(21 24 21 / 0.72);
+}
+
+.workflow-overflow {
+	flex: none;
+	align-self: center;
+	color: rgb(244 245 239 / 0.72);
+	font-size: 12px;
+}
+
+:global(.dark .workflow-overflow) {
+	color: rgb(21 24 21 / 0.72);
+}
+
+/* 焦点环随表面反转：浅色主题的 hero 是深面、暗色主题的卡面是浅面，
+   固定环色总有一侧低于 3:1。 */
+.current-project-card :focus-visible {
+	outline-color: #ecebe5;
+}
+
+:global(.dark .current-project-card :focus-visible),
+:global(.dark .solid-card :focus-visible),
+:global(.dark .review-card :focus-visible) {
+	outline-color: #161916;
+}
+
+.agent-card :focus-visible {
+	outline-color: #ecebe5;
 }
 
 .continue-action {
@@ -1537,22 +1610,6 @@ a {
 	font-weight: 700;
 }
 
-.overview-card svg {
-	width: 100%;
-	height: 70px;
-	margin-top: 8px;
-	overflow: visible;
-}
-
-.overview-card polyline {
-	fill: none;
-	stroke: #b1cc00;
-	stroke-linecap: round;
-	stroke-linejoin: round;
-	stroke-width: 2.4;
-	filter: drop-shadow(0 5px 8px rgb(174 202 0 / 0.2));
-}
-
 .overview-card dl {
 	display: grid;
 	grid-template-columns: repeat(3, 1fr);
@@ -1832,7 +1889,7 @@ a {
 
 .recent-hint {
 	margin: 0 0 10px;
-	color: var(--home-muted);
+	color: var(--panel-muted);
 	font-size: 11px;
 }
 
@@ -1853,7 +1910,7 @@ a {
 }
 
 .recent-error span {
-	color: var(--home-muted);
+	color: var(--panel-muted);
 	font-size: 12px;
 }
 
@@ -1873,7 +1930,7 @@ a {
 
 .recent-project-card footer {
 	display: grid;
-	grid-template-columns: auto 1fr 14px;
+	grid-template-columns: 1fr auto;
 	align-items: center;
 	gap: 6px;
 	margin-top: 12px;
@@ -1882,6 +1939,7 @@ a {
 }
 
 .recent-project-card footer small {
+	font-size: 11px;
 	text-align: right;
 }
 
@@ -2067,9 +2125,7 @@ a {
 
 @media (max-width: 680px) {
 	.create-button span,
-	.nav-actions > .icon-button,
-	.workflow-step small,
-	.workflow-step::after {
+	.nav-actions > .icon-button:nth-of-type(2) {
 		display: none;
 	}
 
@@ -2104,20 +2160,6 @@ a {
 
 	.continue-action:hover {
 		transform: translateX(3px);
-	}
-
-	.workflow-line {
-		grid-template-columns: repeat(2, 1fr);
-		padding: 12px;
-	}
-
-	.workflow-step {
-		grid-template-columns: 36px 1fr;
-	}
-
-	.workflow-icon {
-		width: 36px;
-		height: 36px;
 	}
 
 	.insight-grid {
