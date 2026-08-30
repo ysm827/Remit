@@ -95,7 +95,6 @@ onMounted(loadFiles);
   <div class="flex h-full min-h-0 flex-col">
     <header class="flex shrink-0 flex-wrap items-end justify-between gap-3 border-b bg-card px-5 py-4">
       <div>
-        <p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">数据处理</p>
         <h2 class="mt-1 text-lg font-semibold tracking-tight">项目数据集</h2>
         <p class="mt-1 text-xs text-muted-foreground">真实文件来自当前任务工作区；未生成字段画像时保持空状态，不伪造统计量。</p>
       </div>

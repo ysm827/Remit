@@ -231,7 +231,7 @@ function vetoFeedback(candidate: {
                         v-for="field in analysisFields"
                         :key="field.key"
                         class="bg-white px-3 py-2"
-                        :class="field.key === 'data_evidence' ? 'border-l-2 border-l-primary/50 sm:col-span-2' : ''"
+                        :class="field.key === 'data_evidence' ? 'sm:col-span-2' : ''"
                       >
                         <dt class="text-[9px] font-semibold uppercase tracking-wide text-slate-400">{{ field.label }}</dt>
                         <dd class="mt-1">

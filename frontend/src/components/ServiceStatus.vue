@@ -96,10 +96,7 @@ async function pollServices(): Promise<void> {
 			backend: { status: "unknown", message: "Waiting for retry..." },
 			redis: { status: "unknown", message: "Waiting for retry..." },
 		};
-		if (
-			consecutiveFailures >= FAILURES_BEFORE_ALERT &&
-			!outageAlertShown
-		) {
+		if (consecutiveFailures >= FAILURES_BEFORE_ALERT && !outageAlertShown) {
 			outageAlertShown = true;
 			toast({
 				title: "本地服务暂时不可达",

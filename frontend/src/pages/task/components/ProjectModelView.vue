@@ -59,7 +59,6 @@ const rawFallback = computed(() =>
     <header class="shrink-0 border-b bg-card px-5 py-4 lg:px-6">
       <div class="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p class="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Model blueprint</p>
           <h1 id="model-view-title" class="mt-1 text-lg font-semibold tracking-tight">模型设计与决策记录</h1>
           <p class="mt-1 text-xs text-muted-foreground">从建模手方案到代码验证结果，集中记录选择、替换与局限。</p>
         </div>

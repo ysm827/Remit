@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ThemeToggle from "@/components/ThemeToggle.vue";
 import { Button } from "@/components/ui/button";
 import FilesSheet from "@/pages/task/components/FileSheet.vue";
 import type { ProjectStage, StageKey } from "@/pages/task/projectWorkspace";
@@ -118,6 +119,7 @@ const statusLabel = {
         </Button>
 
         <FilesSheet :task-id="props.taskId" />
+        <ThemeToggle />
         <Button type="button" variant="ghost" size="icon" class="h-8 w-8 text-muted-foreground" title="下载消息" aria-label="下载消息" @click="$emit('download')">
           <Download class="h-4 w-4" aria-hidden="true" />
         </Button>
