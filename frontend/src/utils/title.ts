@@ -1,8 +1,8 @@
-/** 匹配行首 Markdown 记号：标题井号、引用符，以及紧跟的列表符。 */
-const LEADING_MARKDOWN_PATTERN = /^\s*(?:[#>]+\s*)+(?:[-*+]\s+)?/;
+/** 匹配行首 Markdown 块标记；要求标记后有空白，避免误伤 #1 等正文。 */
+const LEADING_MARKDOWN_PATTERN = /^\s*(?:(?:#{1,6}|>+)\s+)+(?:[-*+]\s+)?/;
 
-/** 匹配正文残留的行内 Markdown 记号：反引号与加粗、斜体星号。 */
-const INLINE_MARKDOWN_PATTERN = /[`*_]/g;
+/** 只移除成对的行内代码反引号，保留公式、文件名中的 * 与 _。 */
+const INLINE_CODE_PATTERN = /`([^`\n]+)`/g;
 
 /**
  * 把后端返回的原始 Markdown 题面清洗成单行可读标题。
@@ -20,7 +20,7 @@ export function displayTitle(
 ): string {
 	const text = (raw ?? "")
 		.replace(LEADING_MARKDOWN_PATTERN, "")
-		.replace(INLINE_MARKDOWN_PATTERN, "")
+		.replace(INLINE_CODE_PATTERN, "$1")
 		.replace(/\s+/g, " ")
 		.trim();
 	if (!text) return "";

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -30,6 +31,46 @@ class MatlabInterpreterTests(unittest.IsolatedAsyncioTestCase):
         description = tools[0]["function"]["description"]
         self.assertIn("MATLAB syntax only", description)
         self.assertIn("Do not send Python code", description)
+
+    def test_macos_engine_architecture_matches_python_process(self) -> None:
+        with (
+            patch("app.tools.matlab_interpreter.os.name", "posix"),
+            patch("app.tools.matlab_interpreter.sys.platform", "darwin"),
+            patch(
+                "app.tools.matlab_interpreter.platform.machine", return_value="arm64"
+            ),
+        ):
+            self.assertEqual(
+                MatlabCodeInterpreter._candidate_engine_architectures(),
+                ["maca64"],
+            )
+
+        with (
+            patch("app.tools.matlab_interpreter.os.name", "posix"),
+            patch("app.tools.matlab_interpreter.sys.platform", "darwin"),
+            patch(
+                "app.tools.matlab_interpreter.platform.machine", return_value="x86_64"
+            ),
+        ):
+            self.assertEqual(
+                MatlabCodeInterpreter._candidate_engine_architectures(),
+                ["maci64"],
+            )
+
+    def test_runtime_library_paths_are_prepended_without_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "bin"
+            second = Path(tmp) / "sys"
+            first.mkdir()
+            second.mkdir()
+            with patch.dict(os.environ, {"DYLD_LIBRARY_PATH": str(second)}):
+                MatlabCodeInterpreter._prepend_environment_paths(
+                    "DYLD_LIBRARY_PATH", [first, second]
+                )
+                self.assertEqual(
+                    os.environ["DYLD_LIBRARY_PATH"].split(os.pathsep),
+                    [str(first), str(second)],
+                )
 
     async def test_factory_uses_python_only_after_matlab_probe_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

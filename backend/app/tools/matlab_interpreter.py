@@ -148,7 +148,8 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
         self._write_metadata()
         logger.info(f"MATLAB 常驻计算后端可用: {self.executable} ({self.version})")
 
-    def _candidate_engine_architectures(self) -> list[str]:
+    @staticmethod
+    def _candidate_engine_architectures() -> list[str]:
         """按本机平台给出 Engine 二进制目录的候选名，原生架构优先。
 
         Intel Mac 目录名为 ``maci64``，Apple Silicon（R2023b 起）为
@@ -157,17 +158,29 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
         if os.name == "nt":
             return ["win64"]
         if sys.platform == "darwin":
-            return (
-                ["maca64", "maci64"]
-                if platform.machine() == "arm64"
-                else ["maci64", "maca64"]
-            )
+            # Python 扩展必须与当前解释器同架构；原生 arm64 进程无法加载
+            # maci64，Intel/Rosetta 进程也无法加载 maca64。
+            return ["maca64"] if platform.machine() == "arm64" else ["maci64"]
         return ["glnxa64"]
 
     @staticmethod
-    def _engine_paths_for_arch(
-        root: Path, arch: str
-    ) -> tuple[Path, Path, Path, Path]:
+    def _runtime_library_variable() -> str | None:
+        """返回当前平台供动态链接器查找 MATLAB 共享库的环境变量。"""
+        if sys.platform == "darwin":
+            return "DYLD_LIBRARY_PATH"
+        if os.name != "nt":
+            return "LD_LIBRARY_PATH"
+        return None
+
+    @staticmethod
+    def _prepend_environment_paths(name: str, paths: list[Path]) -> None:
+        """把存在的目录去重后前置到指定的路径型环境变量。"""
+        existing = [item for item in os.environ.get(name, "").split(os.pathsep) if item]
+        prefixes = [str(path) for path in paths if path.is_dir()]
+        os.environ[name] = os.pathsep.join(list(dict.fromkeys([*prefixes, *existing])))
+
+    @staticmethod
+    def _engine_paths_for_arch(root: Path, arch: str) -> tuple[Path, Path, Path, Path]:
         """返回该架构下 Engine 加载所需的四个目录。"""
         engine_dist = root / "extern" / "engines" / "python" / "dist"
         engine_bin = engine_dist / "matlab" / "engine" / arch
@@ -189,21 +202,29 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
                 break
             if missing_report is None:
                 missing_report = missing
-        if arch is None or engine_bin is None or extern_bin is None or runtime_bin is None:
+        if (
+            arch is None
+            or engine_bin is None
+            or extern_bin is None
+            or runtime_bin is None
+        ):
             raise MatlabUnavailableError(
                 "MATLAB Engine 组件不完整，缺少: " + ", ".join(missing_report or [])
             )
 
         engine_dist = root / "extern" / "engines" / "python" / "dist"
+        system_bin = root / "sys" / "os" / arch
         os.environ["MWE_INSTALL"] = str(root)
         for path in (engine_dist, engine_bin, extern_bin):
             path_text = str(path)
             if path_text not in sys.path:
                 sys.path.insert(0, path_text)
 
-        path_prefixes = [str(runtime_bin), str(extern_bin), str(engine_bin)]
-        current_path = os.environ.get("PATH", "")
-        os.environ["PATH"] = os.pathsep.join(path_prefixes + [current_path])
+        runtime_paths = [runtime_bin, extern_bin, engine_bin, system_bin]
+        self._prepend_environment_paths("PATH", runtime_paths)
+        library_variable = self._runtime_library_variable()
+        if library_variable:
+            self._prepend_environment_paths(library_variable, runtime_paths)
         if hasattr(os, "add_dll_directory"):
             for path in (runtime_bin, extern_bin, engine_bin):
                 self._dll_handles.append(os.add_dll_directory(str(path)))

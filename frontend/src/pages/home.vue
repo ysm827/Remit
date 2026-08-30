@@ -1442,7 +1442,9 @@ a {
 	display: grid;
 	gap: 10px;
 	margin-top: 18px;
-}.review-row {
+}
+
+.review-row {
 	display: grid;
 	min-height: 72px;
 	grid-template-columns: 42px minmax(0, 1fr) auto 15px;

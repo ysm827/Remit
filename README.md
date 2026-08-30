@@ -75,12 +75,12 @@ Remit 把题面理解、数据检查、文献研究、模型选择、代码执�
 
 ## 运行要求
 
-- Windows 10/11（桌面启动器）、macOS 12+（脚本启动）或支持 Docker Compose 的系统；
+- Windows 10/11（桌面启动器）、macOS 12+/Linux（脚本启动）或支持 Docker Compose 的系统；
 - Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)；
 - Node.js 20+ 与 pnpm 10；
 - 完整工作流需要 Redis。Windows 源码模式可使用仓库内置的 Redis 运行文件；
-  macOS 通过 `brew install redis` 安装，启动脚本会在 16379 端口拉起一个
-  Remit 专属的 Redis 实例，不影响系统已有 Redis。
+  macOS 通过 `brew install redis` 安装，Linux 使用发行版的软件包管理器；
+  启动脚本会在 16379 端口拉起一个 Remit 专属实例，且不会接管外部 Redis。
 
 模型调用会产生第三方 API 费用。部分工作流会执行模型生成的代码，请仅在可信本机环境
 运行并检查输入数据。
@@ -108,7 +108,7 @@ cd ..
 访问 <http://127.0.0.1:15173>。后端 API 文档位于
 <http://127.0.0.1:18000/docs>。运行 `win_stop.bat` 停止服务。
 
-### macOS 源码模式
+### macOS / Linux 源码模式
 
 ```bash
 git clone https://github.com/zhou2030109-glitch/Remit.git
@@ -123,14 +123,15 @@ cd ../frontend
 pnpm install --frozen-lockfile
 
 cd ..
-./mac_start.command        # 或者: bash tools/start_services.sh
+bash tools/start_services.sh
 ```
 
 访问 <http://127.0.0.1:15173>。后端 API 文档位于
-<http://127.0.0.1:18000/docs>。运行 `bash tools/stop_services.sh`（或双击
-`mac_stop.command`）停止服务。首次运行前需要 `brew install redis`；启动脚本
-会自动生成缺失的 `backend/.env.dev`，并在 16379 端口运行 Remit 专属的 Redis
-实例。`tools/start_services.sh --check` 可以随时校验启动依赖。
+<http://127.0.0.1:18000/docs>。运行 `bash tools/stop_services.sh` 停止服务。
+macOS 也可双击 `mac_start.command` / `mac_stop.command`。首次运行前请安装 Redis
+（macOS：`brew install redis`；Linux：使用发行版的软件包管理器）和 `lsof`。
+启动脚本会自动生成缺失的 `backend/.env.dev`；
+`tools/start_services.sh --check` 可以随时校验启动依赖。
 
 ### Docker Compose
 

@@ -71,6 +71,9 @@ REDIS_BIN="$(find_redis_executable || true)"
 PNPM_BIN="$(command -v pnpm 2>/dev/null || true)"
 
 assert_dependencies() {
+	if ! command -v lsof >/dev/null 2>&1; then
+		die "未找到 lsof。macOS 请安装 Xcode Command Line Tools；Linux 请安装 lsof。"
+	fi
 	if [ -z "$REDIS_BIN" ]; then
 		die "未找到可用的 redis-server。请先安装 Redis: brew install redis（或把可执行文件放到 tools/redis/redis-server）"
 	fi
@@ -103,56 +106,36 @@ pid_ppid() {
 	ps -p "$1" -o ppid= 2>/dev/null | tr -d '[:space:]'
 }
 
-# 进程工作目录（lsof -Fn 输出形如 n/Users/.../Remit/frontend）。
-pid_cwd() {
-	lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
-}
-
-# 命令行或工作目录落在仓库内即视为项目进程，用于端口归属判定。
-# pnpm 等包装进程的命令行指向全局安装位置，只能靠 cwd 识别。
-is_project_process() {
-	local pid="$1" depth=0 cmd parent cwd
-	while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ] && [ "$depth" -lt 8 ]; do
-		cmd="$(pid_command "$pid")"
-		[ -n "$cmd" ] || return 1
-		case "$cmd" in
-		*"$ROOT"*) return 0 ;;
-		esac
-		cwd="$(pid_cwd "$pid")"
-		case "$cwd" in
-		"$ROOT" | "$ROOT"/*) return 0 ;;
-		esac
+# 判断监听进程是否属于启动器记录的服务进程树。仅凭命令名、端口或 cwd
+# 都可能误认用户自行启动的服务，因此必须以 logs/<name>.pid 为归属锚点。
+listener_belongs_to_service() {
+	local name="$1" pid="$2" owner parent depth=0
+	[ -f "$LOG_DIR/$name.pid" ] || return 1
+	owner="$(tr -d '[:space:]' <"$LOG_DIR/$name.pid")"
+	[ -n "$owner" ] && [ -n "$(pid_command "$owner")" ] || return 1
+	while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ] && [ "$depth" -lt 16 ]; do
+		[ "$pid" = "$owner" ] && return 0
 		parent="$(pid_ppid "$pid")"
-		if [ -z "$parent" ] || [ "$parent" = "$pid" ]; then
-			return 1
-		fi
+		[ -n "$parent" ] && [ "$parent" != "$pid" ] || return 1
 		pid="$parent"
 		depth=$((depth + 1))
 	done
 	return 1
 }
 
-# 启动器自己拉起的 redis（HOME 装在 PATH 下，命令行不含仓库路径）也算项目所有。
-is_redis_process() {
-	pid_command "$1" | grep -q "redis-server"
-}
-
 # $1=名称 $2=端口 $3=工作目录 其余为启动命令；端口被本项目进程占用时直接复用。
 start_service() {
 	local name="$1" port="$2" workdir="$3"
 	shift 3
-	local pids pid owned=0 redis_ok=0
+	local pids pid owned=0
 	pids="$(port_pids "$port" || true)"
 	if [ -n "$pids" ]; then
 		for pid in $pids; do
-			if is_project_process "$pid"; then
+			if listener_belongs_to_service "$name" "$pid"; then
 				owned=1
 			fi
-			if [ "$name" = "redis" ] && is_redis_process "$pid"; then
-				redis_ok=1
-			fi
 		done
-		if [ "$owned" = "1" ] || [ "$redis_ok" = "1" ]; then
+		if [ "$owned" = "1" ]; then
 			echo "[OK] $name is already listening on port $port."
 			return 0
 		fi
@@ -169,11 +152,29 @@ start_service() {
 }
 
 wait_for_port() {
-	local name="$1" port="$2" timeout="$3" waited=0
+	local name="$1" port="$2" timeout="$3" waited=0 pid="" pids="" owned=0
 	while [ "$waited" -lt "$timeout" ]; do
-		if [ -n "$(port_pids "$port")" ]; then
-			echo "[READY] $name is accepting connections on port $port."
-			return 0
+		pids="$(port_pids "$port" || true)"
+		if [ -n "$pids" ]; then
+			owned=0
+			for pid in $pids; do
+				if listener_belongs_to_service "$name" "$pid"; then
+					owned=1
+				fi
+			done
+			if [ "$owned" = "1" ]; then
+				echo "[READY] $name is accepting connections on port $port."
+				return 0
+			fi
+			echo "[ERROR] Port $port was claimed by another application while $name was starting." >&2
+			return 1
+		fi
+		if [ -f "$LOG_DIR/$name.pid" ]; then
+			pid="$(tr -d '[:space:]' <"$LOG_DIR/$name.pid")"
+			if [ -n "$pid" ] && ! ps -p "$pid" >/dev/null 2>&1; then
+				echo "[ERROR] $name exited before opening port $port; see logs/$name.err.log" >&2
+				return 1
+			fi
 		fi
 		sleep 1
 		waited=$((waited + 1))
@@ -204,16 +205,22 @@ echo "=============================================="
 
 start_service redis "$REDIS_PORT" "$ROOT" \
 	"$REDIS_BIN" --port "$REDIS_PORT" --bind 127.0.0.1 ::1 --dir "$LOG_DIR/redis-data"
-wait_for_port redis "$REDIS_PORT" 30
+if ! wait_for_port redis "$REDIS_PORT" 30; then
+	die "Redis 启动失败。可执行 bash tools/stop_services.sh 清理已启动的服务。"
+fi
 
 start_service backend "$BACKEND_PORT" "$BACKEND_DIR" \
 	"$BACKEND_PYTHON" -m uvicorn app.main:app --host 127.0.0.1 --port "$BACKEND_PORT" \
 	--ws-ping-interval 60 --ws-ping-timeout 120
-wait_for_port backend "$BACKEND_PORT" 90
+if ! wait_for_port backend "$BACKEND_PORT" 90; then
+	die "后端启动失败。可执行 bash tools/stop_services.sh 清理已启动的服务。"
+fi
 
 start_service frontend "$FRONTEND_PORT" "$FRONTEND_DIR" \
 	"$PNPM_BIN" run dev --host 127.0.0.1 --port "$FRONTEND_PORT" --strictPort
-wait_for_port frontend "$FRONTEND_PORT" 60
+if ! wait_for_port frontend "$FRONTEND_PORT" 60; then
+	die "前端启动失败。可执行 bash tools/stop_services.sh 清理已启动的服务。"
+fi
 
 echo ""
 echo "Frontend: http://localhost:$FRONTEND_PORT"

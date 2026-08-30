@@ -12,6 +12,11 @@ REDIS_PORT=16379
 BACKEND_PORT=18000
 FRONTEND_PORT=15173
 
+if ! command -v lsof >/dev/null 2>&1; then
+	echo "[ERROR] 未找到 lsof，无法安全判断端口进程归属。" >&2
+	exit 1
+fi
+
 # macOS 自带 BSD tail 用 -r 反转行序，GNU coreutils 环境回退到 tac。
 if tail -r </dev/null >/dev/null 2>&1; then
 	REVERSER="tail -r"
@@ -27,10 +32,6 @@ pid_command() {
 	ps -p "$1" -o command= 2>/dev/null | head -n 1
 }
 
-pid_ppid() {
-	ps -p "$1" -o ppid= 2>/dev/null | tr -d '[:space:]'
-}
-
 pid_alive() {
 	ps -p "$1" >/dev/null 2>&1
 }
@@ -40,32 +41,26 @@ pid_cwd() {
 	lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1
 }
 
-# 命令行或工作目录落在仓库内即视为项目进程。pnpm 等包装进程的命令行
-# 指向全局安装位置（如 /usr/local/bin/pnpm），只能靠 cwd 识别。
-is_project_process() {
-	local pid="$1" depth=0 cmd parent cwd
-	while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ] && [ "$depth" -lt 8 ]; do
-		cmd="$(pid_command "$pid")"
-		[ -n "$cmd" ] || return 1
-		case "$cmd" in
-		*"$ROOT"*) return 0 ;;
-		esac
-		cwd="$(pid_cwd "$pid")"
-		case "$cwd" in
-		"$ROOT" | "$ROOT"/*) return 0 ;;
-		esac
-		parent="$(pid_ppid "$pid")"
-		if [ -z "$parent" ] || [ "$parent" = "$pid" ]; then
-			return 1
-		fi
-		pid="$parent"
-		depth=$((depth + 1))
-	done
-	return 1
-}
-
-is_redis_process() {
-	pid_command "$1" | grep -q "redis-server"
+is_recorded_service_process() {
+	local service="$1" pid="$2" cwd cmd expected_cwd
+	cwd="$(pid_cwd "$pid")"
+	cmd="$(pid_command "$pid")"
+	case "$service" in
+	redis)
+		expected_cwd="$ROOT"
+		case "$cmd" in *redis-server*) ;; *) return 1 ;; esac
+		;;
+	backend)
+		expected_cwd="$ROOT/backend"
+		case "$cmd" in *uvicorn*app.main:app*) ;; *) return 1 ;; esac
+		;;
+	frontend)
+		expected_cwd="$ROOT/frontend"
+		case "$cmd" in *pnpm*run*dev* | *vite*15173*) ;; *) return 1 ;; esac
+		;;
+	*) return 1 ;;
+	esac
+	[ "$cwd" = "$expected_cwd" ]
 }
 
 # 输出该 PID 及其全部后代（父在前），供自底向上终止。
@@ -97,24 +92,6 @@ kill_tree() {
 	echo "[STOPPED] $name (PID $pid)"
 }
 
-# 沿父链找到最上层属于本项目的祖先，从那里整棵终止，避免遗留包装进程。
-topmost_project_ancestor() {
-	local pid="$1" parent cmd
-	while :; do
-		parent="$(pid_ppid "$pid")"
-		if [ -z "$parent" ] || [ "$parent" = "0" ] || [ "$parent" = "1" ] || [ "$parent" = "$pid" ]; then
-			break
-		fi
-		cmd="$(pid_command "$parent")"
-		[ -n "$cmd" ] || break
-		case "$cmd" in
-		*"$ROOT"*) pid="$parent" ;;
-		*) break ;;
-		esac
-	done
-	echo "$pid"
-}
-
 service_port() {
 	case "$1" in
 	frontend) echo "$FRONTEND_PORT" ;;
@@ -122,6 +99,8 @@ service_port() {
 	redis) echo "$REDIS_PORT" ;;
 	esac
 }
+
+overall_status=0
 
 for service in frontend backend redis; do
 	port="$(service_port "$service")"
@@ -137,10 +116,7 @@ for service in frontend backend redis; do
 		# PID 可能已被系统回收复用：确认仍属于本项目才按 PID 终止；
 		# 无法确认时继续落到按端口发现，避免误杀也避免漏杀。
 		cmd="$(pid_command "$pid")"
-		if [ "$service" = "redis" ] && is_redis_process "$pid"; then
-			kill_tree "$pid" "$service"
-			continue
-		elif [ -n "$cmd" ] && is_project_process "$pid"; then
+		if [ -n "$cmd" ] && is_recorded_service_process "$service" "$pid"; then
 			kill_tree "$pid" "$service"
 			continue
 		fi
@@ -152,21 +128,10 @@ for service in frontend backend redis; do
 		continue
 	fi
 
-	stopped=0
-	foreign=0
-	for pid in $pids; do
-		if [ "$service" = "redis" ] && is_redis_process "$pid"; then
-			:
-		elif ! is_project_process "$pid"; then
-			foreign=1
-			continue
-		fi
-		top="$(topmost_project_ancestor "$pid")"
-		kill_tree "$top" "$service"
-		stopped=1
-	done
-
-	if [ "$stopped" = "0" ]; then
-		echo "[WARN] $service uses port $port, but it was not started from this project; leaving it running."
-	fi
+	# 没有可信 PID 记录时绝不按端口或 cwd 猜测归属。宁可提示用户手动
+	# 处理残留，也不能误停恰好使用同一端口、命令或目录的外部进程。
+	echo "[WARN] $service uses port $port, but it was not started from this project; leaving it running."
+	overall_status=1
 done
+
+exit "$overall_status"
