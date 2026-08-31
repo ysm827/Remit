@@ -126,8 +126,10 @@ onUnmounted(() => {
       :key="name"
       class="flex items-center gap-1 px-2 py-1 rounded-md text-xs"
       :class="CONTAINER_CLASSES[health.status]"
+      :title="health.message"
+      :aria-label="`${name}：${health.status}。${health.message}`"
     >
-      <div class="w-2 h-2 rounded-full" :class="DOT_CLASSES[health.status]"></div>
+	  <div class="w-2 h-2 rounded-full" :class="DOT_CLASSES[health.status]" aria-hidden="true"></div>
       <span class="capitalize">{{ name }}</span>
     </div>
   </div>

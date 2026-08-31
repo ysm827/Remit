@@ -6,6 +6,7 @@ import HumanApprovalCard from "@/pages/task/components/HumanApprovalCard.vue";
 import { useTaskStore } from "@/stores/task";
 import { AgentType } from "@/utils/enum";
 import type { Message } from "@/utils/response";
+import { plainTextPreview } from "@/utils/title";
 import {
 	Bot,
 	CheckCircle2,
@@ -118,11 +119,7 @@ function normalizedContent(message: Message) {
 }
 
 function previewContent(message: Message) {
-	const content = normalizedContent(message)
-		// 预览是纯文本视图：剥掉行首记号与行内标记，避免裸 Markdown 直接露出来。
-		.replace(/^[ \t]*(?:[#>]+\s*)+(?:[-*+]\s+)?/gm, "")
-		.replace(/[`*]/g, "")
-		.replace(/\n{3,}/g, "\n\n");
+	const content = plainTextPreview(normalizedContent(message));
 	return content.length > 280 ? `${content.slice(0, 280).trimEnd()}…` : content;
 }
 

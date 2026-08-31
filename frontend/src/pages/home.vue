@@ -110,8 +110,8 @@ const stoppedCount = computed(
 		taskStore.taskHistory.filter((task) => task.status === "stopped").length,
 );
 const heroTitle = computed(() => {
-	if (recentTask.value) return displayTitle(recentTask.value.title);
 	if (taskStore.taskHistoryLoadError) return "暂时读不到项目";
+	if (recentTask.value) return displayTitle(recentTask.value.title);
 	if (isLoading.value) return "正在载入项目…";
 	return "创建第一个建模项目";
 });
@@ -128,7 +128,7 @@ watch(commandPaletteOpen, (open) => {
 });
 
 async function retryLoadHistory(): Promise<void> {
-	await taskStore.loadTaskHistory();
+	await refreshActiveTaskStatus();
 }
 
 function statsOrDash(value: number): string | number {
@@ -180,6 +180,10 @@ onMounted(() => {
 	void loadAgentReadiness();
 });
 
+watch(settingsOpen, (open, wasOpen) => {
+	if (wasOpen && !open) void loadAgentReadiness();
+});
+
 const resumeNodes = ref<ResumeNode[]>([]);
 
 async function loadResumeNodes(taskId: string): Promise<void> {
@@ -199,12 +203,27 @@ const hasActiveTask = computed(() =>
 	),
 );
 let historyPollTimer: number | undefined;
+let historyPollInFlight = false;
+
+async function refreshActiveTaskStatus(): Promise<void> {
+	if (historyPollInFlight) return;
+	historyPollInFlight = true;
+	try {
+		await taskStore.loadTaskHistory();
+		if (!taskStore.taskHistoryLoadError && recentTask.value) {
+			await loadResumeNodes(recentTask.value.task_id);
+		}
+	} finally {
+		historyPollInFlight = false;
+	}
+}
+
 watch(
 	hasActiveTask,
 	(active) => {
 		if (active && historyPollTimer === undefined) {
 			historyPollTimer = window.setInterval(() => {
-				void taskStore.loadTaskHistory();
+				void refreshActiveTaskStatus();
 			}, 30_000);
 		} else if (!active && historyPollTimer !== undefined) {
 			window.clearInterval(historyPollTimer);
@@ -437,7 +456,10 @@ onMounted(async () => {
 							<p>当前项目</p>
 							<h1>{{ heroTitle }}</h1>
 							<div class="project-progress">
-							<template v-if="recentTask">
+							<template v-if="taskStore.taskHistoryLoadError">
+								<span class="status-meta">本地后端暂时不可达，现有项目记录未被清空</span>
+							</template>
+							<template v-else-if="recentTask">
 								<strong class="status-word" :data-status="recentTask.status">{{
 									statusConfig[recentTask.status].label
 								}}</strong>
@@ -493,16 +515,8 @@ onMounted(async () => {
 							</span>
 						</div>
 
-						<RouterLink
-							v-if="recentTask"
-							:to="`/project/${recentTask.task_id}/overview`"
-							class="continue-action"
-						>
-							<span>{{ continueActionLabel }}</span>
-							<ChevronRight aria-hidden="true" />
-						</RouterLink>
 						<button
-							v-else-if="taskStore.taskHistoryLoadError"
+							v-if="taskStore.taskHistoryLoadError"
 							type="button"
 							class="continue-action"
 							aria-label="重新加载项目列表"
@@ -511,6 +525,14 @@ onMounted(async () => {
 							<span>{{ continueActionLabel }}</span>
 							<ChevronRight aria-hidden="true" />
 						</button>
+						<RouterLink
+							v-else-if="recentTask"
+							:to="`/project/${recentTask.task_id}/overview`"
+							class="continue-action"
+						>
+							<span>{{ continueActionLabel }}</span>
+							<ChevronRight aria-hidden="true" />
+						</RouterLink>
 						<button v-else type="button" class="continue-action" @click="createProjectOpen = true">
 							<span>{{ continueActionLabel }}</span>
 							<ChevronRight aria-hidden="true" />

@@ -60,18 +60,20 @@ const statusFilterLabel = computed(() => {
 	if (props.statusFilter === "failed") return "需处理项目";
 	return "最近项目";
 });
-const visibleTasks = computed(() =>
-	props.tasks
+const visibleTasks = computed(() => {
+	const filteredTasks = props.tasks
 		.filter((task) =>
 			props.statusFilter ? task.status === props.statusFilter : true,
 		)
 		.filter((task) =>
 			normalizedQuery.value
-				? task.title.toLocaleLowerCase("zh-CN").includes(normalizedQuery.value)
+				? displayTitle(task.title, Number.MAX_SAFE_INTEGER)
+						.toLocaleLowerCase("zh-CN")
+						.includes(normalizedQuery.value)
 				: true,
-		)
-		.slice(0, props.statusFilter ? undefined : 5),
-);
+		);
+	return props.statusFilter ? filteredTasks : filteredTasks.slice(0, 5);
+});
 
 // ---- Methods ----
 

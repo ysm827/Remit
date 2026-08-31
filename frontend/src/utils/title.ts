@@ -4,6 +4,24 @@ const LEADING_MARKDOWN_PATTERN = /^\s*(?:(?:#{1,6}|>+)\s+)+(?:[-*+]\s+)?/;
 /** 只移除成对的行内代码反引号，保留公式、文件名中的 * 与 _。 */
 const INLINE_CODE_PATTERN = /`([^`\n]+)`/g;
 
+/** 只移除成对的粗体标记，保留公式中的乘号 *。 */
+const BOLD_PATTERN = /\*\*([^*\n]+)\*\*/g;
+
+/**
+ * 把 Markdown 片段转成保守的纯文本预览。
+ *
+ * 这里只处理确定属于展示语法的行首标记、成对反引号与成对粗体，
+ * 不删除单独的 `*`、`_` 或 `#`，避免破坏公式、文件名和题号。
+ */
+export function plainTextPreview(raw: string | null | undefined): string {
+	return (raw ?? "")
+		.replace(/^\s*(?:(?:#{1,6}|>+)\s+)+(?:[-*+]\s+)?/gm, "")
+		.replace(INLINE_CODE_PATTERN, "$1")
+		.replace(BOLD_PATTERN, "$1")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+
 /**
  * 把后端返回的原始 Markdown 题面清洗成单行可读标题。
  *
