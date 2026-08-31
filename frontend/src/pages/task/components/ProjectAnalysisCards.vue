@@ -53,7 +53,7 @@ function questionNumber(key: string): string {
           v-for="field in fields"
           :key="field.key"
           class="bg-card px-4 py-3"
-          :class="field.key === 'data_evidence' ? 'border-l-2 border-l-primary sm:col-span-2' : ''"
+          :class="field.key === 'data_evidence' ? 'sm:col-span-2' : ''"
         >
           <dt class="text-[10px] font-semibold text-muted-foreground">{{ field.label }}</dt>
           <dd class="mt-1.5">

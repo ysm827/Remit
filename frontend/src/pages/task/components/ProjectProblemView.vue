@@ -117,7 +117,6 @@ onMounted(() => {
     <header class="shrink-0 border-b bg-card px-5 py-4 lg:px-6">
       <div class="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p class="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Problem evidence ledger</p>
           <h1 id="problem-audit-title" class="mt-1 text-lg font-semibold tracking-tight">题目理解 · 全阶段审计</h1>
           <p class="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
             主页面直接读取检查点和落盘产物。每一阶段分别展示真实结果、证据缺口和失败原因，不再从 Copilot 消息猜测。
@@ -162,7 +161,7 @@ onMounted(() => {
             <div class="space-y-5 p-4 lg:p-5">
               <div>
                 <h3 class="text-xl font-semibold leading-8 tracking-tight">{{ snapshot.source.title || "题名尚未提取" }}</h3>
-                <p v-if="snapshot.source.background" class="mt-3 whitespace-pre-wrap border-l-2 border-primary/45 pl-4 text-sm leading-7 text-secondary">{{ snapshot.source.background }}</p>
+                <p v-if="snapshot.source.background" class="mt-3 whitespace-pre-wrap rounded-md bg-[hsl(var(--surface-subtle))] px-3 py-2 text-sm leading-7 text-secondary">{{ snapshot.source.background }}</p>
               </div>
 
               <div>
@@ -200,7 +199,7 @@ onMounted(() => {
               <span class="rounded-full border px-2.5 py-1 text-[10px] font-medium" :class="statusClass(preliminaryStatus)">{{ statusLabel(preliminaryStatus) }}</span>
             </header>
             <div class="space-y-4 p-4 lg:p-5">
-              <div v-if="snapshot.preliminary_analysis.analysis_summary" class="rounded-lg border-l-2 border-l-primary bg-[hsl(var(--surface-subtle))] px-4 py-3">
+              <div v-if="snapshot.preliminary_analysis.analysis_summary" class="rounded-lg border bg-[hsl(var(--surface-subtle))] px-4 py-3">
                 <p class="text-[10px] font-semibold text-muted-foreground">总体理解</p>
                 <p class="mt-1 whitespace-pre-wrap text-sm leading-6 text-secondary">{{ snapshot.preliminary_analysis.analysis_summary }}</p>
               </div>
@@ -331,7 +330,7 @@ onMounted(() => {
                   </div>
                 </div>
               </div>
-              <div v-if="snapshot.refined_analysis.analysis_summary" class="rounded-lg border-l-2 border-l-primary bg-[hsl(var(--surface-subtle))] px-4 py-3">
+              <div v-if="snapshot.refined_analysis.analysis_summary" class="rounded-lg border bg-[hsl(var(--surface-subtle))] px-4 py-3">
                 <p class="text-[10px] font-semibold text-muted-foreground">数据校正版总体理解</p>
                 <p class="mt-1 whitespace-pre-wrap text-sm leading-6 text-secondary">{{ snapshot.refined_analysis.analysis_summary }}</p>
               </div>

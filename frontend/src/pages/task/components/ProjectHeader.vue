@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ThemeToggle from "@/components/ThemeToggle.vue";
 import { Button } from "@/components/ui/button";
 import FilesSheet from "@/pages/task/components/FileSheet.vue";
 import type { ProjectStage, StageKey } from "@/pages/task/projectWorkspace";
@@ -67,7 +68,7 @@ const statusLabel = {
         >{{ displayTitle(props.title, 120) }}</h1>
         <div class="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">
           <span class="truncate font-mono">{{ props.taskId }}</span>
-          <span class="inline-flex items-center gap-1">
+          <span class="hidden items-center gap-1 sm:inline-flex">
             <Check class="h-3 w-3 text-[hsl(var(--success))]" aria-hidden="true" />
             已自动保存
           </span>
@@ -114,10 +115,12 @@ const statusLabel = {
           @click="$emit('resume')"
         >
           <Play class="h-3.5 w-3.5" aria-hidden="true" />
-          从节点续跑
+          <span class="hidden sm:inline">从节点续跑</span>
+          <span class="sr-only sm:hidden">从节点续跑</span>
         </Button>
 
         <FilesSheet :task-id="props.taskId" />
+        <ThemeToggle />
         <Button type="button" variant="ghost" size="icon" class="h-8 w-8 text-muted-foreground" title="下载消息" aria-label="下载消息" @click="$emit('download')">
           <Download class="h-4 w-4" aria-hidden="true" />
         </Button>

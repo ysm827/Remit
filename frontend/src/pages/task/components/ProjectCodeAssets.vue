@@ -55,7 +55,6 @@ async function copyPath(path: string) {
   <div class="mx-auto w-full max-w-6xl p-5 lg:p-6">
     <div class="flex flex-wrap items-end justify-between gap-3 border-b pb-4">
       <div>
-        <p class="text-[11px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">代码与生成文件</p>
         <h2 class="mt-1 text-lg font-semibold tracking-tight">运行产物索引</h2>
         <p class="mt-1 text-xs text-muted-foreground">不在页面铺开整段代码；这里提供真实文件位置、Notebook 章节和对应求解节点。</p>
       </div>

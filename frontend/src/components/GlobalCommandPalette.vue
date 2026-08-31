@@ -27,8 +27,9 @@ const props = withDefaults(
 	defineProps<{
 		tasks?: TaskSummary[];
 		contextActions?: Array<{ id: string; label: string; hint?: string }>;
+		statusFilter?: "awaiting_approval" | "failed" | null;
 	}>(),
-	{ tasks: () => [], contextActions: () => [] },
+	{ tasks: () => [], contextActions: () => [], statusFilter: null },
 );
 
 const emit = defineEmits<{
@@ -49,21 +50,69 @@ const router = useRouter();
 const normalizedQuery = computed(() =>
 	query.value.trim().toLocaleLowerCase("zh-CN"),
 );
-const visibleTasks = computed(() =>
-	props.tasks
+const statusFilterPlaceholder = computed(() => {
+	if (props.statusFilter === "awaiting_approval") return "搜索待确认项目…";
+	if (props.statusFilter === "failed") return "搜索需处理项目…";
+	return "搜索项目或输入命令…";
+});
+const statusFilterLabel = computed(() => {
+	if (props.statusFilter === "awaiting_approval") return "待确认项目";
+	if (props.statusFilter === "failed") return "需处理项目";
+	return "最近项目";
+});
+const visibleTasks = computed(() => {
+	const filteredTasks = props.tasks
+		.filter((task) =>
+			props.statusFilter ? task.status === props.statusFilter : true,
+		)
 		.filter((task) =>
 			normalizedQuery.value
-				? task.title.toLocaleLowerCase("zh-CN").includes(normalizedQuery.value)
+				? displayTitle(task.title, Number.MAX_SAFE_INTEGER)
+						.toLocaleLowerCase("zh-CN")
+						.includes(normalizedQuery.value)
 				: true,
-		)
-		.slice(0, 5),
-);
+		);
+	return props.statusFilter ? filteredTasks : filteredTasks.slice(0, 5);
+});
 
 // ---- Methods ----
 
 const close = () => {
 	modelValue.value = false;
 };
+
+const listEl = ref<HTMLElement | null>(null);
+
+function focusResult(offset: number): void {
+	const buttons = Array.from(
+		listEl.value?.querySelectorAll<HTMLButtonElement>("button") ?? [],
+	);
+	if (buttons.length === 0) return;
+	const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+	const next = (current + offset + buttons.length) % buttons.length;
+	buttons[next]?.focus();
+}
+
+function handleListKeydown(event: KeyboardEvent): void {
+	if (event.key === "ArrowDown") {
+		event.preventDefault();
+		focusResult(1);
+	} else if (event.key === "ArrowUp") {
+		event.preventDefault();
+		focusResult(-1);
+	}
+}
+
+function handleSearchKeydown(event: KeyboardEvent): void {
+	if (event.key === "ArrowDown") {
+		event.preventDefault();
+		focusResult(1);
+	} else if (event.key === "Enter") {
+		const first = visibleTasks.value[0];
+		if (first && !normalizedQuery.value) return;
+		if (first) void openTask(first.task_id);
+	}
+}
 
 const createProject = () => {
 	close();
@@ -114,21 +163,22 @@ onBeforeUnmount(() =>
         <Input
           v-model="query"
           class="h-12 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
-          placeholder="搜索项目或输入命令…"
+          :placeholder="statusFilterPlaceholder"
           aria-label="搜索命令和项目"
           autofocus
+          @keydown.down.prevent="focusResult(1)"
+          @keydown.enter="handleSearchKeydown"
         />
-        <kbd class="rounded border bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">Esc</kbd>
+        <kbd class="rounded border bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">Esc</kbd>
       </div>
 
-      <div class="max-h-[430px] overflow-y-auto p-2">
+      <div ref="listEl" class="max-h-[430px] overflow-y-auto p-2" @keydown="handleListKeydown">
         <p class="px-2 py-1.5 text-[11px] font-medium text-muted-foreground">操作</p>
         <Button variant="ghost" class="h-10 w-full justify-start gap-3 px-2 font-normal" @click="createProject">
           <span class="flex h-7 w-7 items-center justify-center rounded-md border bg-card">
             <Plus class="h-3.5 w-3.5" aria-hidden="true" />
           </span>
           <span class="flex-1 text-left text-sm">创建新项目</span>
-          <kbd class="text-[10px] text-muted-foreground">N</kbd>
         </Button>
         <Button variant="ghost" class="h-10 w-full justify-start gap-3 px-2 font-normal" @click="openSettings">
           <span class="flex h-7 w-7 items-center justify-center rounded-md border bg-card">
@@ -156,7 +206,7 @@ onBeforeUnmount(() =>
         </template>
 
         <template v-if="visibleTasks.length">
-          <p class="mt-2 px-2 py-1.5 text-[11px] font-medium text-muted-foreground">最近项目</p>
+          <p class="mt-2 px-2 py-1.5 text-[11px] font-medium text-muted-foreground">{{ statusFilterLabel }}</p>
           <Button
             v-for="task in visibleTasks"
             :key="task.task_id"

@@ -461,13 +461,13 @@ function resetAll(): void {
       </div>
 
       <div class="space-y-4 py-2">
-        <section class="rounded-lg border border-violet-200 bg-violet-50/60 p-3" aria-labelledby="model-council-title">
+        <section class="rounded-lg border border-[#d8ddc4] bg-[#f4f5e8]/70 p-3" aria-labelledby="model-council-title">
           <div class="flex items-start justify-between gap-4">
             <div>
               <div class="flex flex-wrap items-center gap-2">
                 <h3 id="model-council-title" class="text-sm font-semibold text-slate-900">多模型建模评审组</h3>
                 <span
-                  class="rounded-full border border-violet-200 bg-white px-2 py-0.5 text-[10px] font-medium text-violet-700">
+                  class="rounded-full border border-[#d8ddc4] bg-white px-2 py-0.5 text-[11px] font-medium text-[#55601f]">
                   AI 生成 · 人工最终确认
                 </span>
               </div>
@@ -477,7 +477,7 @@ function resetAll(): void {
             </div>
             <label class="inline-flex shrink-0 cursor-pointer items-center gap-2 text-xs font-medium text-slate-700">
               <input v-model="modelCouncilEnabled" type="checkbox"
-                class="h-4 w-4 rounded border-slate-300 text-violet-600 focus:ring-2 focus:ring-violet-500 focus:ring-offset-2" />
+                class="h-4 w-4 rounded border-slate-300 text-[#5f7000] focus:ring-2 focus:ring-[#7a8c00] focus:ring-offset-2" />
               启用
             </label>
           </div>
@@ -507,7 +507,7 @@ function resetAll(): void {
             </span>
           </div>
           <div v-if="effectiveAgents[field.key]?.configured"
-            class="border-l-2 border-emerald-400 bg-slate-50 px-2.5 py-1.5 text-[11px] leading-5 text-slate-600">
+            class="rounded-md bg-[hsl(var(--surface-subtle))] px-2.5 py-1.5 text-[11px] leading-5 text-slate-600">
             <div class="font-medium text-slate-800">
               {{ apiTypeLabel(effectiveAgents[field.key]?.api_type) }}
               · {{ effectiveAgents[field.key]?.model_id }}

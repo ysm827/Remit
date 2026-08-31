@@ -6,6 +6,7 @@ import HumanApprovalCard from "@/pages/task/components/HumanApprovalCard.vue";
 import { useTaskStore } from "@/stores/task";
 import { AgentType } from "@/utils/enum";
 import type { Message } from "@/utils/response";
+import { plainTextPreview } from "@/utils/title";
 import {
 	Bot,
 	CheckCircle2,
@@ -118,7 +119,7 @@ function normalizedContent(message: Message) {
 }
 
 function previewContent(message: Message) {
-	const content = normalizedContent(message).replace(/\n{3,}/g, "\n\n");
+	const content = plainTextPreview(normalizedContent(message));
 	return content.length > 280 ? `${content.slice(0, 280).trimEnd()}…` : content;
 }
 
@@ -250,7 +251,7 @@ watch(
           <div class="min-w-0 pt-0.5">
             <div class="flex items-center gap-1.5">
               <h3 class="text-[10px] font-semibold">{{ messageLabel(message) }}</h3>
-              <span v-if="message.msg_type === 'agent'" class="rounded bg-[hsl(var(--accent))] px-1 py-0.5 text-[8px] font-medium text-primary">AI 生成</span>
+              <span v-if="message.msg_type === 'agent'" class="rounded bg-[hsl(var(--accent))] px-1 py-0.5 text-[10px] font-medium text-primary">AI 生成</span>
               <time v-if="formatTime(message.created_at)" class="ml-auto text-[8px] text-muted-foreground">{{ formatTime(message.created_at) }}</time>
             </div>
 

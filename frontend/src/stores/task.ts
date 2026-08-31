@@ -199,6 +199,9 @@ export const useTaskStore = defineStore("task", () => {
 	/** WebSocket 连接状态 */
 	const wsStatus = ref<ConnectionState>("disconnected");
 
+	/** 任务历史列表最近一次加载是否失败（区别于空列表）。 */
+	const taskHistoryLoadError = ref(false);
+
 	/** 任务是否正在运行 */
 	const isRunning = ref(false);
 
@@ -432,7 +435,10 @@ export const useTaskStore = defineStore("task", () => {
 		try {
 			const response = await getTaskHistory();
 			taskHistory.value = response.data ?? [];
+			taskHistoryLoadError.value = false;
 		} catch (error) {
+			// 首页必须区分"没有项目"和"加载失败"，否则后端抖动会被当成数据被清空。
+			taskHistoryLoadError.value = true;
 			console.error("加载任务历史失败:", error);
 		}
 	}
@@ -674,6 +680,7 @@ export const useTaskStore = defineStore("task", () => {
 		loadPendingApproval,
 		loadTaskWorkspace,
 		loadTaskHistory,
+		taskHistoryLoadError,
 		deleteTask,
 		clearTaskHistory,
 		sendUserMessage,

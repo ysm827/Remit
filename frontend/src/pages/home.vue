@@ -1,5 +1,10 @@
 <script setup lang="ts">
-import type { TaskSummary } from "@/apis/commonApi";
+import { getApiConfigStatus } from "@/apis/apiKeyApi";
+import {
+	type ResumeNode,
+	type TaskSummary,
+	getResumeOptions,
+} from "@/apis/commonApi";
 import CreateProjectSheet from "@/components/CreateProjectSheet.vue";
 import GlobalCommandPalette from "@/components/GlobalCommandPalette.vue";
 import ServiceStatus from "@/components/ServiceStatus.vue";
@@ -21,15 +26,12 @@ import { displayTitle } from "@/utils/title";
 import { isAxiosError } from "axios";
 import {
 	AlertCircle,
-	BarChart3,
 	Bell,
 	Bot,
-	Box,
 	CheckCircle2,
 	ChevronRight,
 	CircleDot,
 	Command,
-	Database,
 	FileText,
 	FolderKanban,
 	Gauge,
@@ -41,10 +43,9 @@ import {
 	Plus,
 	Search,
 	Settings2,
-	Sparkles,
 	Trash2,
 } from "lucide-vue-next";
-import { computed, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 
 const taskStore = useTaskStore();
@@ -59,53 +60,80 @@ const isDeleting = ref(false);
 const clearHistoryDialogOpen = ref(false);
 const isClearingHistory = ref(false);
 
+// 状态只陈述事实：没有真实进度数据，就绝不渲染百分比或"当前阶段"。
 const statusConfig: Record<
 	TaskSummary["status"],
-	{
-		label: string;
-		stage: string;
-		progress: number;
-		activeStep: number;
-	}
+	{ label: string; hint: string }
 > = {
-	running: {
-		label: "运行中",
-		stage: "模型设计",
-		progress: 62,
-		activeStep: 2,
-	},
-	awaiting_approval: {
-		label: "待确认",
-		stage: "结果分析",
-		progress: 78,
-		activeStep: 3,
-	},
-	completed: {
-		label: "已完成",
-		stage: "结果交付",
-		progress: 100,
-		activeStep: 3,
-	},
-	failed: {
-		label: "需处理",
-		stage: "执行异常",
-		progress: 52,
-		activeStep: 2,
-	},
-	stopped: {
-		label: "已暂停",
-		stage: "等待继续",
-		progress: 46,
-		activeStep: 1,
-	},
+	running: { label: "运行中", hint: "正在执行工作流" },
+	awaiting_approval: { label: "待确认", hint: "等你审阅后继续" },
+	completed: { label: "已完成", hint: "全部节点已通过检查" },
+	failed: { label: "需处理", hint: "执行中断，进入项目查看原因" },
+	stopped: { label: "已暂停", hint: "可从检查点继续" },
 };
 
-const workflowSteps = [
-	{ label: "题目理解", icon: FileText },
-	{ label: "数据处理", icon: Database },
-	{ label: "模型设计", icon: Network },
-	{ label: "结果分析", icon: BarChart3 },
-];
+const displayResumeNodes = computed(() => resumeNodes.value.slice(0, 5));
+const resumeOverflow = computed(() =>
+	Math.max(resumeNodes.value.length - displayResumeNodes.value.length, 0),
+);
+
+function nodeStateLabel(status: ResumeNode["status"]): string {
+	return status === "completed"
+		? "已完成"
+		: status === "interrupted"
+			? "已中断"
+			: "待执行";
+}
+
+const continueActionLabel = computed(() => {
+	if (taskStore.taskHistoryLoadError) return "重新加载";
+	if (!recentTask.value) return "开始建模";
+	switch (recentTask.value.status) {
+		case "failed":
+			return "查看原因";
+		case "stopped":
+			return "恢复建模";
+		case "awaiting_approval":
+			return "去审阅";
+		case "completed":
+			return "查看成果";
+		default:
+			return "跟踪进度";
+	}
+});
+
+const failedCount = computed(
+	() => taskStore.taskHistory.filter((task) => task.status === "failed").length,
+);
+const stoppedCount = computed(
+	() =>
+		taskStore.taskHistory.filter((task) => task.status === "stopped").length,
+);
+const heroTitle = computed(() => {
+	if (taskStore.taskHistoryLoadError) return "暂时读不到项目";
+	if (recentTask.value) return displayTitle(recentTask.value.title);
+	if (isLoading.value) return "正在载入项目…";
+	return "创建第一个建模项目";
+});
+type PaletteFilter = "awaiting_approval" | "failed";
+const commandPaletteStatusFilter = ref<PaletteFilter | null>(null);
+
+function openFilteredPalette(filter: PaletteFilter): void {
+	commandPaletteStatusFilter.value = filter;
+	commandPaletteOpen.value = true;
+}
+
+watch(commandPaletteOpen, (open) => {
+	if (!open) commandPaletteStatusFilter.value = null;
+});
+
+async function retryLoadHistory(): Promise<void> {
+	await refreshActiveTaskStatus();
+}
+
+function statsOrDash(value: number): string | number {
+	return taskStore.taskHistoryLoadError ? "—" : value;
+}
 
 const recentTask = computed(() => taskStore.taskHistory[0] ?? null);
 const recentTasks = computed(() => taskStore.taskHistory.slice(0, 4));
@@ -114,11 +142,117 @@ const reviewTasks = computed(() =>
 		.filter((task) => task.status === "awaiting_approval")
 		.slice(0, 3),
 );
+
+// 四个核心角色的真实配置就绪状态：不展示模型名，只告诉队员"哪一环还没接上"。
+type ReadinessPhase = "loading" | "ready" | "error";
+const agentReadinessPhase = ref<ReadinessPhase>("loading");
+const agentReadiness = ref<Record<string, boolean>>({});
+
+async function loadAgentReadiness(): Promise<void> {
+	agentReadinessPhase.value = "loading";
+	try {
+		const response = await getApiConfigStatus();
+		const agents = response.data?.agents ?? {};
+		agentReadiness.value = Object.fromEntries(
+			Object.entries(agents).map(([key, status]) => [
+				key,
+				Boolean(status?.configured),
+			]),
+		);
+		agentReadinessPhase.value = "ready";
+	} catch {
+		agentReadinessPhase.value = "error";
+		agentReadiness.value = {};
+	}
+}
+
+function agentState(key: string): { label: string; state: string } {
+	if (agentReadinessPhase.value === "loading")
+		return { label: "查询中", state: "loading" };
+	if (agentReadinessPhase.value === "error")
+		return { label: "状态未知", state: "unknown" };
+	return agentReadiness.value[key]
+		? { label: "就绪", state: "ready" }
+		: { label: "未配置", state: "unset" };
+}
+
+onMounted(() => {
+	void loadAgentReadiness();
+});
+
+watch(settingsOpen, (open, wasOpen) => {
+	if (wasOpen && !open) void loadAgentReadiness();
+});
+
+const resumeNodes = ref<ResumeNode[]>([]);
+
+async function loadResumeNodes(taskId: string): Promise<void> {
+	try {
+		const response = await getResumeOptions(taskId);
+		resumeNodes.value = response.data?.nodes ?? [];
+	} catch {
+		// 拿不到真实节点就整块隐藏，绝不回退到假流水线。
+		resumeNodes.value = [];
+	}
+}
+
+// 存在活跃任务时轮询刷新，避免死监控屏；空闲时完全停止。
+const hasActiveTask = computed(() =>
+	taskStore.taskHistory.some((task) =>
+		["running", "awaiting_approval"].includes(task.status),
+	),
+);
+let historyPollTimer: number | undefined;
+let historyPollInFlight = false;
+
+async function refreshActiveTaskStatus(): Promise<void> {
+	if (historyPollInFlight) return;
+	historyPollInFlight = true;
+	try {
+		await taskStore.loadTaskHistory();
+		if (!taskStore.taskHistoryLoadError && recentTask.value) {
+			await loadResumeNodes(recentTask.value.task_id);
+		}
+	} finally {
+		historyPollInFlight = false;
+	}
+}
+
+watch(
+	hasActiveTask,
+	(active) => {
+		if (active && historyPollTimer === undefined) {
+			historyPollTimer = window.setInterval(() => {
+				void refreshActiveTaskStatus();
+			}, 30_000);
+		} else if (!active && historyPollTimer !== undefined) {
+			window.clearInterval(historyPollTimer);
+			historyPollTimer = undefined;
+		}
+	},
+	{ immediate: true },
+);
+onBeforeUnmount(() => {
+	if (historyPollTimer !== undefined) window.clearInterval(historyPollTimer);
+});
+
+watch(
+	() => recentTask.value?.task_id,
+	(taskId) => {
+		resumeNodes.value = [];
+		if (taskId) void loadResumeNodes(taskId);
+	},
+	{ immediate: true },
+);
 const runningCount = computed(
 	() =>
 		taskStore.taskHistory.filter((task) => task.status === "running").length,
 );
-const approvalCount = computed(() => reviewTasks.value.length);
+const approvalCount = computed(
+	() =>
+		taskStore.taskHistory.filter((task) => task.status === "awaiting_approval")
+			.length,
+);
 const completedCount = computed(
 	() =>
 		taskStore.taskHistory.filter((task) => task.status === "completed").length,
@@ -129,34 +263,6 @@ const activeTaskCount = computed(
 			["running", "awaiting_approval"].includes(task.status),
 		).length,
 );
-const currentProgress = computed(() =>
-	recentTask.value ? statusConfig[recentTask.value.status].progress : 0,
-);
-const currentStep = computed(() =>
-	recentTask.value ? statusConfig[recentTask.value.status].activeStep : -1,
-);
-const activityPolyline = computed(() => {
-	const tasks = [...recentTasks.value].reverse();
-	if (tasks.length < 2) return "0,58 260,58";
-	const values = tasks.map((task) => Math.max(task.message_count, 1));
-	const max = Math.max(...values);
-	return values
-		.map((value, index) => {
-			const x = (index / (values.length - 1)) * 260;
-			const y = 68 - (value / max) * 52;
-			return `${x.toFixed(1)},${y.toFixed(1)}`;
-		})
-		.join(" ");
-});
-
-function workflowState(index: number): "done" | "active" | "idle" {
-	if (!recentTask.value) return "idle";
-	if (recentTask.value.status === "completed" || index < currentStep.value) {
-		return "done";
-	}
-	if (index === currentStep.value) return "active";
-	return "idle";
-}
 
 function formatTaskTime(value: string | number): string {
 	const date = new Date(value);
@@ -294,7 +400,7 @@ onMounted(async () => {
 				<span class="profile-mark">R</span>
 				<span>
 					<strong>本地工作台</strong>
-					<small>已连接</small>
+					<small>本地运行</small>
 				</span>
 				<Settings2 aria-hidden="true" />
 			</button>
@@ -308,13 +414,12 @@ onMounted(async () => {
 				</RouterLink>
 				<div class="page-heading">
 					<strong>数学建模工作台</strong>
-					<span>V6</span>
 				</div>
 
 				<button type="button" class="nav-search" @click="commandPaletteOpen = true">
 					<Search aria-hidden="true" />
-					<span>搜索项目、数据集或命令</span>
-					<kbd>⌘K</kbd>
+					<span>搜索项目或命令</span>
+					<kbd>Ctrl/⌘ K</kbd>
 				</button>
 
 				<div class="nav-actions">
@@ -324,7 +429,7 @@ onMounted(async () => {
 						type="button"
 						class="icon-button"
 						aria-label="待确认事项"
-						@click="commandPaletteOpen = true"
+						@click="openFilteredPalette('awaiting_approval')"
 					>
 						<Bell aria-hidden="true" />
 						<span v-if="approvalCount" class="notification-dot">{{ approvalCount }}</span>
@@ -337,7 +442,7 @@ onMounted(async () => {
 					>
 						<Settings2 aria-hidden="true" />
 					</button>
-					<button type="button" class="create-button" @click="createProjectOpen = true">
+					<button type="button" class="create-button" aria-label="创建项目" @click="createProjectOpen = true">
 						<span>创建项目</span>
 						<Plus aria-hidden="true" />
 					</button>
@@ -349,13 +454,23 @@ onMounted(async () => {
 					<article class="current-project-card">
 						<div class="project-copy">
 							<p>当前项目</p>
-							<h1>{{ displayTitle(recentTask?.title) || "创建第一个建模项目" }}</h1>
+							<h1>{{ heroTitle }}</h1>
 							<div class="project-progress">
-								<strong class="mono-data">{{ currentProgress }}%</strong>
-								<div class="progress-track" aria-hidden="true">
-									<span :style="{ width: `${currentProgress}%` }" />
-								</div>
-								<span>{{ recentTask ? statusConfig[recentTask.status].label : "尚未开始" }}</span>
+							<template v-if="taskStore.taskHistoryLoadError">
+								<span class="status-meta">本地后端暂时不可达，现有项目记录未被清空</span>
+							</template>
+							<template v-else-if="recentTask">
+								<strong class="status-word" :data-status="recentTask.status">{{
+									statusConfig[recentTask.status].label
+								}}</strong>
+								<span class="status-meta">
+									{{ statusConfig[recentTask.status].hint }} · 上次更新
+									{{ formatTaskTime(recentTask.updated_at) }}
+								</span>
+							</template>
+							<template v-else>
+								<span class="status-meta">上传题面后，工作流会从这里开始推进</span>
+							</template>
 							</div>
 						</div>
 
@@ -374,53 +489,64 @@ onMounted(async () => {
 									<circle cx="181" cy="84" r="3" />
 									<circle cx="149" cy="137" r="3" />
 								</g>
-								<polyline class="project-line" points="214,142 254,116 290,124 326,84 360,98 400,52" />
-								<g class="project-points">
-									<circle cx="214" cy="142" r="5" />
-									<circle cx="254" cy="116" r="5" />
-									<circle cx="290" cy="124" r="5" />
-									<circle cx="326" cy="84" r="5" />
-									<circle cx="360" cy="98" r="5" />
-									<circle cx="400" cy="52" r="5" />
-								</g>
+								
 							</svg>
 						</div>
 
-						<div class="workflow-line">
+						<div
+							v-if="displayResumeNodes.length"
+							class="workflow-line"
+							aria-label="工作流节点状态"
+						>
 							<div
-								v-for="(step, index) in workflowSteps"
-								:key="step.label"
-								class="workflow-step"
-								:data-state="workflowState(index)"
+								v-for="node in displayResumeNodes"
+								:key="node.node_id"
+								class="workflow-chip"
+								:class="node.status === 'interrupted' ? 'workflow-chip-interrupted' : ''"
+								:data-state="node.status"
+								:title="nodeStateLabel(node.status)"
 							>
-								<span class="workflow-icon"><component :is="step.icon" aria-hidden="true" /></span>
-								<strong>{{ step.label }}</strong>
-								<small>{{ workflowState(index) === "done" ? "完成" : workflowState(index) === "active" ? "进行中" : "待开始" }}</small>
+								<span class="workflow-dot" aria-hidden="true" />
+								<strong>{{ node.label }}</strong>
+								<small>{{ nodeStateLabel(node.status) }}</small>
 							</div>
+							<span v-if="resumeOverflow" class="workflow-overflow mono-data">
+								+{{ resumeOverflow }}
+							</span>
 						</div>
 
+						<button
+							v-if="taskStore.taskHistoryLoadError"
+							type="button"
+							class="continue-action"
+							aria-label="重新加载项目列表"
+							@click="retryLoadHistory"
+						>
+							<span>{{ continueActionLabel }}</span>
+							<ChevronRight aria-hidden="true" />
+						</button>
 						<RouterLink
-							v-if="recentTask"
+							v-else-if="recentTask"
 							:to="`/project/${recentTask.task_id}/overview`"
 							class="continue-action"
 						>
-							<span>继续建模</span>
+							<span>{{ continueActionLabel }}</span>
 							<ChevronRight aria-hidden="true" />
 						</RouterLink>
 						<button v-else type="button" class="continue-action" @click="createProjectOpen = true">
-							<span>开始建模</span>
+							<span>{{ continueActionLabel }}</span>
 							<ChevronRight aria-hidden="true" />
 						</button>
 					</article>
 
 					<div class="quick-actions" aria-label="快捷操作">
-						<button type="button" class="quick-orb liquid-surface" @click="createProjectOpen = true">
-							<Database aria-hidden="true" />
-							<span>新建数据集</span>
+						<button type="button" class="quick-orb liquid-surface" aria-label="新建项目" @click="createProjectOpen = true">
+							<Plus aria-hidden="true" />
+							<span>新建项目</span>
 						</button>
-						<button type="button" class="quick-orb liquid-surface" @click="commandPaletteOpen = true">
-							<Sparkles aria-hidden="true" />
-							<span>快速运行</span>
+						<button type="button" class="quick-orb liquid-surface" aria-label="打开全局命令" @click="commandPaletteOpen = true">
+							<Command aria-hidden="true" />
+							<span>全局命令</span>
 						</button>
 					</div>
 
@@ -446,7 +572,7 @@ onMounted(async () => {
 							<CheckCircle2 aria-hidden="true" />
 							<strong>暂无待确认</strong>
 						</div>
-						<button type="button" class="review-more" @click="commandPaletteOpen = true">
+						<button type="button" class="review-more" @click="openFilteredPalette('awaiting_approval')">
 							<span>查看全部</span>
 							<ChevronRight aria-hidden="true" />
 						</button>
@@ -462,13 +588,11 @@ onMounted(async () => {
 							</div>
 							<span>全部项目</span>
 						</header>
-						<svg viewBox="0 0 260 80" preserveAspectRatio="none" aria-label="最近项目消息量趋势">
-							<polyline :points="activityPolyline" />
-						</svg>
+						
 						<dl>
-							<div><dt>运行</dt><dd class="mono-data">{{ runningCount }}</dd></div>
-							<div><dt>待确认</dt><dd class="mono-data">{{ approvalCount }}</dd></div>
-							<div><dt>完成</dt><dd class="mono-data">{{ completedCount }}</dd></div>
+							<div><dt>运行</dt><dd class="mono-data">{{ statsOrDash(runningCount) }}</dd></div>
+							<div><dt>待确认</dt><dd class="mono-data">{{ statsOrDash(approvalCount) }}</dd></div>
+							<div><dt>完成</dt><dd class="mono-data">{{ statsOrDash(completedCount) }}</dd></div>
 						</dl>
 					</article>
 
@@ -478,12 +602,15 @@ onMounted(async () => {
 							<Gauge aria-hidden="true" />
 						</header>
 						<div class="resource-list">
-							<div><span>进行中</span><strong class="mono-data">{{ runningCount }}</strong></div>
-							<div><span>人工节点</span><strong class="mono-data">{{ approvalCount }}</strong></div>
-							<div><span>历史项目</span><strong class="mono-data">{{ taskStore.taskHistory.length }}</strong></div>
+							<div><span>需处理</span><strong class="mono-data">{{ statsOrDash(failedCount) }}</strong></div>
+							<div><span>已暂停</span><strong class="mono-data">{{ statsOrDash(stoppedCount) }}</strong></div>
+							<div><span>历史项目</span><strong class="mono-data">{{ statsOrDash(taskStore.taskHistory.length) }}</strong></div>
 						</div>
-						<button type="button" @click="settingsOpen = true">
-							<span>模型连接</span>
+						<button
+							type="button"
+							@click="failedCount ? openFilteredPalette('failed') : (settingsOpen = true)"
+						>
+							<span>{{ failedCount ? "查看需处理" : "模型连接" }}</span>
 							<ChevronRight aria-hidden="true" />
 						</button>
 					</article>
@@ -491,20 +618,14 @@ onMounted(async () => {
 					<article class="agent-card solid-card">
 						<header>
 							<h2>Agent 协作链</h2>
-							<span>{{ recentTask ? "已连接" : "待命" }}</span>
+							<span>{{ recentTask ? statusConfig[recentTask.status].label : "待命" }}</span>
 						</header>
-						<div class="agent-layout">
-							<ul>
-								<li><CircleDot aria-hidden="true" /><span>Coordinator</span><small>编排</small></li>
-								<li><Network aria-hidden="true" /><span>Modeler</span><small>建模</small></li>
-								<li><Command aria-hidden="true" /><span>Coder</span><small>计算</small></li>
-								<li><FileText aria-hidden="true" /><span>Writer</span><small>写作</small></li>
-							</ul>
-							<div class="agent-visual" aria-hidden="true">
-								<Box />
-								<span v-for="index in 6" :key="index" :style="{ '--i': index }" />
-							</div>
-						</div>
+						<ul class="agent-layout">
+							<li><CircleDot aria-hidden="true" /><span>Coordinator</span><small>编排</small><span class="agent-state" :data-state="agentState('coordinator').state">{{ agentState('coordinator').label }}</span></li>
+							<li><Network aria-hidden="true" /><span>Modeler</span><small>建模</small><span class="agent-state" :data-state="agentState('modeler').state">{{ agentState('modeler').label }}</span></li>
+							<li><Command aria-hidden="true" /><span>Coder</span><small>计算</small><span class="agent-state" :data-state="agentState('coder').state">{{ agentState('coder').label }}</span></li>
+							<li><FileText aria-hidden="true" /><span>Writer</span><small>写作</small><span class="agent-state" :data-state="agentState('writer').state">{{ agentState('writer').label }}</span></li>
+						</ul>
 					</article>
 				</section>
 
@@ -529,6 +650,11 @@ onMounted(async () => {
 					<div v-if="isLoading" class="recent-loading" aria-label="正在加载项目">
 						<span v-for="index in 4" :key="index" />
 					</div>
+					<div v-else-if="taskStore.taskHistoryLoadError" class="recent-error">
+						<strong>项目列表加载失败</strong>
+						<span>请确认后端服务正在运行，然后重试。</span>
+						<button type="button" @click="retryLoadHistory">重新加载</button>
+					</div>
 					<div v-else-if="recentTasks.length" class="recent-cards">
 						<article v-for="task in recentTasks" :key="task.task_id" class="recent-project-card" :data-status="task.status">
 							<div class="recent-card-top">
@@ -543,12 +669,8 @@ onMounted(async () => {
 							</div>
 							<RouterLink :to="`/project/${task.task_id}/overview`">
 								<h3>{{ displayTitle(task.title, 36) }}</h3>
-								<div class="recent-progress">
-									<strong class="mono-data">{{ statusConfig[task.status].progress }}%</strong>
-									<span><i :style="{ width: `${statusConfig[task.status].progress}%` }" /></span>
-								</div>
+								<p class="recent-hint">{{ statusConfig[task.status].hint }}</p>
 								<footer>
-									<span>{{ statusConfig[task.status].stage }}</span>
 									<small>{{ formatTaskTime(task.updated_at) }}</small>
 									<ChevronRight aria-hidden="true" />
 								</footer>
@@ -568,6 +690,7 @@ onMounted(async () => {
 		<ApiDialog v-model:open="settingsOpen" />
 		<GlobalCommandPalette
 			v-model="commandPaletteOpen"
+			:status-filter="commandPaletteStatusFilter"
 			:tasks="taskStore.taskHistory"
 			@new-project="createProjectOpen = true"
 			@settings="settingsOpen = true"
@@ -631,11 +754,11 @@ onMounted(async () => {
 	--graphite: #121513;
 	--graphite-soft: #1b201d;
 	--bone: #f4f3ec;
-	--sage: #8f998d;
 	--home-canvas: #f4f3ec;
 	--page-cut: #f4f3ec;
 	--home-ink: #111310;
-	--home-muted: #6d726c;
+	--home-muted: #575c55;
+	--panel-muted: #575c55;
 	--panel: rgb(255 255 255 / 0.84);
 	--panel-border: rgb(20 24 20 / 0.1);
 	--desktop-content-max: 1440px;
@@ -833,8 +956,8 @@ a {
 
 .sidebar-profile small {
 	margin-top: 2px;
-	color: rgb(255 255 255 / 0.48);
-	font-size: 10px;
+	color: rgb(255 255 255 / 0.66);
+	font-size: 11px;
 }
 
 .sidebar-profile > svg {
@@ -847,7 +970,7 @@ a {
 	position: relative;
 	min-height: 100vh;
 	margin-left: 184px;
-	overflow: hidden;
+	overflow-x: clip;
 	background: var(--home-canvas);
 }
 
@@ -941,21 +1064,7 @@ a {
 .page-heading strong {
 	font-size: clamp(19px, 1.8vw, 29px);
 	font-weight: 760;
-	letter-spacing: -0.055em;
-}
-
-.page-heading > span {
-	border: 1px solid rgb(154 179 0 / 0.64);
-	border-radius: 9px;
-	color: #879e00;
-	padding: 4px 7px;
-	font-family: ui-monospace, monospace;
-	font-size: 12px;
-	font-weight: 700;
-}
-
-:global(.dark .page-heading > span) {
-	color: var(--acid);
+	letter-spacing: -0.02em;
 }
 
 .nav-search {
@@ -972,7 +1081,7 @@ a {
 	background: rgb(255 255 255 / 0.34);
 	color: var(--home-muted);
 	padding: 0 12px;
-	font-size: 11px;
+	font-size: 12px;
 }
 
 :global(.dark .nav-search) {
@@ -989,9 +1098,8 @@ a {
 	margin-left: auto;
 	border: 1px solid currentColor;
 	border-radius: 7px;
-	opacity: 0.55;
-	padding: 2px 5px;
-	font-size: 9px;
+	padding: 2px 6px;
+	font-size: 11px;
 }
 
 .nav-actions {
@@ -1032,9 +1140,9 @@ a {
 	place-items: center;
 	border: 2px solid var(--bone);
 	border-radius: 999px;
-	background: #ef4939;
+	background: #c53030;
 	color: white;
-	font-size: 9px;
+	font-size: 10px;
 	font-weight: 800;
 }
 
@@ -1046,7 +1154,7 @@ a {
 	border: 0;
 	border-radius: 999px;
 	background: var(--acid);
-	box-shadow: 0 14px 32px -20px rgb(143 167 0 / 0.9);
+	box-shadow: 0 12px 26px -18px rgb(110 130 0 / 0.6);
 	color: #111;
 	padding: 0 9px 0 18px;
 	font-size: 12px;
@@ -1124,13 +1232,13 @@ a {
 
 .project-copy > p {
 	margin: 0 0 16px;
-	color: rgb(244 245 239 / 0.64);
+	color: rgb(244 245 239 / 0.74);
 	font-size: 12px;
 	font-weight: 650;
 }
 
 :global(.dark .project-copy > p) {
-	color: rgb(21 24 21 / 0.56);
+	color: rgb(21 24 21 / 0.76);
 }
 
 .project-copy h1 {
@@ -1138,51 +1246,39 @@ a {
 	margin: 0;
 	font-size: clamp(26px, 2.25vw, 39px);
 	font-weight: 780;
-	letter-spacing: -0.055em;
-	line-height: 1.15;
+	letter-spacing: -0.02em;
+	line-height: 1.18;
 }
 
 .project-progress {
 	display: grid;
 	max-width: 430px;
-	grid-template-columns: auto 1fr auto;
-	align-items: center;
-	gap: 14px;
-	margin-top: 28px;
+	gap: 16px;
+	margin-top: 30px;
 }
 
-.project-progress strong {
-	font-size: clamp(30px, 3vw, 48px);
-	font-weight: 560;
-	letter-spacing: -0.07em;
+.status-word {
+	font-size: clamp(30px, 3vw, 46px);
+	font-weight: 600;
+	letter-spacing: -0.02em;
+	line-height: 1.15;
 }
 
-.project-progress > span {
-	color: rgb(244 245 239 / 0.52);
-	font-size: 10px;
+.status-word[data-status="failed"] {
+	color: #f0a294;
 }
 
-:global(.dark .project-progress > span) {
-	color: rgb(21 24 21 / 0.48);
+:global(.dark .status-word[data-status="failed"]) {
+	color: #b3402f;
 }
 
-.progress-track {
-	height: 6px;
-	overflow: hidden;
-	border-radius: 999px;
-	background: rgb(0 0 0 / 0.52);
+.status-meta {
+	color: rgb(244 245 239 / 0.74);
+	font-size: 12px;
 }
 
-:global(.dark .progress-track) {
-	background: rgb(20 22 20 / 0.14);
-}
-
-.progress-track span {
-	display: block;
-	height: 100%;
-	border-radius: inherit;
-	background: var(--acid);
-	transition: width 500ms ease;
+:global(.dark .status-meta) {
+	color: rgb(21 24 21 / 0.72);
 }
 
 .project-graphic {
@@ -1220,28 +1316,17 @@ a {
 	opacity: 0.5;
 }
 
-.project-line {
-	fill: none;
-	stroke: var(--acid);
-	stroke-width: 2.2;
-}
-
-.project-points circle {
-	fill: var(--acid);
-	stroke: #111;
-	stroke-width: 2;
-}
-
 .workflow-line {
 	position: relative;
 	z-index: 2;
-	display: grid;
+	display: flex;
 	grid-column: 1 / -1;
-	grid-template-columns: repeat(4, minmax(0, 1fr));
-	gap: 12px;
+	gap: 8px;
+	margin-top: 24px;
+	overflow-x: auto;
 	border: 1px solid rgb(255 255 255 / 0.11);
 	border-radius: 22px;
-	padding: 15px 18px;
+	padding: 13px 16px;
 }
 
 :global(.dark .workflow-line) {
@@ -1249,69 +1334,89 @@ a {
 	background: rgb(255 255 255 / 0.18);
 }
 
-.workflow-step {
-	position: relative;
-	display: grid;
-	grid-template-columns: 42px minmax(0, 1fr);
-	grid-template-rows: auto auto;
-	column-gap: 10px;
+.workflow-chip {
+	display: inline-flex;
+	flex: none;
 	align-items: center;
+	gap: 8px;
+	border: 1px solid rgb(255 255 255 / 0.16);
+	border-radius: 999px;
+	color: inherit;
+	padding: 7px 12px;
+	font-size: 12px;
 }
 
-.workflow-step:not(:last-child)::after {
-	position: absolute;
-	right: -3px;
-	top: 20px;
-	width: 20%;
-	height: 1px;
-	background: currentColor;
-	content: "";
-	opacity: 0.22;
-}
-
-.workflow-step[data-state="done"]::after,
-.workflow-step[data-state="active"]::after {
-	background: var(--acid);
-	opacity: 0.9;
-}
-
-.workflow-icon {
-	display: grid;
-	grid-row: 1 / 3;
-	width: 42px;
-	height: 42px;
-	place-items: center;
-	border: 1px solid currentColor;
+.workflow-dot {
+	width: 8px;
+	height: 8px;
 	border-radius: 50%;
-	opacity: 0.54;
+	background: currentColor;
+	opacity: 0.4;
 }
 
-.workflow-icon svg {
-	width: 20px;
-	height: 20px;
-}
-
-.workflow-step[data-state="active"] .workflow-icon {
-	border-color: var(--acid);
+.workflow-chip[data-state="completed"] .workflow-dot {
 	background: var(--acid);
-	color: #111;
 	opacity: 1;
 }
 
-.workflow-step[data-state="done"] .workflow-icon {
-	border-color: var(--acid);
+.workflow-chip-interrupted {
+	border-color: rgb(240 162 148 / 0.55);
+	background: transparent;
+}
+
+.workflow-chip-interrupted .workflow-dot {
+	background: #f0a294;
 	opacity: 1;
 }
 
-.workflow-step strong {
+.workflow-chip small {
+	color: rgb(244 245 239 / 0.72);
 	font-size: 11px;
-	font-weight: 680;
 }
 
-.workflow-step small {
-	margin-top: 3px;
-	opacity: 0.48;
-	font-size: 9px;
+:global(.dark .workflow-chip) {
+	border-color: rgb(20 24 20 / 0.14);
+}
+
+:global(.dark .workflow-chip-interrupted) {
+	border-color: rgb(179 64 47 / 0.5);
+	background: transparent;
+}
+
+:global(.dark .workflow-chip-interrupted .workflow-dot) {
+	background: #b3402f;
+	opacity: 1;
+}
+
+:global(.dark .workflow-chip small) {
+	color: rgb(21 24 21 / 0.72);
+}
+
+.workflow-overflow {
+	flex: none;
+	align-self: center;
+	color: rgb(244 245 239 / 0.72);
+	font-size: 12px;
+}
+
+:global(.dark .workflow-overflow) {
+	color: rgb(21 24 21 / 0.72);
+}
+
+/* 焦点环随表面反转：浅色主题的 hero 是深面、暗色主题的卡面是浅面，
+   固定环色总有一侧低于 3:1。 */
+.current-project-card :focus-visible {
+	outline-color: #ecebe5;
+}
+
+:global(.dark .current-project-card :focus-visible),
+:global(.dark .solid-card :focus-visible),
+:global(.dark .review-card :focus-visible) {
+	outline-color: #161916;
+}
+
+.agent-card :focus-visible {
+	outline-color: #ecebe5;
 }
 
 .continue-action {
@@ -1327,14 +1432,13 @@ a {
 	place-items: center;
 	align-content: center;
 	gap: 7px;
-	border: 1px solid rgb(255 255 255 / 0.35);
 	border-radius: 50%;
 	background: var(--acid);
 	box-shadow:
 		0 0 0 7px var(--graphite),
-		0 18px 36px -20px rgb(101 122 0 / 0.72);
+		0 14px 28px -18px rgb(101 122 0 / 0.5);
 	color: #111;
-	font-size: 10px;
+	font-size: 11.5px;
 	font-weight: 760;
 	text-align: center;
 	text-decoration: none;
@@ -1346,7 +1450,7 @@ a {
 	background: #151815;
 	box-shadow:
 		0 0 0 7px #ecebe5,
-		0 18px 36px -22px rgb(0 0 0 / 0.72);
+		0 14px 28px -18px rgb(0 0 0 / 0.55);
 	color: var(--acid);
 }
 
@@ -1376,7 +1480,7 @@ a {
 	border-radius: 50%;
 	color: var(--home-ink);
 	padding: 14px 8px;
-	font-size: 10px;
+	font-size: 11.5px;
 	font-weight: 680;
 }
 
@@ -1485,14 +1589,14 @@ a {
 
 .review-row strong {
 	overflow: hidden;
-	font-size: 11px;
+	font-size: 12px;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
 .review-row small {
-	color: rgb(17 19 17 / 0.56);
-	font-size: 9px;
+	color: rgb(17 19 17 / 0.62);
+	font-size: 11px;
 	white-space: nowrap;
 }
 
@@ -1503,6 +1607,11 @@ a {
 .review-row > svg {
 	width: 14px;
 	height: 14px;
+}
+
+.review-row:hover {
+	border-color: #bed700;
+	background: rgb(255 255 255 / 0.85);
 }
 
 .review-empty {
@@ -1595,24 +1704,8 @@ a {
 	border-radius: 999px;
 	background: var(--acid);
 	padding: 6px 9px;
-	font-size: 9px;
+	font-size: 11px;
 	font-weight: 700;
-}
-
-.overview-card svg {
-	width: 100%;
-	height: 70px;
-	margin-top: 8px;
-	overflow: visible;
-}
-
-.overview-card polyline {
-	fill: none;
-	stroke: #b1cc00;
-	stroke-linecap: round;
-	stroke-linejoin: round;
-	stroke-width: 2.4;
-	filter: drop-shadow(0 5px 8px rgb(174 202 0 / 0.2));
 }
 
 .overview-card dl {
@@ -1636,8 +1729,8 @@ a {
 }
 
 .overview-card dt {
-	color: #777d76;
-	font-size: 9px;
+	color: #565c55;
+	font-size: 11px;
 }
 
 .overview-card dd {
@@ -1664,11 +1757,11 @@ a {
 	justify-content: space-between;
 	border-bottom: 1px solid rgb(20 24 20 / 0.08);
 	padding-bottom: 10px;
-	font-size: 10px;
+	font-size: 12px;
 }
 
 .resource-list span {
-	color: #717770;
+	color: #575c55;
 }
 
 .resource-list strong {
@@ -1697,7 +1790,7 @@ a {
 	border: 1px solid rgb(255 255 255 / 0.28);
 	border-radius: 999px;
 	padding: 5px 8px;
-	font-size: 9px;
+	font-size: 11px;
 }
 
 .agent-layout {
@@ -1731,35 +1824,50 @@ a {
 }
 
 .agent-layout li small {
-	color: rgb(244 245 239 / 0.68);
-	font-size: 9.5px;
+	color: rgb(244 245 239 / 0.72);
+	font-size: 11px;
 }
 
-.agent-visual {
-	position: relative;
-	display: grid;
-	place-items: center;
+.agent-layout {
+	grid-template-columns: 1fr;
+	gap: 10px;
 }
 
-.agent-visual > svg {
-	position: relative;
-	z-index: 2;
-	width: 58px;
-	height: 58px;
-	filter: drop-shadow(0 14px 18px rgb(20 25 21 / 0.28));
-	stroke-width: 1;
+.agent-layout li {
+	grid-template-columns: 17px minmax(0, 1fr) auto auto;
 }
 
-.agent-visual span {
-	--angle: calc(var(--i) * 60deg);
-	position: absolute;
-	left: calc(50% + cos(var(--angle)) * 54px);
-	top: calc(50% + sin(var(--angle)) * 54px);
-	width: 8px;
-	height: 8px;
-	border: 1px solid rgb(255 255 255 / 0.7);
-	border-radius: 50%;
-	background: rgb(255 255 255 / 0.58);
+.agent-state {
+	border: 1px solid rgb(255 255 255 / 0.18);
+	border-radius: 999px;
+	padding: 2px 7px;
+	font-size: 11px;
+}
+
+.agent-state[data-state="ready"] {
+	border-color: rgb(231 255 47 / 0.35);
+	color: var(--acid);
+}
+
+.agent-state[data-state="unset"] {
+	border-color: rgb(240 162 148 / 0.4);
+	color: #f0a294;
+}
+
+.agent-state[data-state="loading"],
+.agent-state[data-state="unknown"] {
+	border-color: rgb(255 255 255 / 0.18);
+	color: rgb(244 245 239 / 0.72);
+}
+
+:global(.dark .agent-state[data-state="unset"]) {
+	border-color: rgb(179 64 47 / 0.5);
+	color: #b3402f;
+}
+
+:global(.dark .agent-state[data-state="loading"]),
+:global(.dark .agent-state[data-state="unknown"]) {
+	color: rgb(21 24 21 / 0.62);
 }
 
 .recent-section {
@@ -1780,7 +1888,7 @@ a {
 	place-items: center;
 	border-radius: 50%;
 	background: rgb(20 24 20 / 0.06);
-	font-size: 9px;
+	font-size: 11px;
 }
 
 .recent-controls {
@@ -1796,9 +1904,9 @@ a {
 	border: 0;
 	border-radius: 9px;
 	background: transparent;
-	color: #697068;
+	color: #575c55;
 	padding: 0 8px;
-	font-size: 9px;
+	font-size: 11px;
 }
 
 .recent-controls button:hover {
@@ -1845,10 +1953,15 @@ a {
 .recent-card-top > span {
 	border-radius: 999px;
 	background: rgb(173 199 0 / 0.13);
-	color: #6f8100;
-	padding: 4px 7px;
-	font-size: 8px;
+	color: #4f5c07;
+	padding: 4px 8px;
+	font-size: 11px;
 	font-weight: 700;
+}
+
+.recent-project-card[data-status="completed"] .recent-card-top > span {
+	background: var(--acid);
+	color: #111;
 }
 
 .recent-card-top button {
@@ -1859,7 +1972,7 @@ a {
 	border: 0;
 	border-radius: 8px;
 	background: transparent;
-	color: #8a8f89;
+	color: #575c55;
 }
 
 .recent-card-top button:hover {
@@ -1878,51 +1991,68 @@ a {
 }
 
 .recent-project-card h3 {
+	display: -webkit-box;
 	overflow: hidden;
-	margin: 9px 0 12px;
-	font-size: 11px;
+	margin: 9px 0 10px;
+	font-size: 12px;
 	font-weight: 650;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
 }
 
-.recent-progress {
+.recent-hint {
+	margin: 0 0 10px;
+	color: var(--panel-muted);
+	font-size: 11px;
+}
+
+.recent-error {
 	display: grid;
-	grid-template-columns: auto 1fr;
-	align-items: center;
-	gap: 9px;
+	place-items: center;
+	align-content: center;
+	gap: 10px;
+	margin-top: 14px;
+	border: 1px dashed rgb(20 24 20 / 0.18);
+	border-radius: 16px;
+	padding: 34px 16px;
+	text-align: center;
 }
 
-.recent-progress strong {
-	font-size: 20px;
-	font-weight: 520;
+.recent-error strong {
+	font-size: 13px;
 }
 
-.recent-progress > span {
-	height: 4px;
-	overflow: hidden;
+.recent-error span {
+	color: var(--panel-muted);
+	font-size: 12px;
+}
+
+.recent-error button {
+	border: 0;
 	border-radius: 999px;
-	background: rgb(20 24 20 / 0.1);
+	background: var(--graphite);
+	color: #f4f3ec;
+	padding: 9px 18px;
+	font-size: 12px;
+	font-weight: 650;
 }
 
-.recent-progress i {
-	display: block;
-	height: 100%;
-	border-radius: inherit;
-	background: #b5cf00;
+.recent-error button:hover {
+	background: var(--graphite-soft);
 }
 
 .recent-project-card footer {
 	display: grid;
-	grid-template-columns: auto 1fr 14px;
+	grid-template-columns: 1fr auto;
 	align-items: center;
 	gap: 6px;
 	margin-top: 12px;
-	color: #747a73;
-	font-size: 8px;
+	color: #575c55;
+	font-size: 11px;
 }
 
 .recent-project-card footer small {
+	font-size: 11px;
 	text-align: right;
 }
 
@@ -1961,8 +2091,8 @@ a {
 	border-radius: 999px;
 	background: var(--acid);
 	color: #111;
-	padding: 7px 10px;
-	font-size: 9px;
+	padding: 7px 12px;
+	font-size: 11px;
 	font-weight: 700;
 }
 
@@ -2053,7 +2183,7 @@ a {
 
 	.page-heading,
 	.nav-search,
-	.nav-actions > .icon-button:nth-of-type(2) {
+	.nav-actions > button[aria-label="模型设置"] {
 		display: none;
 	}
 
@@ -2108,9 +2238,7 @@ a {
 
 @media (max-width: 680px) {
 	.create-button span,
-	.nav-actions > .icon-button,
-	.workflow-step small,
-	.workflow-step::after {
+	.nav-actions > button[aria-label="模型设置"] {
 		display: none;
 	}
 
@@ -2147,20 +2275,6 @@ a {
 		transform: translateX(3px);
 	}
 
-	.workflow-line {
-		grid-template-columns: repeat(2, 1fr);
-		padding: 12px;
-	}
-
-	.workflow-step {
-		grid-template-columns: 36px 1fr;
-	}
-
-	.workflow-icon {
-		width: 36px;
-		height: 36px;
-	}
-
 	.insight-grid {
 		grid-template-columns: 1fr;
 	}
@@ -2176,7 +2290,9 @@ a {
 
 @media (prefers-reduced-motion: reduce) {
 	.liquid-surface::after,
-	.recent-loading span {
+	.recent-loading span,
+	.recent-project-card,
+	.continue-action {
 		animation: none;
 		transition: none;
 	}

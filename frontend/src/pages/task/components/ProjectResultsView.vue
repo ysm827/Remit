@@ -94,7 +94,6 @@ function verdictDot(verdict: MetricExplanation["verdict"]) {
     <header class="shrink-0 border-b bg-card px-5 py-4 lg:px-6">
       <div class="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <p class="text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{{ props.view === 'solve' ? 'Experiment ledger' : 'Evidence review' }}</p>
           <h1 :id="`${props.view}-view-title`" class="mt-1 text-lg font-semibold tracking-tight">{{ props.view === 'solve' ? '模型求解与实验记录' : '结果分析与质量复核' }}</h1>
           <p class="mt-1 text-xs text-muted-foreground">{{ props.view === 'solve' ? '查看每轮运行、候选模型与产物位置，不在页面铺开代码。' : '集中核对核心指标、基线改善、模型局限和论文可用证据。' }}</p>
         </div>

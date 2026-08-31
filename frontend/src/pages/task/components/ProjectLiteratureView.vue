@@ -251,7 +251,7 @@ const selectCard = (cardId: string) => {
             <li
               v-for="(location, index) in activeCard.source_locations"
               :key="index"
-              class="rounded-md border-l-2 border-[hsl(var(--info))] bg-[hsl(var(--surface-subtle))] px-3 py-2"
+              class="rounded-md border bg-[hsl(var(--surface-subtle))] px-3 py-2"
             >
               <p class="text-[10px] font-medium">
                 {{ location.section }}<span v-if="location.page" class="mono-data"> · 第 {{ location.page }} 页</span>
