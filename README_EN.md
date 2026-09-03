@@ -174,8 +174,8 @@ limitations. Those documents are transparent disclosures, not legal opinions.
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/star-history/assets/star-history-dark.svg" />
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/star-history/assets/star-history.svg" />
-    <img alt="Remit star history chart" src="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/star-history/assets/star-history.svg" width="800" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/refs/heads/star-history/assets/star-history-dark.svg?v=1" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/refs/heads/star-history/assets/star-history.svg?v=1" />
+    <img alt="Remit star history chart" src="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/refs/heads/star-history/assets/star-history.svg?v=1" width="800" />
   </picture>
 </p>

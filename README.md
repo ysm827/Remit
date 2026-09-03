@@ -220,9 +220,9 @@ Remit 面向可信的单用户本机环境，不具备公网多租户服务所�
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/star-history/assets/star-history-dark.svg" />
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/star-history/assets/star-history.svg" />
-    <img alt="Remit Star 增长曲线" src="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/star-history/assets/star-history.svg" width="800" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/refs/heads/star-history/assets/star-history-dark.svg?v=1" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/refs/heads/star-history/assets/star-history.svg?v=1" />
+    <img alt="Remit Star 增长曲线" src="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/refs/heads/star-history/assets/star-history.svg?v=1" width="800" />
   </picture>
 </p>
 
