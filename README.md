@@ -16,7 +16,7 @@
     <a href="#快速开始">快速开始</a> ·
     <a href="#模型配置">模型配置</a> ·
     <a href="./docs/workflow.md">完整介绍</a> ·
-    <a href="#star-趋势">Star 趋势</a> ·
+    <a href="#star-history-">Star History</a> ·
     <a href="#加入交流群">社区交流</a>
   </p>
   <p>
@@ -216,13 +216,13 @@ Remit 面向可信的单用户本机环境，不具备公网多租户服务所�
 因分支历史重建而改变。技术范围、残余分类和限制见 [NOTICE.md](NOTICE.md) 与
 [来源审计](docs/originality-audit.md)。这些材料用于透明披露，不构成法律结论。
 
-## Star 趋势
+## Star History ⭐
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/refs/heads/star-history/assets/star-history-dark.svg?v=1" />
-    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/refs/heads/star-history/assets/star-history.svg?v=1" />
-    <img alt="Remit Star 增长曲线" src="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/refs/heads/star-history/assets/star-history.svg?v=1" width="800" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/refs/heads/star-history/assets/star-history/star-history-dark.svg?v=2" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/refs/heads/star-history/assets/star-history/star-history-light.svg?v=2" />
+    <img alt="Remit Star History" src="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/refs/heads/star-history/assets/star-history/star-history-light.svg?v=2" width="800" />
   </picture>
 </p>
 

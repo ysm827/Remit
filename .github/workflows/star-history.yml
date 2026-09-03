@@ -26,6 +26,18 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: xpzouying/star-history@8b1f26dc5e9a17caa75da9351b688509ef312811 # v1
+      - uses: narayann7/star-history-action@4725f3547e0b75212e1e64766b7c5fca424f5477 # v1.0.6
         with:
-          branch: star-history
+          update-readme: "false"
+          commit: "false"
+      - name: Publish charts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan __star_history_publish
+          git reset -q
+          git add -f assets/star-history
+          git commit -q -m "chore: update star history chart"
+          git push -f origin HEAD:refs/heads/star-history
