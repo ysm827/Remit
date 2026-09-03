@@ -169,3 +169,13 @@ MathModelAgent. Rebuilding branch history does not change the provenance of
 earlier published revisions. See [NOTICE.md](NOTICE.md) and the
 [source-provenance audit](docs/originality-audit.md) for the technical scope and
 limitations. Those documents are transparent disclosures, not legal opinions.
+
+## Star history
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/star-history/assets/star-history-dark.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/star-history/assets/star-history.svg" />
+    <img alt="Remit star history chart" src="https://raw.githubusercontent.com/zhou2030109-glitch/Remit/star-history/assets/star-history.svg" width="800" />
+  </picture>
+</p>
