@@ -1,4 +1,4 @@
-"""终稿评委评审：按国赛评分维度给整篇论文打分并产出定向修改指令。
+"""终稿评委评审：按数学建模竞赛维度打分并产出定向修改指令。
 
 评审失败一律降级跳过，绝不阻塞交付。
 """
@@ -14,6 +14,8 @@ RUBRIC_KEYS = (
     "abstract",
     "modeling",
     "solution_validation",
+    "evidence",
+    "style",
     "writing",
     "innovation",
 )
@@ -21,6 +23,8 @@ RUBRIC_LABELS = {
     "abstract": "摘要质量",
     "modeling": "建模合理性",
     "solution_validation": "求解与验证",
+    "evidence": "主张与证据",
+    "style": "自然与题目特异表达",
     "writing": "写作规范",
     "innovation": "创新性",
 }
@@ -33,21 +37,29 @@ _JUDGE_SYSTEM = """你是全国大学生数学建模竞赛（CUMCM）的资深�
 - abstract 摘要质量：是否"针对问题N"逐问给出方法与核心数字、能否 3 分钟看懂全文贡献
 - modeling 建模合理性：方法选择依据、假设合理性、公式规范
 - solution_validation 求解与验证：结果可信度、基线对比、敏感性/稳健性分析
+- evidence 主张与证据：每个结论能否指向真实数字、图表、公式、实验或文献，引用是否可核验
+- style 自然与题目特异表达：无空泛套话、机械并列、重复句、模糊归因、术语漂移和夸大动词
 - writing 写作规范：结构完整、图表引用、表述严谨、无过程话术
 - innovation 创新性：是否在经典方法上有可信的改进点
 硬性要求：
-- weakest_sections 最多列 3 个真正拖分的章节，revision_directive 必须具体可执行
+- weakest_sections 最多列 2 个真正拖分的章节，revision_directive 必须具体可执行
 - 修改指令绝不允许改动任何数值结论（数值来自真实计算，只能改表达与结构）
+- 逐项执行四轮审查：论证逻辑→章节结构→表述质量→格式规范。无证据主张必须降级或删除
+- 不预测所谓“AI率”；只根据可观察的模板化痕迹评分。禁止用同义词替换伪装来源
 - section_key 只能取：firstPage/RepeatQues/analysisQues/modelAssumption/symbol/judge/eda/ques1..N/sensitivity_analysis
 只输出 JSON：
-{"scores": {"abstract": 8, "modeling": 8, "solution_validation": 8, "writing": 8, "innovation": 7},
+{"scores": {"abstract": 8, "modeling": 8, "solution_validation": 8, "evidence": 8, "style": 8, "writing": 8, "innovation": 7},
  "overall": 8,
  "weakest_sections": [{"section_key": "firstPage", "problems": "问题", "revision_directive": "怎么改"}],
  "summary": "一段总评"}"""
 
 
 async def judge_paper(
-    llm: LLM, paper_text: str, ques_count: int
+    llm: LLM,
+    paper_text: str,
+    ques_count: int,
+    *,
+    deterministic_findings: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """让评委模型给整篇论文打分；解析失败返回 None（降级跳过）。"""
     text = paper_text
@@ -58,7 +70,15 @@ async def judge_paper(
             + "\n\n[中间部分因过长省略，不得对省略内容下重写指令]\n\n"
             + text[-20000:]
         )
-    user_content = f"这是一篇 {ques_count} 问的参赛论文全文，请评审：\n\n{text}"
+    findings = ""
+    if deterministic_findings:
+        findings = (
+            "\n\n以下问题由确定性扫描发现，必须在最少的目标章节中全部处理：\n- "
+            + "\n- ".join(deterministic_findings)
+        )
+    user_content = (
+        f"这是一篇 {ques_count} 问的参赛论文全文，请评审：{findings}\n\n{text}"
+    )
     for attempt in range(1, 3):
         try:
             response = await llm.chat(
@@ -98,7 +118,7 @@ async def judge_paper(
             }
             for item in parsed.get("weakest_sections", [])
             if isinstance(item, dict) and str(item.get("section_key", "")).strip()
-        ][:3]
+        ][:MAX_REWRITE_SECTIONS]
         raw_overall = parsed.get("overall")
         if isinstance(raw_overall, (int, float, str)):
             try:

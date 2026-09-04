@@ -1,10 +1,14 @@
-"""Paper post-processing and DOCX export."""
+"""Paper post-processing plus reproducible LaTeX/PDF delivery."""
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 import shutil
+import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 from docx import Document
@@ -15,6 +19,8 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+from app.config.setting import settings
+from app.schemas.enums import CompTemplate
 from app.utils.log_util import logger
 
 MAX_ABSTRACT_CHARS = 700
@@ -25,6 +31,259 @@ KEYWORD_RE = re.compile(r"^\s*\*{0,2}\s*关(?:键)?词[:：]?\s*\*{0,2}")
 QUESTION_LEAD_RE = re.compile(
     r"^(?P<prefix>针对)?(?P<lead>问题[一二三四五六七八九十])[,，：: ]*(?P<body>.*)$",
 )
+
+_LEGACY_PAPER_OUTPUTS = (
+    "res.md",
+    "res_polished.md",
+    "res.docx",
+    "res_polished.docx",
+    "res_polished.pdf",
+    "paper_render.html",
+    "paper_pdf_header.tex",
+    "paper_reference.docx",
+)
+
+
+class PaperRenderError(RuntimeError):
+    """LaTeX 生成、编译或 PDF 复核失败。"""
+
+
+@dataclass(frozen=True)
+class PaperDeliverables:
+    """由同一份可编译 LaTeX 源码生成的最终交付物。"""
+
+    tex_path: Path
+    pdf_path: Path
+    report_path: Path
+    page_count: int
+
+
+def render_paper_deliverables(
+    markdown: str,
+    work_dir: str | Path,
+    comp_template: CompTemplate,
+) -> PaperDeliverables:
+    """将已校验终稿转换为 LaTeX，并由该源码编译、复核 PDF。"""
+    root = Path(work_dir).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    build_dir = root / ".remit" / "latex-build"
+    build_dir.mkdir(parents=True, exist_ok=True)
+    tex_path = root / "res.tex"
+    pdf_path = root / "res.pdf"
+    report_path = root / "paper_delivery_report.json"
+    pdf_path.unlink(missing_ok=True)
+    report_path.unlink(missing_ok=True)
+
+    _convert_markdown_to_latex(markdown, tex_path, root, build_dir, comp_template)
+    _validate_latex_source(tex_path)
+    engine = _compile_latex(tex_path, build_dir)
+    built_pdf = build_dir / "res.pdf"
+    if not built_pdf.is_file():
+        raise PaperRenderError("LaTeX 编译命令成功退出，但没有生成 res.pdf")
+    shutil.copy2(built_pdf, pdf_path)
+    pdf_metrics = inspect_pdf_artifact(
+        pdf_path,
+        comp_template=comp_template,
+        minimum_pages=settings.PAPER_MIN_PDF_PAGES,
+    )
+    report = {
+        "status": "pass",
+        "source": tex_path.name,
+        "pdf": pdf_path.name,
+        "compiler": engine,
+        "compile_passes": 2,
+        "tex_sha256": _sha256(tex_path),
+        "pdf_sha256": _sha256(pdf_path),
+        **pdf_metrics,
+    }
+    report_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    _remove_legacy_paper_outputs(root)
+    return PaperDeliverables(
+        tex_path=tex_path,
+        pdf_path=pdf_path,
+        report_path=report_path,
+        page_count=int(pdf_metrics["page_count"]),
+    )
+
+
+def _convert_markdown_to_latex(
+    markdown: str,
+    output_path: Path,
+    resource_path: Path,
+    build_dir: Path,
+    comp_template: CompTemplate,
+) -> None:
+    import pypandoc  # type: ignore[import-unresolved]
+
+    header_path = build_dir / "paper_header.tex"
+    header_path.write_text(
+        build_pdf_header(resource_path, comp_template), encoding="utf-8"
+    )
+    try:
+        pypandoc.convert_text(
+            markdown,
+            to="latex",
+            format="markdown+tex_math_dollars+tex_math_single_backslash+pipe_tables+raw_html",
+            outputfile=str(output_path),
+            extra_args=[
+                f"--resource-path={resource_path}",
+                f"--include-in-header={header_path}",
+                "--standalone",
+                "--wrap=none",
+            ],
+        )
+    except Exception as exc:
+        raise PaperRenderError(f"Pandoc 生成 LaTeX 失败: {exc}") from exc
+
+
+def _validate_latex_source(tex_path: Path) -> None:
+    if not tex_path.is_file() or tex_path.stat().st_size < 500:
+        raise PaperRenderError("生成的 res.tex 为空或内容异常短")
+    source = tex_path.read_text(encoding="utf-8")
+    required = ("\\documentclass", "\\begin{document}", "\\end{document}")
+    missing = [token for token in required if token not in source]
+    if missing:
+        raise PaperRenderError("res.tex 缺少完整文档结构: " + ", ".join(missing))
+    markdown_leaks = re.findall(r"(?m)^\s*(?:#{1,6}\s+|!\[[^\]]*\]\([^)]+\))", source)
+    if markdown_leaks:
+        raise PaperRenderError("res.tex 仍包含未转换的 Markdown 块标记")
+
+
+def _compile_latex(tex_path: Path, build_dir: Path) -> str:
+    configured = settings.LATEX_ENGINE.strip() or "xelatex"
+    engine = shutil.which(configured)
+    if not engine:
+        raise PaperRenderError(
+            f"找不到 LaTeX 编译器 {configured}；请安装 MiKTeX 或 TeX Live 并加入 PATH"
+        )
+
+    command = [
+        engine,
+        "-no-shell-escape",
+        "-interaction=nonstopmode",
+        "-halt-on-error",
+        "-file-line-error",
+        f"-output-directory={build_dir}",
+        tex_path.name,
+    ]
+    logs: list[str] = []
+    for compile_pass in range(1, 3):
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=tex_path.parent,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=settings.LATEX_COMPILE_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise PaperRenderError(
+                f"LaTeX 第 {compile_pass} 次编译超过 "
+                f"{settings.LATEX_COMPILE_TIMEOUT_SECONDS:g} 秒"
+            ) from exc
+        output = (completed.stdout or "") + "\n" + (completed.stderr or "")
+        logs.append(f"===== pass {compile_pass} =====\n{output}")
+        if completed.returncode != 0:
+            (build_dir / "compile-output.txt").write_text(
+                "\n".join(logs), encoding="utf-8"
+            )
+            tail = output[-3000:].strip()
+            raise PaperRenderError(
+                f"res.tex 第 {compile_pass} 次编译失败（退出码 "
+                f"{completed.returncode}）：{tail}"
+            )
+    (build_dir / "compile-output.txt").write_text(
+        "\n".join(logs), encoding="utf-8"
+    )
+    return Path(engine).name
+
+
+def inspect_pdf_artifact(
+    pdf_path: str | Path,
+    *,
+    comp_template: CompTemplate,
+    minimum_pages: int,
+) -> dict[str, object]:
+    """重开并渲染抽样页面，拒绝空白、损坏或纸型错误的 PDF。"""
+    import pymupdf
+
+    path = Path(pdf_path)
+    if not path.is_file() or path.stat().st_size < 1_000:
+        raise PaperRenderError("res.pdf 缺失或内容异常短")
+    try:
+        document = pymupdf.open(path)
+    except Exception as exc:
+        raise PaperRenderError(f"res.pdf 无法重新打开: {exc}") from exc
+
+    try:
+        if document.needs_pass:
+            raise PaperRenderError("res.pdf 被意外加密，无法验收")
+        page_count = document.page_count
+        if page_count < minimum_pages:
+            raise PaperRenderError(
+                f"res.pdf 仅 {page_count} 页，少于终稿下限 {minimum_pages} 页"
+            )
+        first_rect = document[0].rect
+        expected = (
+            (595.3, 841.9)
+            if comp_template == CompTemplate.CHINA
+            else (612.0, 792.0)
+        )
+        if abs(first_rect.width - expected[0]) > 8 or abs(first_rect.height - expected[1]) > 8:
+            label = "A4" if comp_template == CompTemplate.CHINA else "US Letter"
+            raise PaperRenderError(f"res.pdf 首页纸型不是要求的 {label}")
+
+        blank_pages: list[int] = []
+        total_text_chars = 0
+        for index, page in enumerate(document):
+            page_text = page.get_text().strip()
+            total_text_chars += len(page_text)
+            if not page_text and not page.get_images() and not page.get_drawings():
+                blank_pages.append(index + 1)
+            for block in page.get_text("blocks"):
+                x0, y0, x1, y1 = block[:4]
+                if x0 < -2 or y0 < -2 or x1 > page.rect.width + 2 or y1 > page.rect.height + 2:
+                    raise PaperRenderError(f"res.pdf 第 {index + 1} 页存在越界文本")
+        if blank_pages:
+            raise PaperRenderError(
+                "res.pdf 含完全空白页: " + ", ".join(map(str, blank_pages))
+            )
+        if total_text_chars < 1_000:
+            raise PaperRenderError("res.pdf 可提取正文不足 1000 字符，疑似字体或渲染损坏")
+
+        sampled_pages = sorted({0, page_count // 2, page_count - 1})
+        for index in sampled_pages:
+            pixmap = document[index].get_pixmap(matrix=pymupdf.Matrix(1, 1), alpha=False)
+            sample = pixmap.samples[:: max(1, pixmap.n * 20)]
+            if not sample or all(value > 248 for value in sample):
+                raise PaperRenderError(f"res.pdf 第 {index + 1} 页渲染结果近似全白")
+        return {
+            "page_count": page_count,
+            "paper_size": "A4" if comp_template == CompTemplate.CHINA else "Letter",
+            "blank_pages": blank_pages,
+            "extracted_text_chars": total_text_chars,
+            "rendered_pages_checked": [index + 1 for index in sampled_pages],
+        }
+    finally:
+        document.close()
+
+
+def _remove_legacy_paper_outputs(root: Path) -> None:
+    for filename in _LEGACY_PAPER_OUTPUTS:
+        (root / filename).unlink(missing_ok=True)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def render_paper_docx(task_id: str) -> Path:
@@ -814,20 +1073,29 @@ code, pre {
 """
 
 
-def build_pdf_header(resource_path: Path) -> str:
-    """Create a LaTeX header that can render Chinese text in PDF output."""
-    font_dir = resource_path.as_posix().rstrip("/") + "/"
+def build_pdf_header(
+    resource_path: Path,
+    comp_template: CompTemplate = CompTemplate.CHINA,
+) -> str:
+    """Create a portable XeLaTeX header for the selected competition."""
+    _ = resource_path
+    paper = "a4paper" if comp_template == CompTemplate.CHINA else "letterpaper"
     return f"""
+\\usepackage[{paper},top=2.4cm,bottom=2.3cm,left=2.5cm,right=2.5cm]{{geometry}}
 \\usepackage{{fontspec}}
 \\usepackage{{xeCJK}}
 \\usepackage{{amsmath,amssymb}}
-\\setmainfont{{Times New Roman}}
+\\usepackage{{booktabs,longtable,array,graphicx,float}}
+\\IfFontExistsTF{{Times New Roman}}{{\\setmainfont{{Times New Roman}}}}{{\\setmainfont{{TeX Gyre Termes}}}}
 \\setCJKmainfont[
-  Path={font_dir},
+  Path=./,
   BoldFont=simhei.ttf
 ]{{simhei.ttf}}
-\\setsansfont{{Arial}}
-\\setmonofont{{Consolas}}
+\\IfFontExistsTF{{Arial}}{{\\setsansfont{{Arial}}}}{{\\setsansfont{{TeX Gyre Heros}}}}
+\\IfFontExistsTF{{Consolas}}{{\\setmonofont{{Consolas}}}}{{\\setmonofont{{Latin Modern Mono}}}}
 \\XeTeXlinebreaklocale "zh"
 \\XeTeXlinebreakskip = 0pt plus 1pt
+\\setlength{{\\emergencystretch}}{{3em}}
+\\setlength{{\\parindent}}{{2em}}
+\\setlength{{\\parskip}}{{0.25em}}
 """

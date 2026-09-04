@@ -57,7 +57,6 @@ const taskId = ref<string | null>(null);
 const selectedOptions = ref({
 	template: "国赛",
 	language: "中文",
-	format: "Markdown",
 });
 
 const OPTION_GROUPS: {
@@ -77,12 +76,6 @@ const OPTION_GROUPS: {
 		title: "语言",
 		placeholder: "选择语言",
 		choices: ["中文", "英文"],
-	},
-	{
-		field: "format",
-		title: "格式",
-		placeholder: "选择格式",
-		choices: ["Markdown", "LaTeX"],
 	},
 ];
 
@@ -207,7 +200,7 @@ async function handleSubmit(): Promise<void> {
 			ques_all: question.value,
 			user_requirements: userRequirements.value,
 			comp_template: selectedOptions.value.template,
-			format_output: selectedOptions.value.format,
+			format_output: "LaTeX",
 		};
 		const attachments = uploadedFiles.value.concat(problemPdf.value);
 		const { data } = await submitModelingTask(request, attachments);
@@ -298,7 +291,7 @@ async function handleSubmit(): Promise<void> {
             </p>
           </div>
 
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div v-for="group in OPTION_GROUPS" :key="group.field" class="min-w-0">
               <Select v-model="selectedOptions[group.field]">
                 <SelectTrigger class="h-9">
@@ -314,6 +307,12 @@ async function handleSubmit(): Promise<void> {
                 </SelectContent>
               </Select>
             </div>
+          </div>
+          <div class="rounded-lg border bg-muted/40 px-3 py-2">
+            <p class="text-sm font-medium">固定交付：PDF + 可编译 LaTeX</p>
+            <p class="mt-0.5 text-xs text-muted-foreground">
+              终稿必须通过两次 XeLaTeX 编译和 PDF 渲染检查，不再生成 Markdown 或 DOCX 成稿。
+            </p>
           </div>
         </div>
         <div class="mt-4 flex justify-between">

@@ -20,7 +20,7 @@ class Problem(BaseModel):
     ques_all: str = ""
     user_requirements: str = ""
     comp_template: CompTemplate = CompTemplate.CHINA
-    format_output: FormatOutPut = FormatOutPut.Markdown
+    format_output: FormatOutPut = FormatOutPut.LaTeX
 
     def model_dump(self, **kwargs: Any) -> dict[str, Any]:
         """导出时把枚举还原为其线协议取值。"""

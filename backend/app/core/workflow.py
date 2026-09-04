@@ -58,6 +58,7 @@ from app.core.paper_judge import (
     judge_paper,
     save_review,
 )
+from app.core.paper_quality import audit_paper_style
 from app.core.pilot import (
     PILOT_RESULTS_FILENAME,
     PilotValidationError,
@@ -79,6 +80,7 @@ from app.schemas.A2A import (
     WriterResponse,
 )
 from app.schemas.request import Problem
+from app.schemas.enums import CompTemplate
 from app.schemas.response import SystemMessage
 from app.services.redis_manager import redis_manager
 from app.tools.base_interpreter import BaseCodeInterpreter
@@ -87,6 +89,11 @@ from app.tools.notebook_serializer import NotebookSerializer
 from app.tools.openalex_scholar import OpenAlexScholar
 from app.utils.common_utils import create_work_dir, get_config_template
 from app.utils.log_util import logger
+from app.utils.paper_polish import (
+    PaperRenderError,
+    polish_markdown,
+    render_paper_deliverables,
+)
 
 
 class WorkFlow:
@@ -2130,17 +2137,19 @@ class RemitWorkFlow(WorkFlow):
         if isinstance(existing, dict) and existing:
             # 哨兵值表示上次评审已降级跳过：一次 finalize 生命周期内不重试
             return None if existing.get("skipped") else existing
-        paper_path = Path(self.work_dir) / "res.md"
-        if not paper_path.is_file():
+        paper_text = user_output.get_result_to_save()
+        if not paper_text.strip():
             return None
         await publish_activity(
             self.task_id, "评委视角正在通读整篇论文并打分…", category="gate"
         )
         try:
+            deterministic_audit = audit_paper_style(paper_text)
             review = await judge_paper(
                 judge_llm,
-                paper_path.read_text(encoding="utf-8"),
+                paper_text,
                 self.ques_count,
+                deterministic_findings=list(deterministic_audit.issues),
             )
         except Exception as exc:
             logger.warning(f"终稿评审降级跳过: {exc}")
@@ -2163,6 +2172,8 @@ class RemitWorkFlow(WorkFlow):
                 ("abstract", "摘要"),
                 ("modeling", "建模"),
                 ("solution_validation", "求解验证"),
+                ("evidence", "证据"),
+                ("style", "表述"),
                 ("writing", "规范"),
                 ("innovation", "创新"),
             )
@@ -2309,13 +2320,25 @@ class RemitWorkFlow(WorkFlow):
         review = await self._review_and_polish_paper(
             state, user_output, writer_agent, judge_llm
         )
+        paper_markdown = polish_markdown(
+            user_output.get_result_to_save(), Path(self.work_dir)
+        )
         try:
-            gate_path = validate_final_paper(
+            validate_final_paper(
                 self.work_dir,
                 user_output.get_res(),
                 expected_sections=user_output.seq,
+                paper_text=paper_markdown,
             )
-        except DeliverableValidationError as error:
+            comp_template = CompTemplate(
+                str((state.get("problem") or {}).get("comp_template", "CHINA"))
+            )
+            delivery = render_paper_deliverables(
+                paper_markdown,
+                self.work_dir,
+                comp_template,
+            )
+        except (DeliverableValidationError, PaperRenderError, ValueError) as error:
             # 此时全部计算与写作已完成，损失最大，绝不作废任务。
             await redis_manager.publish_message(
                 self.task_id,
@@ -2338,7 +2361,11 @@ class RemitWorkFlow(WorkFlow):
         await redis_manager.publish_message(
             self.task_id,
             SystemMessage(
-                content=f"整篇论文通过最终硬门禁：{gate_path.name}",
+                content=(
+                    f"整篇论文通过最终硬门禁并完成两次 LaTeX 编译："
+                    f"{delivery.tex_path.name}、{delivery.pdf_path.name} "
+                    f"（{delivery.page_count} 页）"
+                ),
                 type="success",
             ),
         )
@@ -2359,15 +2386,19 @@ class RemitWorkFlow(WorkFlow):
         await self._require_human_approval(
             state,
             "finalize",
-            summary="整篇论文已合并并通过最终自动质量门禁，等待你的最终验收。",
-            artifacts=[gate_path.name, "res.md", "res.json"],
+            summary=(
+                "整篇论文已通过内容、表述、LaTeX 编译与 PDF 渲染门禁，"
+                "等待你的最终验收。"
+            ),
+            artifacts=[delivery.pdf_path.name, delivery.tex_path.name],
             explain={
                 "what_happened": (
-                    "全文已合并成一篇完整论文，并通过了最终硬门禁"
-                    "（章节齐全、字数达标、无占位符、图片可用）。" + review_summary
+                    "全文已合并为可编译 LaTeX，并由同一源码生成 PDF；"
+                    "章节、字数、证据表达、参考文献、图片、纸型、空白页与"
+                    "抽样渲染均已检查。" + review_summary
                 ),
                 "key_numbers": review_numbers,
-                "next_step": "批准后生成 docx 交付文件，任务完成",
+                "next_step": "批准后直接交付 res.pdf 与 res.tex，任务完成",
                 "revise_hint": "对某章不满意，退回对应章节修改后会自动重新合并。",
             },
         )

@@ -42,7 +42,7 @@ const totalCharacters = computed(() =>
       <div class="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 id="paper-view-title" class="mt-1 text-lg font-semibold tracking-tight">论文写作与版本预览</h1>
-          <p class="mt-1 text-xs text-muted-foreground">按工作流目录组织真实论文片段，公式、表格和图像引用保持 Markdown 渲染。</p>
+          <p class="mt-1 text-xs text-muted-foreground">按工作流目录预览真实论文片段；终稿固定交付 PDF 与可编译 LaTeX。</p>
         </div>
         <div class="flex items-center gap-2 text-[10px] text-muted-foreground">
           <span class="rounded-md border bg-[hsl(var(--surface-subtle))] px-2 py-1">{{ sections.length }} 个章节</span>
@@ -88,7 +88,7 @@ const totalCharacters = computed(() =>
           <div class="max-w-sm">
             <BookOpen class="mx-auto h-6 w-6 text-muted-foreground" aria-hidden="true" />
             <h2 class="mt-3 text-sm font-semibold">尚未生成论文内容</h2>
-            <p class="mt-1 text-[11px] leading-5 text-muted-foreground">通过前置节点的人工验收后，论文手会按目录逐节生成可编辑的 Markdown 内容。</p>
+            <p class="mt-1 text-[11px] leading-5 text-muted-foreground">通过前置节点验收后，论文手会逐节生成内容，最终统一编译为 PDF 与 LaTeX。</p>
           </div>
         </div>
       </main>

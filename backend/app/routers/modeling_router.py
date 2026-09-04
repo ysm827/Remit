@@ -16,7 +16,6 @@ from app.utils.common_utils import (
     create_task_id,
     create_work_dir,
     get_work_dir,
-    md_2_docx,
     ensure_safe_task_id,
 )
 from app.core.llm.llm_factory import LLMFactory
@@ -299,6 +298,8 @@ async def _schedule_new_task(
     user_requirements: str = "",
 ) -> dict[str, str]:
     """Publish the initial event and hand execution to FastAPI's task runner."""
+    # 继续接受旧客户端的 Markdown 枚举值，但最终交付契约固定为 PDF + LaTeX。
+    output_format = FormatOutPut.LaTeX
     await redis_manager.set(f"task_id:{task_id}", task_id)
     visible_prompt = problem_text.strip()
     if user_requirements.strip():
@@ -334,7 +335,7 @@ async def submit_bundled_example(
         task_id=task_id,
         problem_text=ques_all,
         template=CompTemplate.CHINA,
-        output_format=FormatOutPut.Markdown,
+        output_format=FormatOutPut.LaTeX,
     )
 
 
@@ -432,10 +433,8 @@ async def run_modeling_task_async(
         ),
     )
 
-    task_completed = False
     try:
         await asyncio.wait_for(task, timeout=settings.TASK_TIMEOUT_SECONDS)
-        task_completed = True
         workflow.mark_status("completed")
         _auto_resume_counts.pop(task_id, None)
 
@@ -528,9 +527,6 @@ async def run_modeling_task_async(
         _active_tasks.pop(task_id, None)
         _scheduled_tasks.discard(task_id)
         await redis_manager.clear_cancellation_request(task_id)
-        # 仅在正常完成时转换 md 为 docx
-        if task_completed:
-            md_2_docx(task_id)
 
 
 async def _auto_resume_after_failure(

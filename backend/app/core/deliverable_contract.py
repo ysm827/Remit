@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from app.core.paper_quality import audit_paper_style
+
 
 _REGRESSION_PATTERNS = (
     "预测",
@@ -1794,16 +1796,16 @@ def validate_final_paper(
     work_dir: str | Path,
     sections: dict[str, dict],
     expected_sections: list[str],
+    paper_text: str,
 ) -> Path:
-    """Validate the assembled Markdown paper and persist a gate report."""
+    """Validate the assembled paper source and persist a gate report."""
     root = Path(work_dir)
-    paper = root / "res.md"
-    if not paper.is_file() or paper.stat().st_size == 0:
-        raise DeliverableValidationError("缺少非空最终论文 res.md")
+    text = paper_text.strip()
+    if not text:
+        raise DeliverableValidationError("缺少非空终稿内容")
     missing = [key for key in expected_sections if key not in sections]
     if missing:
         raise DeliverableValidationError(f"最终论文缺少章节: {', '.join(missing)}")
-    text = paper.read_text(encoding="utf-8")
     for marker in _FAILURE_MARKERS:
         if marker.lower() in text.lower():
             raise DeliverableValidationError(f"最终论文包含失败/占位标记: {marker}")
@@ -1858,6 +1860,17 @@ def validate_final_paper(
         if not image.is_file() or image.stat().st_size == 0:
             raise DeliverableValidationError(f"论文引用图片不存在: {cleaned}")
 
+    style_audit = audit_paper_style(text)
+    style_report_path = root / "paper_quality_audit.json"
+    style_report_path.write_text(
+        json.dumps(style_audit.to_dict(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    if style_audit.issues:
+        raise DeliverableValidationError(
+            "终稿表述质量审计未通过：" + "；".join(style_audit.issues)
+        )
+
     report_path = root / "workflow_quality_gate.json"
     report_path.write_text(
         json.dumps(
@@ -1867,6 +1880,7 @@ def validate_final_paper(
                 "length_value": length_value,
                 "sections": expected_sections,
                 "referenced_images": image_paths,
+                "style_audit": style_audit.to_dict(),
             },
             ensure_ascii=False,
             indent=2,

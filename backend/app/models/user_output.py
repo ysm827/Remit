@@ -4,7 +4,10 @@
 1. 汇总各章节内容；
 2. 把正文中的行内引用 ``{[^n]: 出处}`` 归并去重；
 3. 按论文骨架顺序拼接，并将引用重排为连续编号；
-4. 追加参考文献列表并落盘（res.json / res.md）。
+4. 追加参考文献列表并在内部目录保存可恢复的结构化状态。
+
+最终论文不在这里落为 Markdown；工作流质量门通过后，统一生成可编译的
+``res.tex``，并由它编译出 ``res.pdf``。
 """
 
 import json
@@ -132,9 +135,11 @@ class UserOutput:
         return body + self._reference_list()
 
     def save_result(self) -> None:
-        """导出结构化章节（res.json）与成稿（res.md）。"""
+        """只保存可恢复的结构化章节；终稿由 LaTeX 交付器生成。"""
         root = Path(self.work_dir)
-        (root / "res.json").write_text(
+        internal = root / ".remit"
+        internal.mkdir(parents=True, exist_ok=True)
+        (internal / "paper_sections.json").write_text(
             json.dumps(self.res, ensure_ascii=False, indent=4), encoding="utf-8"
         )
-        (root / "res.md").write_text(self.get_result_to_save(), encoding="utf-8")
+        (root / "res.json").unlink(missing_ok=True)

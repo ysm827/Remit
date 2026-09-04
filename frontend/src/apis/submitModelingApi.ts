@@ -62,7 +62,7 @@ export function submitModelingTask(
 		ques_all: problem.ques_all,
 		user_requirements: problem.user_requirements ?? "",
 		comp_template: problem.comp_template ?? "CHINA",
-		format_output: problem.format_output ?? "Markdown",
+		format_output: problem.format_output ?? "LaTeX",
 	};
 	for (const [name, value] of Object.entries(fields)) {
 		formData.set(name, value);

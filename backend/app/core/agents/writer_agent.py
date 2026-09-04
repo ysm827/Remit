@@ -24,7 +24,7 @@ class WriterAgent(Agent):
         task_id: str,
         model: LLM,
         comp_template: CompTemplate = CompTemplate.CHINA,
-        format_output: FormatOutPut = FormatOutPut.Markdown,
+        format_output: FormatOutPut = FormatOutPut.LaTeX,
         scholar: OpenAlexScholar | None = None,
         context_window: int = 128000,
         cancel_event: asyncio.Event | None = None,

@@ -12,7 +12,6 @@ from app.config.setting import settings
 from app.schemas.enums import CompTemplate
 from app.utils.file_types import is_data_file
 from app.utils.log_util import logger
-from app.utils.paper_polish import render_paper_docx
 
 # task_id 直接参与拼路径，必须排除分隔符与父目录引用
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -131,12 +130,6 @@ def transform_link(task_id: str, content: str) -> str:
         lambda m: f"![{m.group(1)}]({settings.SERVER_HOST}/static/{task_id}/{m.group(2)})",
         content,
     )
-
-
-def md_2_docx(task_id: str) -> None:
-    """把任务产出的 Markdown 论文导出为 DOCX。"""
-    docx_path = render_paper_docx(task_id)
-    logger.info(f"DOCX 导出完成: {docx_path}")
 
 
 def split_footnotes(text: str) -> tuple[str, list[tuple[str, str]]]:

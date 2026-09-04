@@ -72,6 +72,9 @@ CODE_EXECUTION_HEARTBEAT_SECONDS=15
 CODE_EXECUTION_CANCEL_GRACE_SECONDS=10
 CODE_COMPLEXITY_GUARD_ENABLED=true
 CODE_LITERAL_LOOP_ITERATION_LIMIT=2000000
+LATEX_ENGINE=xelatex
+LATEX_COMPILE_TIMEOUT_SECONDS=120
+PAPER_MIN_PDF_PAGES=8
 ```
 
 `MATLAB_EXECUTABLE` 留空时会从 PATH 和常见安装目录查找。
@@ -79,6 +82,11 @@ MATLAB 与本地 Python 都受 `CODE_EXECUTION_HARD_LIMIT_SECONDS` 硬上限约�
 运行期间会定期发送心跳。Python 在工作线程执行，超时后重启 Jupyter 内核；
 MATLAB 超时后退出并在下一次调用重建 Engine。复杂度保护器会拒绝无界循环、
 阶乘级全排列，以及“元启发式搜索 × 重复实验 × O(n²) 成对校验”等高置信度失控模式。
+
+终稿固定交付 `res.tex` 与由该文件编译得到的 `res.pdf`，不再交付 Markdown
+或 DOCX。运行环境必须提供 XeLaTeX（Windows 推荐 MiKTeX，macOS/Linux 推荐
+TeX Live）；编译需连续两次成功，PDF 还会接受纸型、空白页、越界文本、可提取
+正文和抽样渲染检查。`PAPER_MIN_PDF_PAGES` 控制最低正文页数。
 
 ## 运行与重试预算
 

@@ -280,6 +280,8 @@ class TaskMessageHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(initial.msg_type, "user")
         self.assertIn("完整赛题内容", initial.content)
         self.assertIn("问题1输出预测值", initial.content)
+        self.assertEqual(len(background_tasks.tasks), 1)
+        self.assertEqual(background_tasks.tasks[0].args[3], FormatOutPut.LaTeX)
 
 
 if __name__ == "__main__":

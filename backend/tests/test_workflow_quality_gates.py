@@ -351,38 +351,39 @@ class WorkflowQualityGateTests(unittest.TestCase):
     def test_short_paper_fails_final_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            root.joinpath("res.md").write_text("这是很短的论文。", encoding="utf-8")
             sections = {"ques1": {"response_content": "内容", "footnotes": []}}
             with self.assertRaisesRegex(DeliverableValidationError, "不足9000字"):
-                validate_final_paper(root, sections, ["ques1"])
+                validate_final_paper(
+                    root, sections, ["ques1"], paper_text="这是很短的论文。"
+                )
 
     def test_final_paper_requires_numbered_question_parent_heading(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            root.joinpath("res.md").write_text(
-                "# 完整论文\n\n### 5.4.1 模型建立\n" + "有效建模证据。" * 2000,
-                encoding="utf-8",
+            paper_text = (
+                "# 完整论文\n\n### 5.4.1 模型建立\n" + "有效建模证据。" * 2000
             )
             sections = {"ques4": {"response_content": "内容", "footnotes": []}}
 
             with self.assertRaisesRegex(DeliverableValidationError, "5.4"):
-                validate_final_paper(root, sections, ["ques4"])
+                validate_final_paper(
+                    root, sections, ["ques4"], paper_text=paper_text
+                )
 
     def test_final_paper_rejects_writer_process_leakage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            root.joinpath("res.md").write_text(
-                (
-                    "# 完整论文\n\n## 5.4 问题四模型\n\n"
-                    "先核对质量报告中的 selected_model，随后直接给出可替换正文。\n"
-                    + "有效建模证据。" * 2000
-                ),
-                encoding="utf-8",
+            paper_text = (
+                "# 完整论文\n\n## 5.4 问题四模型\n\n"
+                "先核对质量报告中的 selected_model，随后直接给出可替换正文。\n"
+                + "有效建模证据。" * 2000
             )
             sections = {"ques4": {"response_content": "内容", "footnotes": []}}
 
             with self.assertRaisesRegex(DeliverableValidationError, "写作过程话术"):
-                validate_final_paper(root, sections, ["ques4"])
+                validate_final_paper(
+                    root, sections, ["ques4"], paper_text=paper_text
+                )
 
 
 if __name__ == "__main__":

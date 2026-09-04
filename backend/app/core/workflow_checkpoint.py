@@ -678,7 +678,19 @@ class WorkflowCheckpoint:
             state["write_results"] = results
 
         if node_id != "finalize":
-            for filename in ("res.json", "res.md", "workflow_quality_gate.json"):
+            for filename in (
+                "res.json",
+                "res.md",
+                "res.tex",
+                "res.pdf",
+                "res.docx",
+                "res_polished.md",
+                "res_polished.docx",
+                "res_polished.pdf",
+                "workflow_quality_gate.json",
+                "paper_quality_audit.json",
+                "paper_delivery_report.json",
+            ):
                 path = self.work_dir / filename
                 if path.is_file():
                     path.unlink()

@@ -15,6 +15,13 @@ router = APIRouter()
 _CSV_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
 _CSV_PREVIEW_MAX_ROWS = 50
 _CSV_PREVIEW_MAX_COLUMNS = 30
+_LEGACY_FINAL_OUTPUTS = {
+    "res.md",
+    "res_polished.md",
+    "res.docx",
+    "res_polished.docx",
+    "res_polished.pdf",
+}
 
 
 def _resolve_task_file(task_id: str, filename: str) -> Path:
@@ -46,9 +53,11 @@ async def get_download_all_url(task_id: str) -> dict:
 @router.get("/files")
 async def get_files(task_id: str) -> list[dict]:
     work_dir = get_work_dir(task_id)
+    root = Path(work_dir)
     return [
         {"filename": name, "file_type": name.split(".")[-1]}
         for name in get_current_files(work_dir, "all")
+        if (root / name).is_file() and name not in _LEGACY_FINAL_OUTPUTS
     ]
 
 
