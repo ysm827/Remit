@@ -15,6 +15,12 @@ export const messageKinds = [
 
 export type MessageKind = (typeof messageKinds)[number];
 export type SystemMessageType = "info" | "warning" | "success" | "error";
+export type TaskStatus =
+	| "running"
+	| "awaiting_approval"
+	| "completed"
+	| "failed"
+	| "stopped";
 
 /** 后端事件共有的传输信封。 */
 export interface BaseMessage {
@@ -22,6 +28,10 @@ export interface BaseMessage {
 	created_at?: string;
 	msg_type: MessageKind;
 	content?: string | null;
+	/** 持久化事件序号，用于重放排序和防止旧快照覆盖实时更新。 */
+	sequence?: number | null;
+	/** 任务生命周期状态；旧后端消息可能不包含此字段。 */
+	task_status?: TaskStatus | null;
 }
 
 type EventOf<K extends MessageKind, Payload extends object = object> = Omit<

@@ -28,21 +28,34 @@ export class TaskWebSocket {
 
 	/** 建立连接（重连时复用同一入口） */
 	connect(): void {
+		this.cancelTimer();
 		this.manualClose = false;
 		this.emit("connecting");
 
-		this.socket = new WebSocket(this.url);
-		this.socket.onopen = () => {
+		const previous = this.socket;
+		const connection = new WebSocket(this.url);
+		this.socket = connection;
+		previous?.close();
+		const isCurrent = () => this.socket === connection && !this.manualClose;
+		connection.onopen = () => {
+			if (!isCurrent()) return;
 			this.attempts = 0;
 			this.emit("connected");
 		};
-		this.socket.onmessage = (event) => {
-			this.onMessage(JSON.parse(event.data));
+		connection.onmessage = (event) => {
+			if (!isCurrent()) return;
+			try {
+				this.onMessage(JSON.parse(event.data));
+			} catch (error) {
+				console.error("忽略无法解析的 WebSocket 消息:", error);
+			}
 		};
-		this.socket.onerror = (error) => {
+		connection.onerror = (error) => {
+			if (!isCurrent()) return;
 			console.error("WebSocket 错误:", error);
 		};
-		this.socket.onclose = (event) => {
+		connection.onclose = (event) => {
+			if (!isCurrent()) return;
 			this.emit("disconnected");
 			if (!this.manualClose && event.code !== POLICY_REJECT_CODE) {
 				this.scheduleReconnect();
@@ -61,8 +74,9 @@ export class TaskWebSocket {
 	close(): void {
 		this.manualClose = true;
 		this.cancelTimer();
-		this.socket?.close();
+		const connection = this.socket;
 		this.socket = null;
+		connection?.close();
 		this.emit("disconnected");
 	}
 

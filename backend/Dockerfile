@@ -16,8 +16,10 @@ COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-install-project
 
-# 再复制项目代码
-COPY . .
+# 只复制运行所需源码与资源，用户密钥、日志和任务资料不属于镜像。
+COPY app ./app
+COPY README.md ./
+RUN mkdir -p project/work_dir project/repair_backups
 
 # 安装项目本身
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -25,5 +27,5 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 EXPOSE 8000
 
-# 直接使用 uvicorn，因为依赖已安装到系统 Python
+# uv 使用镜像中的 .venv 运行服务。
 CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--ws-ping-interval", "60", "--ws-ping-timeout", "120"]

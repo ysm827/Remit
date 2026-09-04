@@ -46,12 +46,12 @@ jobs:
       - name: Lint backend
         working-directory: backend
         run: uv run ruff check app tests
-      - name: Test backend
-        working-directory: backend
-        run: uv run pytest tests -q
       - name: Install Redis for POSIX launcher check
         if: runner.os == 'macOS'
         run: brew install redis
+      - name: Test backend
+        working-directory: backend
+        run: uv run pytest tests -q
       - name: Prepare frontend dependencies for launcher check
         working-directory: frontend
         run: pnpm install --frozen-lockfile --ignore-scripts
@@ -77,6 +77,9 @@ jobs:
       - name: Lint frontend
         working-directory: frontend
         run: pnpm run lint
+      - name: Test frontend behavior
+        working-directory: frontend
+        run: pnpm run test
       - name: Build frontend
         working-directory: frontend
         run: pnpm run build

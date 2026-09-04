@@ -41,7 +41,11 @@ def ensure_safe_task_id(task_id: str) -> str:
 
 
 def _task_dir(task_id: str) -> Path:
-    return Path("project") / "work_dir" / task_id
+    root = Path("project") / "work_dir"
+    target = root / ensure_safe_task_id(task_id)
+    if target.resolve().parent != root.resolve():
+        raise ValueError("任务目录越出工作目录")
+    return target
 
 
 def _install_fonts(work_dir: Path) -> None:
@@ -77,7 +81,7 @@ def get_work_dir(task_id: str) -> str:
         FileNotFoundError: 目录不存在。
     """
     work_dir = _task_dir(task_id)
-    if not work_dir.exists():
+    if not work_dir.is_dir():
         logger.error(f"工作目录不存在: {work_dir}")
         raise FileNotFoundError(f"工作目录不存在: {work_dir}")
     return str(work_dir)

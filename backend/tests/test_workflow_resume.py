@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -143,6 +144,44 @@ class WorkflowResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("model_scout_proposal", resumed)
             self.assertNotIn("model_council", resumed)
             self.assertEqual(resumed["fable_critic_calls_used"], 1)
+
+    def test_revising_upstream_removes_stale_solver_evidence(self) -> None:
+        for target in ("coordinator", "research", "analysis", "modeler", "pilot"):
+            with self.subTest(target=target), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                root.joinpath("input.csv").write_text("original input")
+                checkpoint = WorkflowCheckpoint(root)
+                state = checkpoint.initialize(self._problem())
+                self._complete_planning(checkpoint, state)
+                for node in ("solve:eda", "pilot", "solve:ques1"):
+                    checkpoint.complete_node(state, node)
+                for key in ("eda", "ques1"):
+                    artifact = f"{key}_evidence.csv"
+                    root.joinpath(artifact).write_text("old evidence")
+                    root.joinpath(f"{key}_quality_report.json").write_text(
+                        json.dumps({"artifacts": [artifact, "input.csv"]})
+                    )
+                    state["solution_results"][key] = {
+                        "artifacts": [artifact, "input.csv"]
+                    }
+                pending = checkpoint.request_approval(
+                    state, "solve:ques1", summary="review result"
+                )
+
+                checkpoint.request_revision(
+                    checkpoint.load(), pending["checkpoint_id"],
+                    "Use a different model and rerun the evidence", target,
+                )
+
+                self.assertTrue(root.joinpath("input.csv").is_file())
+                self.assertFalse(root.joinpath("ques1_evidence.csv").exists())
+                self.assertFalse(root.joinpath("ques1_quality_report.json").exists())
+                self.assertEqual(
+                    root.joinpath("eda_evidence.csv").exists(), target == "pilot"
+                )
+                self.assertEqual(
+                    root.joinpath("eda_quality_report.json").exists(), target == "pilot"
+                )
 
     def test_legacy_manual_review_artifacts_survive_resume_for_human_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

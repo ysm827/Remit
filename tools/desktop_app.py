@@ -68,6 +68,7 @@ EXTERNAL_LINK_GUARD_SCRIPT = r"""
 })();
 """
 
+
 def _load_icon_data_uri() -> str:
     """Embed the local app icon so the loading page works before Vite starts."""
     try:
@@ -141,6 +142,7 @@ class DesktopApp:
         self.tray: pystray.Icon | None = None
         self.exit_requested = False
         self.shutdown_event = threading.Event()
+        self.service_lock = threading.Lock()
         self.settings = self._load_settings()
 
     def run(self) -> None:
@@ -177,7 +179,7 @@ class DesktopApp:
         finally:
             self.shutdown_event.set()
             self._stop_tray()
-            self._stop_services()
+            self._shutdown_services()
 
     def _on_webview_started(self) -> None:
         self._start_tray()
@@ -196,8 +198,11 @@ class DesktopApp:
         except Exception:
             logging.debug("External link guard could not be installed", exc_info=True)
 
-    def _bootstrap_services(self) -> None:
-        try:
+    def _launch_services(self) -> bool:
+        """串行化服务启动与最终清理，退出后不能再启动新的后台进程。"""
+        with self.service_lock:
+            if self.shutdown_event.is_set():
+                return False
             logging.info("Desktop service bootstrap started")
             self._set_status("正在清理上次未正常退出的服务…", 16)
             cleanup = subprocess.run(
@@ -223,6 +228,8 @@ class DesktopApp:
                 )
             logging.info("Stale desktop services cleaned up")
 
+            if self.shutdown_event.is_set():
+                return False
             self._set_status("正在启动 Redis、后端和前端…", 28)
             completed = subprocess.run(
                 [
@@ -246,29 +253,46 @@ class DesktopApp:
                     f"后台服务启动器返回失败（代码 {completed.returncode}）"
                 )
             logging.info("Service launcher returned successfully")
+            return not self.shutdown_event.is_set()
 
+    def _shutdown_services(self) -> None:
+        """等当前启动命令结束后再清理，避免退出与后台启动互相越过。"""
+        self.shutdown_event.set()
+        with self.service_lock:
+            self._stop_services()
+
+    def _bootstrap_services(self) -> None:
+        try:
+            if not self._launch_services():
+                return
             self._set_status("后端服务初始化中…", 55)
             if not self._wait_until_ready(BACKEND_URL, timeout=120):
+                if self.shutdown_event.is_set():
+                    return
                 raise RuntimeError("后端在 120 秒内没有就绪")
             logging.info("Backend is ready")
 
             self._set_status("前端界面初始化中…", 80)
             if not self._wait_until_ready(FRONTEND_URL, timeout=60):
+                if self.shutdown_event.is_set():
+                    return
                 raise RuntimeError("前端在 60 秒内没有就绪")
             logging.info("Frontend is ready")
 
             if self.shutdown_event.is_set() or self.window is None:
                 return
             self._set_status("启动完成，正在进入工作台…", 100)
-            time.sleep(0.35)
+            if self.shutdown_event.wait(0.35):
+                return
             self.window.load_url(FRONTEND_URL)
             logging.info("WebView navigation requested: %s", FRONTEND_URL)
         except Exception as exc:
             logging.exception("Desktop bootstrap failed")
-            self._show_error(
-                "Remit 启动失败",
-                f"{exc}\n\n请查看日志目录：\n{LOG_DIR}",
-            )
+            if not self.shutdown_event.is_set():
+                self._show_error(
+                    "Remit 启动失败",
+                    f"{exc}\n\n请查看日志目录：\n{LOG_DIR}",
+                )
 
     def _set_status(self, text: str, progress: int) -> None:
         if self.window is None or self.shutdown_event.is_set():

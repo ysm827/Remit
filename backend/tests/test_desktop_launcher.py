@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import threading
 import unittest
 from pathlib import Path
 from urllib.parse import urlparse
@@ -26,6 +27,67 @@ def load_desktop_module():
     "桌面壳使用 Win32 API（ctypes.windll/pythonnet），仅 Windows 可加载",
 )
 class DesktopLauncherTests(unittest.TestCase):
+    def test_exit_waits_for_inflight_launch_before_final_cleanup(self) -> None:
+        """在清理期或启动期退出，都不能让最终清理先于服务启动。"""
+        for phase in ("cleanup", "start"):
+            with self.subTest(phase=phase):
+                desktop = load_desktop_module()
+                app = desktop.DesktopApp()
+                app.window = MagicMock()
+                entered = threading.Event()
+                release = threading.Event()
+                events: list[str] = []
+
+                def run_script(args, **_kwargs):
+                    current = "cleanup" if str(desktop.STOP_SCRIPT) in args else "start"
+                    events.append(current)
+                    if current == phase:
+                        entered.set()
+                        if not release.wait(5):
+                            raise AssertionError("test launch was not released")
+                    return subprocess.CompletedProcess(args, 0)
+
+                with (
+                    patch.object(desktop.subprocess, "run", side_effect=run_script),
+                    patch.object(
+                        app,
+                        "_stop_services",
+                        side_effect=lambda: events.append("final-stop"),
+                    ),
+                    patch.object(app, "_show_error") as show_error,
+                ):
+                    boot = threading.Thread(target=app._bootstrap_services)
+                    shutdown = threading.Thread(target=app._shutdown_services)
+                    boot.start()
+                    try:
+                        self.assertTrue(entered.wait(5))
+                        shutdown.start()
+                        self.assertTrue(app.shutdown_event.wait(5))
+                        self.assertNotIn("final-stop", events)
+                    finally:
+                        release.set()
+                        boot.join(5)
+                        if shutdown.ident is not None:
+                            shutdown.join(5)
+                    self.assertFalse(boot.is_alive())
+                    self.assertFalse(shutdown.is_alive())
+                    show_error.assert_not_called()
+                expected = (
+                    ["cleanup", "final-stop"]
+                    if phase == "cleanup"
+                    else ["cleanup", "start", "final-stop"]
+                )
+                self.assertEqual(events, expected)
+                app.window.load_url.assert_not_called()
+
+    def test_cancelled_bootstrap_never_launches_services(self) -> None:
+        desktop = load_desktop_module()
+        app = desktop.DesktopApp()
+        app.shutdown_event.set()
+        with patch.object(desktop.subprocess, "run") as run:
+            app._bootstrap_services()
+        run.assert_not_called()
+
     def test_desktop_sets_explicit_windows_app_identity(self) -> None:
         """解释器承载的窗口必须有独立 AppID，否则任务栏显示 Python 图标。"""
         desktop = load_desktop_module()

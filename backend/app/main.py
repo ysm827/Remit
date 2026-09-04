@@ -57,6 +57,7 @@ app.add_middleware(
 )
 
 # 任务产物（图表、论文、数据）按 task_id 挂载
+(_PROJECT_ROOT / "work_dir").mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory="project/work_dir"), name="static")
 
 

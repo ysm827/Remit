@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from app.core.llm.llm_factory import LLMFactory
@@ -205,8 +205,15 @@ async def get_writer_seque():
 
 
 @router.get("/messages")
-async def get_task_messages(task_id: str):
-    return await redis_manager.load_task_messages(http_task_id(task_id))
+async def get_task_messages(
+    task_id: str,
+    after: int = Query(default=0, ge=0),
+    limit: int | None = Query(default=None, ge=1, le=1000),
+):
+    try:
+        return await redis_manager.load_task_messages(http_task_id(task_id), after, limit)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="任务消息档案不可读，请检查本地历史文件") from exc
 
 
 @router.post("/tasks/{task_id}/messages", response_model=UserMessage)
@@ -407,6 +414,13 @@ def _delete_task_work_dir(task_id: str) -> bool:
     return True
 
 
+def _task_is_scheduled(task_id: str) -> bool:
+    """消息可能尚未发布开始事件，删除还必须核对本机执行注册表。"""
+    from app.routers.modeling_router import _active_tasks, _scheduled_tasks
+
+    return task_id in _active_tasks or task_id in _scheduled_tasks
+
+
 @router.delete("/tasks", response_model=ClearTaskHistoryResponse)
 async def clear_task_history():
     """永久清空全部已结束任务；存在运行中任务时不删除任何内容。"""
@@ -415,6 +429,7 @@ async def clear_task_history():
         str(summary["task_id"])
         for summary in summaries
         if summary.get("status") in {"running", "awaiting_approval"}
+        or _task_is_scheduled(str(summary["task_id"]))
     ]
     if running_tasks:
         raise HTTPException(
@@ -447,7 +462,7 @@ async def delete_task(task_id: str):
     messages = await redis_manager.load_task_messages(safe_task_id)
     if not messages:
         raise HTTPException(status_code=404, detail="历史任务不存在")
-    if redis_manager.task_status_from_messages(messages) in {
+    if _task_is_scheduled(safe_task_id) or redis_manager.task_status_from_messages(messages) in {
         "running",
         "awaiting_approval",
     }:

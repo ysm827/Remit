@@ -1,4 +1,5 @@
 import "katex/dist/katex.min.css";
+import DOMPurify from "dompurify";
 import katex from "katex";
 import { type MarkedOptions, marked } from "marked";
 
@@ -75,11 +76,14 @@ export function renderMarkdown(
 		...options,
 		async: false,
 	});
-	return typeof result === "string" ? result : "";
+	// 模型正文与引用来源均不可信；必须在公式和 Markdown 全部展开后净化。
+	// MathML / SVG 是 KaTeX 的可访问公式与伸缩符号所需的安全子集。
+	return DOMPurify.sanitize(typeof result === "string" ? result : "", {
+		USE_PROFILES: { html: true, mathMl: true, svg: true },
+		FORBID_TAGS: ["style", "form", "input", "button", "textarea", "select"],
+	});
 }
 
 export function getMarkdownLines(content: string): number {
 	return content.split("\n").length;
 }
-
-export { marked };

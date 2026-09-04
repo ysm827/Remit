@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import BeforeValidator
+from pydantic import BeforeValidator, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -147,6 +147,9 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     REDIS_URL: str = "redis://redis:6379/0"
     REDIS_MAX_CONNECTIONS: int = 32
+    UPLOAD_MAX_FILE_BYTES: int = Field(default=128 * 1024 * 1024, gt=0)
+    UPLOAD_MAX_TOTAL_BYTES: int = Field(default=512 * 1024 * 1024, gt=0)
+    UPLOAD_MAX_FILES: int = Field(default=100, gt=0)
     CORS_ALLOW_ORIGINS: Annotated[list[str] | str, BeforeValidator(parse_cors)] = "*"
     SERVER_HOST: str = "http://localhost:18000"
     DEEPSEEK_MODEL: str | None = None

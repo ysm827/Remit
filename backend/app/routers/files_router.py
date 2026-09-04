@@ -3,7 +3,10 @@
 import csv
 import os
 import subprocess
+import asyncio
+import sys
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException
 
@@ -24,16 +27,22 @@ _LEGACY_FINAL_OUTPUTS = {
 }
 
 
-def _resolve_task_file(task_id: str, filename: str) -> Path:
-    """把 (task_id, filename) 解析为工作目录内的安全绝对路径。"""
+def _resolve_task_directory(task_id: str) -> Path:
+    """所有文件接口使用同一任务目录边界。"""
     try:
         safe_id = ensure_safe_task_id(task_id)
-        work_dir = Path(get_work_dir(safe_id)).resolve()
+        return Path(get_work_dir(safe_id)).resolve()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="非法任务ID") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="任务工作目录不存在") from exc
 
+
+def _resolve_task_file(task_id: str, filename: str) -> Path:
+    """把 (task_id, filename) 解析为工作目录内的安全绝对路径。"""
+    work_dir = _resolve_task_directory(task_id)
+    if not filename or "\\" in filename or ":" in filename:
+        raise HTTPException(status_code=400, detail="非法文件路径")
     target = (work_dir / filename).resolve()
     if not target.is_relative_to(work_dir):
         raise HTTPException(status_code=400, detail="文件路径越出工作目录")
@@ -42,22 +51,29 @@ def _resolve_task_file(task_id: str, filename: str) -> Path:
 
 @router.get("/download_url")
 async def get_download_url(task_id: str, filename: str) -> dict:
-    return {"download_url": f"{settings.SERVER_HOST}/static/{task_id}/{filename}"}
+    target = _resolve_task_file(task_id, filename)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    safe_id = ensure_safe_task_id(task_id)
+    return {
+        "download_url": f"{settings.SERVER_HOST}/static/{safe_id}/{quote(filename, safe='/')}"
+    }
 
 
 @router.get("/download_all_url")
 async def get_download_all_url(task_id: str) -> dict:
-    return {"download_url": f"{settings.SERVER_HOST}/static/{task_id}/all.zip"}
+    return await get_download_url(task_id, "all.zip")
 
 
 @router.get("/files")
 async def get_files(task_id: str) -> list[dict]:
-    work_dir = get_work_dir(task_id)
-    root = Path(work_dir)
+    root = _resolve_task_directory(task_id)
     return [
         {"filename": name, "file_type": name.split(".")[-1]}
-        for name in get_current_files(work_dir, "all")
-        if (root / name).is_file() and name not in _LEGACY_FINAL_OUTPUTS
+        for name in get_current_files(str(root), "all")
+        if (root / name).is_file()
+        and (root / name).resolve().is_relative_to(root)
+        and name not in _LEGACY_FINAL_OUTPUTS
     ]
 
 
@@ -99,11 +115,15 @@ async def preview_csv(task_id: str, filename: str, max_rows: int = 20) -> dict:
 @router.get("/open_folder")
 async def open_folder(task_id: str) -> dict:
     """在系统文件管理器中打开任务工作目录。"""
-    work_dir = get_work_dir(task_id)
+    work_dir = str(_resolve_task_directory(task_id))
     if os.name == "nt":
-        subprocess.run(["explorer", work_dir], check=False)
+        command = ["explorer", work_dir]
     elif os.name == "posix":
-        subprocess.run(["open", work_dir], check=False)
+        command = ["open" if sys.platform == "darwin" else "xdg-open", work_dir]
     else:
         raise HTTPException(status_code=500, detail=f"不支持的操作系统: {os.name}")
+    try:
+        await asyncio.to_thread(subprocess.run, command, check=False, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(status_code=503, detail="无法打开系统文件管理器") from exc
     return {"message": "打开工作目录成功", "work_dir": work_dir}

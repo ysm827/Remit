@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
@@ -44,12 +46,75 @@ RUNTIME_PYTHON = ROOT / "runtime" / "python" / "python.exe"
 REDIS_EXE = ROOT / "tools" / "redis" / "redis-server.exe"
 BACKEND_DIR = ROOT / "backend"
 LOG_DIR = ROOT / "logs"
+APPLICATION_OWNER_PATH = LOG_DIR / "app-owner.json"
 ICON_PATH = ROOT / "assets" / "remit-m-icon.ico"
 KERNEL_JSON = (
     ROOT / "runtime" / "share" / "jupyter" / "kernels" / "python3" / "kernel.json"
 )
 
 _services: list[subprocess.Popen] = []
+
+
+def _acquire_single_instance(*, allow_existing: bool = False) -> int | None:
+    """同一安装只保留一个服务所有者，重复启动只打开已有界面。"""
+    install_id = hashlib.sha256(str(ROOT.resolve()).casefold().encode()).hexdigest()[
+        :24
+    ]
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    handle = kernel32.CreateMutexW(None, False, f"Local\\RemitPackagedApp-{install_id}")
+    if not handle:
+        raise ctypes.WinError()
+    if kernel32.GetLastError() == 183 and not allow_existing:
+        kernel32.CloseHandle(handle)
+        return None
+    return int(handle)
+
+
+def _release_single_instance(handle: int) -> None:
+    ctypes.windll.kernel32.CloseHandle(handle)
+
+
+def _record_application_owner() -> None:
+    """停止命令必须先结束正在启动服务的所有者，避免清理后又被重启。"""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    APPLICATION_OWNER_PATH.write_text(
+        json.dumps({"pid": os.getpid(), "created": psutil.Process().create_time()}),
+        encoding="utf-8",
+    )
+
+
+def _clear_application_owner() -> None:
+    try:
+        APPLICATION_OWNER_PATH.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _stop_application_owner() -> None:
+    """只停止身份记录对应的本安装启动器，绝不信任复用后的 PID。"""
+    try:
+        identity = json.loads(APPLICATION_OWNER_PATH.read_text(encoding="utf-8"))
+        pid = int(identity["pid"])
+        created = float(identity["created"])
+    except (OSError, ValueError, TypeError, KeyError):
+        return
+    if pid <= 0 or pid == os.getpid():
+        return
+    try:
+        process = psutil.Process(pid)
+        if process.create_time() == created and _process_belongs_to_install(pid):
+            _terminate_pid(pid)
+            try:
+                process.wait(timeout=5)
+            except psutil.TimeoutExpired as exc:
+                raise RuntimeError("无法停止当前 Remit 实例，请先从托盘退出") from exc
+    except psutil.NoSuchProcess:
+        pass
+    _clear_application_owner()
 
 
 def _log_file(name: str) -> Path:
@@ -474,13 +539,45 @@ def main() -> int:
     configure_logging()
 
     if args.check:
-        print(check_installation())
+        result = check_installation()
+        print(result)
+        if result != "PACKAGED_APP_CHECK_OK":
+            logging.error(result)
+            return 1
         return 0
 
     if args.stop:
-        stop_services()
+        # 保持命名对象存活到清理完成，停止期间重复点击不能另建服务所有者。
+        stop_guard = _acquire_single_instance(allow_existing=True)
+        if stop_guard is None:
+            raise RuntimeError("无法锁定 Remit 停止过程")
+        try:
+            _stop_application_owner()
+            stop_services()
+        finally:
+            _release_single_instance(stop_guard)
         return 0
 
+    handle = _acquire_single_instance()
+    if handle is None:
+        if args.no_ui:
+            return 0
+        if wait_until_ready(FRONTEND_URL, timeout=180) and open_user_interface():
+            return 0
+        show_startup_error("已有 Remit 实例尚未就绪，请查看其启动日志")
+        return 1
+    try:
+        _record_application_owner()
+        return _run_application(no_ui=args.no_ui)
+    finally:
+        try:
+            _clear_application_owner()
+        finally:
+            _release_single_instance(handle)
+
+
+def _run_application(*, no_ui: bool) -> int:
+    """由持有单实例句柄的进程管理服务和托盘。"""
     try:
         ensure_redis_running()
         prepare_jupyter_kernelspec()
@@ -500,7 +597,7 @@ def main() -> int:
         stop_services()
         return 1
 
-    if args.no_ui:
+    if no_ui:
         print(f"Remit is running at {FRONTEND_URL}")
         try:
             while True:

@@ -173,6 +173,7 @@ uv run pytest tests -q
 
 cd ../frontend
 pnpm run lint
+pnpm run test
 pnpm run build
 
 cd ..

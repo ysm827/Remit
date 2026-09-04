@@ -24,6 +24,7 @@ import type {
 	Message,
 	ModelerMessage,
 	ProgressMessage,
+	TaskStatus,
 	TaskWorkspaceSnapshot,
 	WriterMessage,
 } from "@/utils/response";
@@ -87,6 +88,9 @@ function isInterpreterMessage(message: Message): message is InterpreterMessage {
 
 /** 只有整个任务的完成/停止/失败消息才是终态。 */
 function isTerminalTaskMessage(message: Message): boolean {
+	if (message.task_status) {
+		return ["completed", "failed", "stopped"].includes(message.task_status);
+	}
 	if (message.msg_type !== "system") {
 		return false;
 	}
@@ -104,6 +108,7 @@ function isTerminalTaskMessage(message: Message): boolean {
 }
 
 function isTaskStartMessage(message: Message): boolean {
+	if (message.task_status) return message.task_status === "running";
 	if (message.msg_type !== "system") {
 		return false;
 	}
@@ -113,6 +118,17 @@ function isTaskStartMessage(message: Message): boolean {
 		content.startsWith("任务从节点 ") ||
 		content.startsWith("任务继续处理")
 	);
+}
+
+/** 优先消费线协议状态；仅为历史消息保留中文文案兼容。 */
+function taskStatusOf(message: Message): TaskStatus | null {
+	if (message.task_status) return message.task_status;
+	if (isApprovalMessage(message)) return "awaiting_approval";
+	if (isTaskStartMessage(message)) return "running";
+	if (!isTerminalTaskMessage(message) || message.msg_type !== "system")
+		return null;
+	if (message.type === "success") return "completed";
+	return message.type === "error" ? "failed" : "stopped";
 }
 
 /** 解析消息时间戳；缺失或非法时返回 null */
@@ -127,6 +143,9 @@ function parseTimestamp(message: Message): number | null {
 /** 按时间戳升序排列；无法解析时间戳的消息保持相对顺序 */
 function orderByTimestamp(items: Message[]): Message[] {
 	return [...items].sort((a, b) => {
+		if (a.sequence != null && b.sequence != null) {
+			return a.sequence - b.sequence;
+		}
 		const ta = parseTimestamp(a);
 		const tb = parseTimestamp(b);
 		if (ta === null || tb === null) {
@@ -134,6 +153,23 @@ function orderByTimestamp(items: Message[]): Message[] {
 		}
 		return ta - tb;
 	});
+}
+
+/** 固定 ID 的进度消息也会重放；旧版本不能覆盖已经收到的新版。 */
+function isOlderOrSameMessage(incoming: Message, existing: Message): boolean {
+	if (existing.sequence != null && incoming.sequence == null) return true;
+	if (incoming.sequence != null && existing.sequence != null) {
+		return incoming.sequence <= existing.sequence;
+	}
+	const incomingTime = parseTimestamp(incoming);
+	const existingTime = parseTimestamp(existing);
+	if (
+		incomingTime !== null &&
+		existingTime !== null &&
+		incomingTime < existingTime
+	)
+		return true;
+	return JSON.stringify(incoming) === JSON.stringify(existing);
 }
 
 /** 播放短促提示音；失败时静默降级 */
@@ -195,6 +231,17 @@ export const useTaskStore = defineStore("task", () => {
 
 	/** WebSocket 实例 */
 	let socket: TaskWebSocket | null = null;
+	/** 切换项目、离开页面后，旧连接和旧请求的回调都必须失效。 */
+	let connectionEpoch = 0;
+	const messageLoads = new Map<string, number>();
+	const approvalLoads = new Map<string, number>();
+	const workspaceLoads = new Map<string, number>();
+	const workspaceReadVersions = new Map<string, number>();
+	const stateRevisions = new Map<string, number>();
+	const liveMessageVersions = new Map<string, Map<string, number>>();
+	let liveVersion = 0;
+	let historyLoadVersion = 0;
+	let workspaceRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 	/** WebSocket 连接状态 */
 	const wsStatus = ref<ConnectionState>("disconnected");
@@ -203,7 +250,12 @@ export const useTaskStore = defineStore("task", () => {
 	const taskHistoryLoadError = ref(false);
 
 	/** 任务是否正在运行 */
-	const isRunning = ref(false);
+	const taskStatuses = ref<Record<string, TaskStatus>>({});
+	const isRunning = computed(() =>
+		currentTaskId.value
+			? taskStatuses.value[currentTaskId.value] === "running"
+			: false,
+	);
 
 	/** 每个任务当前唯一有效的待审核节点。 */
 	const pendingApprovalsByTask = ref<Record<string, ApprovalMessage | null>>(
@@ -241,8 +293,25 @@ export const useTaskStore = defineStore("task", () => {
 
 	// ---- 消息桶维护 ----
 
+	function nextVersion(versions: Map<string, number>, taskId: string): number {
+		const version = (versions.get(taskId) ?? 0) + 1;
+		versions.set(taskId, version);
+		return version;
+	}
+
+	function isActiveSession(taskId: string, epoch: number): boolean {
+		return currentTaskId.value === taskId && connectionEpoch === epoch;
+	}
+
+	function latestStateMessage(taskId: string): Message | undefined {
+		return [...(messagesByTask.value[taskId] ?? [])]
+			.reverse()
+			.find((message) => taskStatusOf(message) !== null);
+	}
+
 	/** 设置当前活跃任务 */
 	function setCurrentTask(taskId: string): void {
+		if (currentTaskId.value !== taskId) reviseDraft.value = "";
 		currentTaskId.value = taskId;
 		if (typeof window !== "undefined") {
 			window.localStorage.setItem(CURRENT_TASK_STORAGE_KEY, taskId);
@@ -269,7 +338,7 @@ export const useTaskStore = defineStore("task", () => {
 	}
 
 	/** 追加消息；同 ID 视为更新（WebSocket 回显与 REST 返回可能重复） */
-	function appendMessage(taskId: string, message: Message): void {
+	function appendMessage(taskId: string, message: Message): boolean {
 		ensureTaskBucket(taskId);
 		const bucket = messagesByTask.value[taskId];
 		const seen = seenMessageIdsByTask.get(taskId);
@@ -277,29 +346,40 @@ export const useTaskStore = defineStore("task", () => {
 		if (message.id && seen?.has(message.id)) {
 			const index = bucket.findIndex((existing) => existing.id === message.id);
 			if (index >= 0) {
+				if (isOlderOrSameMessage(message, bucket[index])) return false;
 				bucket[index] = message;
 			}
 			messagesByTask.value[taskId] = orderByTimestamp(bucket);
-			return;
+			return true;
 		}
 		if (message.id) {
 			seen?.add(message.id);
 		}
 		messagesByTask.value[taskId] = orderByTimestamp([...bucket, message]);
+		return true;
 	}
 
 	/** 合并历史消息（用于加载历史记录） */
-	function mergeMessages(taskId: string, incoming: Message[]): void {
+	function mergeMessages(
+		taskId: string,
+		incoming: Message[],
+		startedAt: number,
+	): void {
 		ensureTaskBucket(taskId);
-		const byId = new Map<string, Message>();
-		for (const message of [...messagesByTask.value[taskId], ...incoming]) {
-			if (message.id) {
+		const byId = new Map(
+			messagesByTask.value[taskId].map((message) => [message.id, message]),
+		);
+		for (const message of incoming) {
+			// 旧后端没有 sequence 时，发起请求后收到的实时内容优先于该快照。
+			const changedDuringLoad =
+				(liveMessageVersions.get(taskId)?.get(message.id) ?? 0) > startedAt;
+			if (changedDuringLoad && message.sequence == null) continue;
+			const existing = byId.get(message.id);
+			if (!existing || !isOlderOrSameMessage(message, existing))
 				byId.set(message.id, message);
-			}
 		}
-		const merged = orderByTimestamp(Array.from(byId.values()));
-		messagesByTask.value[taskId] = merged;
-		seenMessageIdsByTask.set(taskId, new Set(merged.map((m) => m.id)));
+		messagesByTask.value[taskId] = orderByTimestamp([...byId.values()]);
+		seenMessageIdsByTask.set(taskId, new Set(byId.keys()));
 	}
 
 	/** 依据当前消息流重算“是否运行中”（从尾部向前找最近的状态事件） */
@@ -307,16 +387,9 @@ export const useTaskStore = defineStore("task", () => {
 		if (currentTaskId.value !== taskId) {
 			return;
 		}
-		const bucket = messagesByTask.value[taskId] ?? [];
-		const lastSignal = [...bucket]
-			.reverse()
-			.find(
-				(m) =>
-					isApprovalMessage(m) ||
-					isTerminalTaskMessage(m) ||
-					isTaskStartMessage(m),
-			);
-		isRunning.value = lastSignal ? isTaskStartMessage(lastSignal) : false;
+		const lastSignal = latestStateMessage(taskId);
+		const status = lastSignal ? taskStatusOf(lastSignal) : null;
+		if (status) taskStatuses.value[taskId] = status;
 	}
 
 	// ---- 实时通道 ----
@@ -326,28 +399,43 @@ export const useTaskStore = defineStore("task", () => {
 		closeWebSocket();
 		setCurrentTask(taskId);
 		ensureTaskBucket(taskId);
+		syncRunningState(taskId);
+		const epoch = connectionEpoch;
 
-		const url = `${websocketBaseUrl()}/task/${taskId}`;
+		const url = `${websocketBaseUrl()}/task/${encodeURIComponent(taskId)}`;
 
 		const handlePayload = (data: unknown) => {
+			if (!isActiveSession(taskId, epoch)) return;
 			if (!isMessagePayload(data)) {
 				console.warn("忽略非标准任务消息:", data);
 				return;
 			}
-			appendMessage(taskId, data);
+			if (!appendMessage(taskId, data)) return;
+			const versions =
+				liveMessageVersions.get(taskId) ?? new Map<string, number>();
+			versions.set(data.id, ++liveVersion);
+			liveMessageVersions.set(taskId, versions);
 			if (data.msg_type === "progress" || data.msg_type === "approval") {
-				void loadTaskWorkspace(taskId);
+				scheduleWorkspaceRefresh(taskId);
 			}
+			// 服务端可能重放较早的审批/启动事件，只有最新生命周期事件能改当前状态。
+			const status = taskStatusOf(data);
+			if (!status || latestStateMessage(taskId)?.id !== data.id) return;
+			nextVersion(stateRevisions, taskId);
+			nextVersion(approvalLoads, taskId);
+			taskStatuses.value[taskId] = status;
+			taskHistory.value = taskHistory.value.map((task) =>
+				task.task_id === taskId ? { ...task, status } : task,
+			);
 			if (isApprovalMessage(data)) {
 				pendingApprovalsByTask.value[taskId] = data;
-				isRunning.value = false;
 				notifyUser(`等待你的审核：${data.node_label}`, data.summary);
 				void loadTaskHistory();
 				return;
 			}
 			if (isTerminalTaskMessage(data)) {
 				pendingApprovalsByTask.value[taskId] = null;
-				isRunning.value = false;
+				scheduleWorkspaceRefresh(taskId);
 				if (data.msg_type === "system" && data.type === "error") {
 					notifyUser("任务需要你处理", data.content ?? "任务执行失败");
 				}
@@ -357,34 +445,70 @@ export const useTaskStore = defineStore("task", () => {
 			if (isTaskStartMessage(data)) {
 				// 任务重新跑起来说明审批已被处理（可能在别处批准），清掉残留横幅
 				pendingApprovalsByTask.value[taskId] = null;
-				isRunning.value = true;
+				scheduleWorkspaceRefresh(taskId);
 				void loadTaskHistory();
 			}
 		};
 
 		socket = new TaskWebSocket(url, handlePayload, (status) => {
+			if (!isActiveSession(taskId, epoch)) return;
 			wsStatus.value = status;
+			// 先建立通道再补历史，覆盖首次进入与断线期间遗漏的事件。
+			if (status === "connected") {
+				void loadTaskMessages(taskId);
+				void loadTaskHistory();
+			}
 		});
 		socket.connect();
 	}
 
 	/** 关闭 WebSocket 连接 */
-	function closeWebSocket(): void {
+	function closeWebSocket(taskId?: string): void {
+		if (taskId && currentTaskId.value !== taskId) return;
+		connectionEpoch += 1;
+		if (workspaceRefreshTimer !== null) {
+			clearTimeout(workspaceRefreshTimer);
+			workspaceRefreshTimer = null;
+		}
 		if (socket) {
 			socket.close();
 			socket = null;
 		}
+		wsStatus.value = "disconnected";
+	}
+
+	function scheduleWorkspaceRefresh(taskId: string): void {
+		if (workspaceRefreshTimer !== null) clearTimeout(workspaceRefreshTimer);
+		// 重放会密集推送多个节点；合并刷新，避免为每条旧进度发起一次请求。
+		nextVersion(workspaceLoads, taskId);
+		const epoch = connectionEpoch;
+		workspaceRefreshTimer = setTimeout(() => {
+			workspaceRefreshTimer = null;
+			if (isActiveSession(taskId, epoch)) void loadTaskWorkspace(taskId);
+		}, 100);
 	}
 
 	// ---- 数据加载 ----
 
 	/** 加载任务的历史消息 */
 	async function loadTaskMessages(taskId: string): Promise<void> {
-		setCurrentTask(taskId);
+		if (currentTaskId.value !== taskId) return;
+		const epoch = connectionEpoch;
+		const version = nextVersion(messageLoads, taskId);
+		const startedAt = liveVersion;
 		ensureTaskBucket(taskId);
 		try {
 			const response = await getTaskMessages(taskId);
-			mergeMessages(taskId, (response.data ?? []).filter(isMessagePayload));
+			if (
+				!isActiveSession(taskId, epoch) ||
+				messageLoads.get(taskId) !== version
+			)
+				return;
+			mergeMessages(
+				taskId,
+				(response.data ?? []).filter(isMessagePayload),
+				startedAt,
+			);
 			syncRunningState(taskId);
 			await Promise.all([
 				loadPendingApproval(taskId),
@@ -395,23 +519,40 @@ export const useTaskStore = defineStore("task", () => {
 		}
 	}
 
-	/** 加载每个阶段的冻结产物和真实完成状态。 */
+	/** 加载冻结产物；失败返回 null，被更新请求取代时返回 undefined。 */
 	async function loadTaskWorkspace(taskId: string) {
+		if (currentTaskId.value !== taskId) return undefined;
+		const epoch = connectionEpoch;
+		const version = nextVersion(workspaceLoads, taskId);
+		const startedAt = liveVersion;
+		const isCurrent = () =>
+			isActiveSession(taskId, epoch) && workspaceLoads.get(taskId) === version;
 		try {
 			const response = await getTaskWorkspace(taskId);
+			if (!isCurrent()) return undefined;
+			workspaceReadVersions.set(taskId, startedAt);
 			workspaceSnapshotsByTask.value[taskId] = response.data;
 			return response.data;
 		} catch (error) {
+			if (!isCurrent()) return undefined;
 			console.error("加载项目阶段产物失败:", error);
-			workspaceSnapshotsByTask.value[taskId] = null;
+			// 短暂失败保留最后一次有效快照，旧请求也不能清空后来成功的结果。
 			return null;
 		}
 	}
 
 	/** 从检查点恢复当前待审核节点，不能只依赖实时消息。 */
 	async function loadPendingApproval(taskId: string): Promise<void> {
+		if (currentTaskId.value !== taskId) return;
+		const epoch = connectionEpoch;
+		const version = nextVersion(approvalLoads, taskId);
 		try {
 			const response = await getPendingApproval(taskId);
+			if (
+				!isActiveSession(taskId, epoch) ||
+				approvalLoads.get(taskId) !== version
+			)
+				return;
 			const pending = response.data.pending;
 			pendingApprovalsByTask.value[taskId] = pending
 				? {
@@ -422,9 +563,17 @@ export const useTaskStore = defineStore("task", () => {
 						options: ["approve", "revise"],
 					}
 				: null;
-			if (currentTaskId.value === taskId && pending) {
-				isRunning.value = false;
-			}
+			if (pending) taskStatuses.value[taskId] = "awaiting_approval";
+			else if (
+				[
+					"running",
+					"awaiting_approval",
+					"completed",
+					"failed",
+					"stopped",
+				].includes(response.data.status)
+			)
+				taskStatuses.value[taskId] = response.data.status as TaskStatus;
 		} catch (error) {
 			console.error("加载人工审核状态失败:", error);
 		}
@@ -432,11 +581,14 @@ export const useTaskStore = defineStore("task", () => {
 
 	/** 加载可跨刷新、跨后端重启恢复的任务列表 */
 	async function loadTaskHistory(): Promise<void> {
+		const version = ++historyLoadVersion;
 		try {
 			const response = await getTaskHistory();
+			if (version !== historyLoadVersion) return;
 			taskHistory.value = response.data ?? [];
 			taskHistoryLoadError.value = false;
 		} catch (error) {
+			if (version !== historyLoadVersion) return;
 			// 首页必须区分"没有项目"和"加载失败"，否则后端抖动会被当成数据被清空。
 			taskHistoryLoadError.value = true;
 			console.error("加载任务历史失败:", error);
@@ -448,15 +600,18 @@ export const useTaskStore = defineStore("task", () => {
 	/** 永久删除历史任务，并同步清理本地缓存。 */
 	async function deleteTask(taskId: string) {
 		const response = await deleteTaskAPI(taskId);
+		historyLoadVersion += 1;
 		taskHistory.value = taskHistory.value.filter((t) => t.task_id !== taskId);
 		delete messagesByTask.value[taskId];
 		delete pendingApprovalsByTask.value[taskId];
 		delete workspaceSnapshotsByTask.value[taskId];
 		seenMessageIdsByTask.delete(taskId);
+		liveMessageVersions.delete(taskId);
+		workspaceReadVersions.delete(taskId);
+		delete taskStatuses.value[taskId];
 
 		if (currentTaskId.value === taskId) {
 			closeWebSocket();
-			isRunning.value = false;
 			clearCurrentTaskSelection();
 		}
 		return response.data;
@@ -465,13 +620,16 @@ export const useTaskStore = defineStore("task", () => {
 	/** 永久清空全部历史任务，并同步清理当前选择和本地缓存。 */
 	async function clearTaskHistory() {
 		const response = await clearTaskHistoryAPI();
+		historyLoadVersion += 1;
 		closeWebSocket();
 		taskHistory.value = [];
 		messagesByTask.value = {};
 		pendingApprovalsByTask.value = {};
 		workspaceSnapshotsByTask.value = {};
 		seenMessageIdsByTask.clear();
-		isRunning.value = false;
+		liveMessageVersions.clear();
+		workspaceReadVersions.clear();
+		taskStatuses.value = {};
 		clearCurrentTaskSelection();
 		return response.data;
 	}
@@ -504,10 +662,18 @@ export const useTaskStore = defineStore("task", () => {
 
 	/** 取消正在运行的任务 */
 	async function stopTask(taskId: string) {
+		const epoch = connectionEpoch;
+		const revision = stateRevisions.get(taskId);
 		try {
 			const { data } = await cancelTaskAPI(taskId);
 			if (data.success) {
-				isRunning.value = false;
+				if (
+					isActiveSession(taskId, epoch) &&
+					stateRevisions.get(taskId) === revision
+				) {
+					taskStatuses.value[taskId] = "stopped";
+					nextVersion(approvalLoads, taskId);
+				}
 				await loadTaskHistory();
 			} else {
 				await loadTaskMessages(taskId);
@@ -521,9 +687,11 @@ export const useTaskStore = defineStore("task", () => {
 
 	/** 从用户选择的持久化节点继续运行原任务。 */
 	async function resumeTask(taskId: string, nodeId: string) {
+		const epoch = connectionEpoch;
+		const revision = stateRevisions.get(taskId);
 		const response = await resumeTaskAPI(taskId, nodeId);
 		if (response.data.success) {
-			markTaskRunning(taskId);
+			markTaskRunning(taskId, epoch, revision);
 		}
 		return response.data;
 	}
@@ -535,6 +703,8 @@ export const useTaskStore = defineStore("task", () => {
 		feedback = "",
 		targetNodeId?: string,
 	) {
+		const epoch = connectionEpoch;
+		const revision = stateRevisions.get(taskId);
 		const approval = pendingApprovalsByTask.value[taskId];
 		if (!approval) {
 			throw new Error("当前没有待审核节点");
@@ -545,19 +715,27 @@ export const useTaskStore = defineStore("task", () => {
 			feedback,
 			target_node_id: targetNodeId,
 		});
-		pendingApprovalsByTask.value[taskId] = null;
-		markTaskRunning(taskId);
+		if (!response.data.success) throw new Error(response.data.message);
+		markTaskRunning(taskId, epoch, revision);
 		return response.data;
 	}
 
-	/** 任务进入运行态后的统一收尾：本地置位、历史刷新、重连实时通道 */
-	function markTaskRunning(taskId: string): void {
-		setCurrentTask(taskId);
-		isRunning.value = true;
+	/** 保留已建立的实时通道；迟到的操作响应不能抢回别的项目或覆盖下一次审批。 */
+	function markTaskRunning(
+		taskId: string,
+		epoch: number,
+		revision: number | undefined,
+	): void {
+		if (!isActiveSession(taskId, epoch)) return;
+		if (stateRevisions.get(taskId) === revision) {
+			taskStatuses.value[taskId] = "running";
+			pendingApprovalsByTask.value[taskId] = null;
+			nextVersion(approvalLoads, taskId);
+			scheduleWorkspaceRefresh(taskId);
+		}
 		taskHistory.value = taskHistory.value.map((t) =>
-			t.task_id === taskId ? { ...t, status: "running" } : t,
+			t.task_id === taskId ? { ...t, status: taskStatuses.value[taskId] } : t,
 		);
-		connectWebSocket(taskId);
 		void loadTaskHistory();
 	}
 
@@ -635,11 +813,34 @@ export const useTaskStore = defineStore("task", () => {
 		});
 	}
 
-	/** 最新的工作流进度快照（后端固定 id 推送，取最后一条即可）。 */
-	const latestProgress = computed<ProgressMessage | null>(
-		() => workspaceSnapshot.value?.progress ?? lastProgressMessage.value,
-	);
 	const lastProgressMessage = lastMessageOfType<ProgressMessage>("progress");
+	/** 实时进度与工作区快照各有刷新节奏，显示有更新证据的一份。 */
+	const latestProgress = computed<ProgressMessage | null>(() => {
+		const snapshot = workspaceSnapshot.value?.progress;
+		const message = lastProgressMessage.value;
+		if (!snapshot) return message;
+		if (!message) return snapshot;
+		if (snapshot.sequence != null && message.sequence != null) {
+			return message.sequence > snapshot.sequence ? message : snapshot;
+		}
+		const snapshotTime = parseTimestamp(snapshot);
+		const messageTime = parseTimestamp(message);
+		if (
+			snapshotTime !== null &&
+			messageTime !== null &&
+			snapshotTime !== messageTime
+		) {
+			return messageTime > snapshotTime ? message : snapshot;
+		}
+		// 旧响应无时间/序号时，用请求开始时已见的实时版本判断：
+		// 请求期间或之后到达的消息优先，否则采用更新读取的权威快照。
+		const taskId = currentTaskId.value;
+		if (!taskId) return message;
+		const receivedAt = liveMessageVersions.get(taskId)?.get(message.id) ?? 0;
+		return receivedAt > (workspaceReadVersions.get(taskId) ?? -1)
+			? message
+			: snapshot;
+	});
 
 	/** 最新的实时活动播报（不落盘，只在任务运行时出现）。 */
 	const latestActivity = lastMessageOfType<ActivityMessage>("activity");

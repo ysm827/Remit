@@ -73,13 +73,27 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str) -> None:
         await websocket.close(code=1008, reason="Task not found")
         return
 
+    try:
+        after = int(getattr(websocket, "query_params", {}).get("after", "0"))
+        if after < 0:
+            raise ValueError("negative cursor")
+    except (TypeError, ValueError):
+        await websocket.close(code=1008, reason="Invalid message cursor")
+        return
     await ws_manager.connect(websocket)
-    pubsub = await redis_manager.subscribe_to_task(safe_task_id)
+    pubsub = None
     watcher = asyncio.create_task(_watch_client(websocket))
     channel = f"task:{safe_task_id}:messages"
     logger.info(f"WebSocket connected for task: {safe_task_id}")
 
     try:
+        # 先订阅再读取档案，历史查询期间的消息会被 Redis 缓冲。
+        # Redis 暂时离线时，持久化补偿仍可送达审批和结束事件。
+        try:
+            pubsub = await redis_manager.subscribe_to_task(safe_task_id)
+        except Exception as exc:
+            logger.warning(f"实时订阅失败，使用持久化补偿: {exc}")
+        next_replay = 0.0
         while True:
             if watcher.done():
                 if (err := watcher.exception()) is not None:
@@ -89,13 +103,38 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str) -> None:
             if _link_closed(websocket):
                 break
 
+            now = asyncio.get_running_loop().time()
+            if now >= next_replay:
+                while True:
+                    history = await redis_manager.load_task_messages(safe_task_id, after, 200)
+                    for payload in history:
+                        if not await _try_send(websocket, payload):
+                            return
+                        after = max(after, int(payload.get("sequence") or 0))
+                    if len(history) < 200:
+                        break
+                next_replay = now + 1.0
+                if pubsub is None:
+                    try:
+                        pubsub = await redis_manager.subscribe_to_task(safe_task_id)
+                    except Exception:
+                        pass
+
             try:
-                incoming = await pubsub.get_message(ignore_subscribe_messages=True)
+                incoming = await pubsub.get_message(ignore_subscribe_messages=True) if pubsub else None
+            except WebSocketDisconnect:
+                break
             except Exception as exc:
                 if _is_closed_send_error(exc) or _link_closed(websocket):
                     break
                 logger.error(f"Error in websocket loop: {exc}")
-                await asyncio.sleep(1)
+                if pubsub is not None:
+                    try:
+                        await pubsub.aclose()
+                    except Exception:
+                        pass
+                    pubsub = None
+                await asyncio.sleep(_POLL_INTERVAL)
                 continue
 
             if incoming:
@@ -108,6 +147,13 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str) -> None:
                     payload = SystemMessage(
                         content="实时消息解析失败，已忽略异常数据。", type="error"
                     ).model_dump()
+                if not isinstance(payload, dict):
+                    continue
+                sequence = payload.get("sequence")
+                if isinstance(sequence, int):
+                    # 有序持久化事件统一从档案发送，避免并发广播倒序造成游标跳跃。
+                    next_replay = 0.0
+                    continue
                 if not await _try_send(websocket, payload):
                     logger.info(f"发送失败（连接已关），结束转发 {safe_task_id}")
                     break
@@ -120,12 +166,14 @@ async def websocket_endpoint(websocket: WebSocket, task_id: str) -> None:
             watcher.cancel()
         await asyncio.gather(watcher, return_exceptions=True)
         try:
-            await pubsub.unsubscribe(channel)
+            if pubsub is not None:
+                await pubsub.unsubscribe(channel)
         except Exception as exc:
             logger.warning(f"WebSocket Redis 退订失败 task_id={safe_task_id}: {exc}")
         try:
             # unsubscribe 不会把 pubsub 专用连接还给连接池，需要显式关闭
-            await pubsub.aclose()
+            if pubsub is not None:
+                await pubsub.aclose()
         except Exception as exc:
             logger.warning(f"WebSocket Redis 连接关闭失败 task_id={safe_task_id}: {exc}")
         ws_manager.disconnect(websocket)

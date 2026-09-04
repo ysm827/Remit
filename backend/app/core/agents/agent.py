@@ -77,18 +77,36 @@ class Agent:
         """透传调用底层 LLM；挂接了取消事件时可被即时打断。"""
         if not self.cancel_event:
             return await self.model.chat(**kwargs)
+        if self.cancel_event.is_set():
+            raise asyncio.CancelledError("任务被用户停止")
 
         chat_task = asyncio.create_task(self.model.chat(**kwargs))
         watch_task = asyncio.create_task(self.cancel_event.wait())
-        done, pending = await asyncio.wait(
-            {chat_task, watch_task}, return_when=asyncio.FIRST_COMPLETED
-        )
-        if watch_task in done:
-            for task in pending:
-                task.cancel()
-            raise asyncio.CancelledError("任务被用户停止")
-        watch_task.cancel()
-        return await chat_task
+        try:
+            done, _ = await asyncio.wait(
+                {chat_task, watch_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if watch_task in done:
+                raise asyncio.CancelledError("任务被用户停止")
+            return await chat_task
+        finally:
+            # 外层任务取消或超时会直接打断 wait；必须同步回收两个子任务，
+            # 否则已经显示停止的任务仍可能重试付费请求或继续发布消息。
+            for task in (chat_task, watch_task):
+                if not task.done():
+                    task.cancel()
+            cleanup = asyncio.gather(chat_task, watch_task, return_exceptions=True)
+            cancelled_during_cleanup = False
+            while True:
+                try:
+                    # 连续点击停止或超时与停止同时发生时，后续取消不能
+                    # 再次打断 provider 已经开始的连接释放过程。
+                    await asyncio.shield(cleanup)
+                    break
+                except asyncio.CancelledError:
+                    cancelled_during_cleanup = True
+            if cancelled_during_cleanup:
+                raise asyncio.CancelledError("任务被用户停止")
 
     async def run(self, prompt: str, system_prompt: str, sub_title: str) -> Any:
         """标准的单轮问答入口：注入 system + user，返回回复文本。"""

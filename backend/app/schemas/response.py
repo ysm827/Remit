@@ -11,6 +11,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 from app.schemas.enums import AgentType
+from app.services.task_state import TaskStatus
 
 
 class Message(BaseModel):
@@ -20,6 +21,8 @@ class Message(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     msg_type: str
     content: str | None = None
+    sequence: int | None = None
+    task_status: TaskStatus | None = None
 
 
 class ToolMessage(Message):
@@ -123,6 +126,7 @@ class ApprovalMessage(Message):
     """人工审核消息；前端据此渲染强制审阅台。"""
 
     msg_type: Literal["approval"] = "approval"
+    task_status: TaskStatus | None = "awaiting_approval"
     checkpoint_id: str = ""
     node_id: str = ""
     node_label: str = ""

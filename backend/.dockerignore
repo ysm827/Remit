@@ -1,22 +1,19 @@
-# backend/.dockerignore
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-env/
-venv/
-.venv/
-*.egg-info/
-.DS_Store
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-# Git
-.git/
-.gitignore
-# IDE
-.idea/
-.vscode/
-# macOS
-.DS_Store
+# 只把 Dockerfile 使用的源码和依赖清单发送给构建器。
+# 密钥、工作目录、上传资料、日志和虚拟环境默认留在本机。
+**
+!app/
+!app/**
+!pyproject.toml
+!uv.lock
+!README.md
+
+# 即使这些运行时文件出现在 app/ 内，也不能进入镜像构建上下文。
+**/.env*
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.log
+**/logs/
+**/project/
+**/uploads/
+**/outputs/

@@ -26,7 +26,7 @@ import { useToast } from "@/components/ui/toast";
 import ProjectWorkspaceShell from "@/pages/task/components/ProjectWorkspaceShell.vue";
 import { useTaskStore } from "@/stores/task";
 import { LoaderCircle } from "lucide-vue-next";
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { onBeforeMount, onBeforeUnmount, onMounted, ref } from "vue";
 
 const props = defineProps<{ task_id: string }>();
 
@@ -36,6 +36,7 @@ const writerSequence = ref<string[]>([]);
 const startTime = ref(Date.now());
 const runningDuration = ref("0s");
 let timer: ReturnType<typeof setInterval> | null = null;
+let disposed = false;
 
 const isStopping = ref(false);
 const resumeOptions = ref<ResumeOptions | null>(null);
@@ -134,8 +135,10 @@ async function handleStop() {
 async function loadResumeOptions(waitForCleanup = false) {
 	const attempts = waitForCleanup ? 12 : 1;
 	for (let attempt = 0; attempt < attempts; attempt++) {
+		if (disposed) return;
 		try {
 			const response = await getResumeOptions(props.task_id);
+			if (disposed) return;
 			resumeOptions.value = response.data;
 			const interrupted = response.data.nodes.find(
 				(node) => node.status === "interrupted",
@@ -179,6 +182,9 @@ async function handleResume() {
 	}
 }
 
+// 父页面先切换会话，再挂载读取 store 的子面板，避免子面板读到上个项目。
+onBeforeMount(() => taskStore.connectWebSocket(props.task_id));
+
 onMounted(async () => {
 	// 提前申请桌面通知权限：审批等待/失败挂起时主动提醒用户
 	try {
@@ -195,11 +201,13 @@ onMounted(async () => {
 		taskStore.loadTaskMessages(props.task_id),
 		taskStore.loadTaskHistory(),
 	]);
-	taskStore.connectWebSocket(props.task_id);
+	if (disposed) return;
 	if (!taskStore.isRunning) await loadResumeOptions();
+	if (disposed) return;
 
 	try {
 		const response = await getWriterSeque();
+		if (disposed) return;
 		const payload = response.data as unknown;
 		writerSequence.value = Array.isArray(payload)
 			? payload.filter((item): item is string => typeof item === "string")
@@ -211,12 +219,14 @@ onMounted(async () => {
 		writerSequence.value = [];
 	}
 
+	if (disposed) return;
 	timer = setInterval(updateDuration, 1000);
 	updateDuration();
 });
 
 onBeforeUnmount(() => {
-	taskStore.closeWebSocket();
+	disposed = true;
+	taskStore.closeWebSocket(props.task_id);
 	if (timer) clearInterval(timer);
 });
 </script>

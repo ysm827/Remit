@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 $ErrorActionPreference = "Stop"
@@ -33,59 +33,78 @@ function Get-ListeningProcessId([int]$Port) {
     return 0
 }
 
-function Get-ProjectProcessRoot([int]$ListenerId) {
-    $rootPattern = [regex]::Escape($Root)
-    $currentId = $ListenerId
-    $projectRootId = 0
-    for ($depth = 0; $depth -lt 8 -and $currentId -gt 0; $depth++) {
-        $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $currentId" -ErrorAction SilentlyContinue
-        if ($null -eq $processInfo) {
-            break
+function Test-ProjectListener([int]$ListenerId, [string]$Name) {
+    # 旧版本缺少身份记录时只识别具体服务，不向上追溯到桌面壳或用户终端。
+    $info = Get-CimInstance Win32_Process -Filter "ProcessId = $ListenerId" -ErrorAction SilentlyContinue
+    if ($null -eq $info) { return $false }
+    $rootPrefix = $Root.TrimEnd('\') + '\'
+    switch ($Name) {
+        "redis" { return $info.ExecutablePath -eq (Join-Path $Root "tools\redis\redis-server.exe") }
+        "backend" {
+            $pythonPaths = @(
+                (Join-Path $Root "backend\.venv\Scripts\python.exe"),
+                (Join-Path $Root "backend\venv\Scripts\python.exe")
+            )
+            return $info.ExecutablePath -in $pythonPaths -and $info.CommandLine -match '\buvicorn\s+app\.main:app\b'
         }
-        $identity = "$($processInfo.ExecutablePath) $($processInfo.CommandLine)"
-        if ($identity -notmatch $rootPattern) {
-            break
+        "frontend" {
+            $vitePath = [regex]::Escape($rootPrefix + 'frontend\node_modules\')
+            return $info.CommandLine -match $vitePath -and $info.CommandLine -match '[\\/]vite[\\/]bin[\\/]vite\.js(?:"|\s|$)'
         }
-        $projectRootId = $currentId
-        $currentId = [int]$processInfo.ParentProcessId
     }
-    return $projectRootId
+    return $false
+}
+
+function Test-RecordedProcess([int]$ProcessId, [string]$Name, [string]$IdentityPath) {
+    if (-not (Test-Path -LiteralPath $IdentityPath -PathType Leaf)) { return $false }
+    try {
+        $identity = Get-Content -LiteralPath $IdentityPath -Raw | ConvertFrom-Json
+        $process = Get-Process -Id $ProcessId -ErrorAction Stop
+        return (
+            $identity.ProcessId -eq $ProcessId -and
+            $identity.ProjectRoot -eq $Root -and
+            $identity.Service -eq $Name -and
+            $identity.StartedUtcTicks -eq $process.StartTime.ToUniversalTime().Ticks.ToString() -and
+            -not [string]::IsNullOrWhiteSpace($identity.ExecutablePath) -and
+            $identity.ExecutablePath -eq $process.Path
+        )
+    }
+    catch { return $false }
+}
+
+function Stop-ServiceTree([int]$ProcessId, [string]$Name) {
+    & taskkill.exe /PID $ProcessId /T /F | Out-Null
+    if ($LASTEXITCODE -ne 0 -and (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+        throw "Could not stop $Name (PID $ProcessId)."
+    }
+    Write-Host "[STOPPED] $Name (PID $ProcessId)"
 }
 
 foreach ($service in $services) {
     $serviceName = $service.Name
     $pidPath = Join-Path $LogDirectory "$serviceName.pid"
-    if (-not (Test-Path -LiteralPath $pidPath -PathType Leaf)) {
-        $listenerId = Get-ListeningProcessId -Port $service.Port
-        if ($listenerId -le 0) {
-            Write-Host "[OK] $serviceName is already stopped."
-            continue
-        }
-        $projectRootId = Get-ProjectProcessRoot -ListenerId $listenerId
-        if ($projectRootId -le 0) {
-            Write-Warning "$serviceName uses port $($service.Port), but it was not started from this project; leaving it running."
-            continue
-        }
-        & taskkill.exe /PID $projectRootId /T /F | Out-Null
-        Write-Host "[STOPPED] $serviceName (discovered PID $projectRootId)"
-        continue
-    }
-
-    $processIdText = (Get-Content -LiteralPath $pidPath -Raw).Trim()
+    $identityPath = "$pidPath.json"
     $processId = 0
-    if (-not [int]::TryParse($processIdText, [ref]$processId)) {
-        Write-Warning "Invalid PID file: $pidPath"
-        Remove-Item -LiteralPath $pidPath -Force
-        continue
+    if (Test-Path -LiteralPath $pidPath -PathType Leaf) {
+        $processIdText = (Get-Content -LiteralPath $pidPath -Raw).Trim()
+        [void][int]::TryParse($processIdText, [ref]$processId)
     }
-
-    $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
-    if ($null -eq $process) {
-        Write-Host "[OK] $serviceName is already stopped."
+    if ($processId -gt 0 -and (Test-RecordedProcess -ProcessId $processId -Name $serviceName -IdentityPath $identityPath)) {
+        Stop-ServiceTree -ProcessId $processId -Name $serviceName
     }
     else {
-        & taskkill.exe /PID $processId /T /F | Out-Null
-        Write-Host "[STOPPED] $serviceName (PID $processId)"
+        $listenerId = Get-ListeningProcessId -Port $service.Port
+        if ($listenerId -gt 0 -and (Test-ProjectListener -ListenerId $listenerId -Name $serviceName)) {
+            Stop-ServiceTree -ProcessId $listenerId -Name $serviceName
+        }
+        elseif ($listenerId -gt 0) {
+            Write-Warning "$serviceName uses port $($service.Port), but it was not started from this project; leaving it running."
+        }
+        else { Write-Host "[OK] $serviceName is already stopped." }
     }
-    Remove-Item -LiteralPath $pidPath -Force
+    foreach ($record in @($pidPath, $identityPath)) {
+        if (Test-Path -LiteralPath $record -PathType Leaf) {
+            Remove-Item -LiteralPath $record -Force
+        }
+    }
 }

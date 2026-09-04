@@ -15,7 +15,6 @@ import ProjectHeader from "@/pages/task/components/ProjectHeader.vue";
 import ProjectLiteratureView from "@/pages/task/components/ProjectLiteratureView.vue";
 import ProjectModelView from "@/pages/task/components/ProjectModelView.vue";
 import ProjectOverview from "@/pages/task/components/ProjectOverview.vue";
-import ProjectPaperView from "@/pages/task/components/ProjectPaperView.vue";
 import ProjectProblemView from "@/pages/task/components/ProjectProblemView.vue";
 import ProjectResultsView from "@/pages/task/components/ProjectResultsView.vue";
 import ProjectStageSidebar from "@/pages/task/components/ProjectStageSidebar.vue";
@@ -36,8 +35,13 @@ import {
 	ListChecks,
 	LoaderCircle,
 } from "lucide-vue-next";
-import { computed, ref, watch } from "vue";
+import { computed, defineAsyncComponent, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
+
+// 论文公式渲染依赖较大，仅在进入写作阶段时加载。
+const ProjectPaperView = defineAsyncComponent(
+	() => import("@/pages/task/components/ProjectPaperView.vue"),
+);
 
 const props = defineProps<{
 	taskId: string;
@@ -348,9 +352,9 @@ function handleCommand(id: string) {
 }
 
 watch(
-	() => route.params.stage,
-	(value) => {
-		const stage = String(value ?? route.query.stage ?? "") as StageKey;
+	() => [route.params.stage, route.query.stage],
+	([paramStage, queryStage]) => {
+		const stage = String(paramStage ?? queryStage ?? "overview") as StageKey;
 		if (stageKeys.includes(stage)) activeStage.value = stage;
 	},
 );

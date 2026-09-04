@@ -382,8 +382,14 @@ class RemitWorkFlow(WorkFlow):
                     coder_agent,
                     modeler_response,
                 )
-                # 降级跳过时继续原方案；定案成功路径以审批暂停结束，
-                # 批准续跑后 _modeler_node 会恢复更新后的方案
+                # 自动模式不会经过审批重启，必须在本轮立即把定案方案
+                # 送入正式求解；探索降级时保存的方案仍是原方案。
+                modeler_response = ModelerToCoder.model_validate(
+                    state["modeler_response"]
+                )
+                solution_flows = flows.get_solution_flows(
+                    self.questions, modeler_response
+                )
                 self._refresh_citation_brief(flows, state)
             for key, value in solution_flows.items():
                 if key == "eda":
@@ -1070,8 +1076,8 @@ class RemitWorkFlow(WorkFlow):
     ) -> None:
         """探索实验：候选方案小样本 PK → 数据定案 → 知情审批。
 
-        成功路径把定案后的方案写回 state["modeler_response"] 并以审批暂停结束；
-        批准续跑后由 _modeler_node 恢复新方案。降级跳过时直接返回，沿用原方案。
+        成功后把定案方案写回 state["modeler_response"]；开启审核时暂停，
+        自动模式由 execute 立即加载新方案。降级跳过时沿用原方案。
         """
         assert self.checkpoint is not None
         assert self.code_interpreter is not None

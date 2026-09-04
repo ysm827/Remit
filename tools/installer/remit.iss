@@ -39,8 +39,21 @@ Name: "{group}\Remit 数学建模工作台"; Filename: "{app}\runtime\python\pyt
 Name: "{group}\停止 Remit 服务"; Filename: "{app}\runtime\python\python.exe"; Parameters: "-B ""{app}\tools\remit_prod_app.pyc"" --stop"; WorkingDir: "{app}"; IconFilename: "{app}\assets\remit-m-icon.ico"
 Name: "{autodesktop}\Remit 数学建模工作台"; Filename: "{app}\runtime\python\pythonw.exe"; Parameters: "-B ""{app}\tools\remit_prod_app.pyc"""; WorkingDir: "{app}"; IconFilename: "{app}\assets\remit-m-icon.ico"; Tasks: desktopicon
 
-[Run]
-Filename: "{app}\runtime\python\python.exe"; Parameters: "-B ""{app}\tools\remit_prod_app.pyc"" --check"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated; StatusMsg: "正在检查安装完整性..."
+[Code]
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    if not Exec(ExpandConstant('{app}\runtime\python\python.exe'),
+      '-B "' + ExpandConstant('{app}\tools\remit_prod_app.pyc') + '" --check',
+      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      RaiseException('无法运行 Remit 安装完整性检查。');
+    if ResultCode <> 0 then
+      RaiseException('Remit 安装完整性检查失败，请重新安装并查看 logs 文件夹。');
+  end;
+end;
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\logs"

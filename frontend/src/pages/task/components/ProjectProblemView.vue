@@ -100,7 +100,8 @@ async function refresh() {
 	loadError.value = "";
 	try {
 		const result = await taskStore.loadTaskWorkspace(props.taskId);
-		if (!result) loadError.value = "无法读取阶段产物，请检查后端后重试。";
+		if (result === null)
+			loadError.value = "无法读取阶段产物，请检查后端后重试。";
 	} finally {
 		loading.value = false;
 	}

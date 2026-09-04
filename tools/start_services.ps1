@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [switch]$Visible,
     [switch]$Check
@@ -44,7 +44,7 @@ function Test-ListeningPort([int]$Port) {
 }
 
 function Test-ProjectOwnedListener([int]$Port) {
-    $rootPattern = [regex]::Escape($Root)
+    $rootPattern = [regex]::Escape($Root.TrimEnd('\') + '\')
     $listeners = @(
         Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
             Select-Object -ExpandProperty OwningProcess -Unique
@@ -68,6 +68,15 @@ function Test-ProjectOwnedListener([int]$Port) {
 
 function Save-ServicePid([string]$Name, [System.Diagnostics.Process]$Process) {
     $pidPath = Join-Path $LogDirectory "$Name.pid"
+    # PID 会被系统复用；同时保存创建时间和程序路径才能识别同一次启动。
+    $identity = @{
+        ProcessId = $Process.Id
+        StartedUtcTicks = $Process.StartTime.ToUniversalTime().Ticks.ToString()
+        ExecutablePath = $Process.Path
+        ProjectRoot = $Root
+        Service = $Name
+    }
+    $identity | ConvertTo-Json | Set-Content -LiteralPath "$pidPath.json" -Encoding UTF8
     Set-Content -LiteralPath $pidPath -Value $Process.Id -Encoding ascii -NoNewline
 }
 

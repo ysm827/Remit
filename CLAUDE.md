@@ -38,6 +38,7 @@ cd frontend
 pnpm i              # 安装依赖
 pnpm run dev        # 开发服务器
 pnpm run build      # 类型检查 + 构建
+pnpm run test       # 前端组件、状态与渲染行为回归
 npx biome check src/          # Lint
 npx biome check --write src/  # 自动修复
 ```

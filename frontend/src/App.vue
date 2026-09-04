@@ -5,5 +5,10 @@ import { RouterView } from "vue-router";
 
 <template>
   <Toaster />
-  <RouterView />
+  <RouterView v-slot="{ Component, route }">
+    <component
+      :is="Component"
+      :key="String(route.params.task_id ?? route.params.projectId ?? route.path)"
+    />
+  </RouterView>
 </template>

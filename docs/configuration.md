@@ -140,6 +140,23 @@ SERVER_HOST=http://localhost:18000
 
 Docker 环境中的 Redis 地址应使用 `redis://redis:6379/0`。
 
+## 附件上传限制
+
+```dotenv
+UPLOAD_MAX_FILE_BYTES=134217728
+UPLOAD_MAX_TOTAL_BYTES=536870912
+UPLOAD_MAX_FILES=100
+```
+
+默认单文件不超过 128 MiB、每次提交总计不超过 512 MiB、附件不超过 100 个。
+上传采用分块暂存，整批通过校验后才写入任务目录；同名附件（不区分大小写）、
+系统保留名和工作流内部文件名会被拒绝，已有文件不会被覆盖。
+
+消息历史位于 `backend/logs/messages/messages.sqlite3`。首次访问旧任务时会在事务中
+导入原来的 `<task-id>.json`，保留原文件，之后以 SQLite 为准。备份时应停止 Remit 后
+一起备份 `backend/logs/messages/` 和 `backend/project/work_dir/`；不要只复制数据库
+主文件而遗漏仍在使用的 WAL 文件。损坏的旧 JSON 不影响其他任务，日志会说明跳过原因。
+
 ## 密钥安全
 
 - 不要把真实密钥写入示例文件、README、截图或测试。

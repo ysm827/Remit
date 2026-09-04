@@ -26,6 +26,7 @@ const selectedFilename = ref("");
 const preview = ref<CsvPreview | null>(null);
 const previewLoading = ref(false);
 const previewError = ref("");
+let previewRequest = 0;
 
 const datasetExtensions = new Set([
 	"blocks",
@@ -50,21 +51,25 @@ const selectedIsCsv = computed(() =>
 );
 
 async function selectFile(file: ProjectFile) {
+	const request = ++previewRequest;
 	selectedFilename.value = file.filename;
 	preview.value = null;
 	previewError.value = "";
+	previewLoading.value = false;
 	if (file.file_type.toLowerCase() !== "csv") {
 		return;
 	}
 	previewLoading.value = true;
 	try {
 		const response = await previewCsv(props.taskId, file.filename);
+		if (request !== previewRequest) return;
 		preview.value = response.data;
 	} catch (error) {
+		if (request !== previewRequest) return;
 		console.error("加载 CSV 预览失败:", error);
 		previewError.value = "预览失败，文件可能过大或格式异常，可下载后查看。";
 	} finally {
-		previewLoading.value = false;
+		if (request === previewRequest) previewLoading.value = false;
 	}
 }
 

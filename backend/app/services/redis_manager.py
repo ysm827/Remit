@@ -2,19 +2,23 @@
 
 两条职责线：
 - 实时：把任务消息 publish 到 ``task:{id}:messages`` 频道；
-- 持久：同一任务的消息追加到 ``logs/messages/{id}.json``，
+- 持久：消息以 SQLite 事务追加到 ``logs/messages/messages.sqlite3``，
   重启后可重建任务索引与状态。
 """
 
 import asyncio
-import json
-from datetime import datetime, timezone
 from pathlib import Path
 
 import redis.asyncio as aioredis
+from redis.backoff import NoBackoff
+from redis.retry import Retry
 
 from app.config.setting import settings
 from app.schemas.response import Message, SystemMessage
+from app.services.message_archive import MessageArchive
+from app.services.async_io import run_blocking
+from app.services.task_state import message_task_status, task_status_from_messages
+from app.utils.common_utils import ensure_safe_task_id
 from app.utils.log_util import logger
 
 _KEY_TTL_SECONDS = 36000
@@ -29,6 +33,7 @@ class RedisManager:
         backend_root = Path(__file__).resolve().parents[2]
         self.messages_dir = messages_dir or backend_root / "logs" / "messages"
         self.messages_dir.mkdir(parents=True, exist_ok=True)
+        self.archive = MessageArchive(self.messages_dir)
         self._message_locks: dict[str, asyncio.Lock] = {}
         self._deleting_tasks: set[str] = set()
 
@@ -39,6 +44,9 @@ class RedisManager:
             self.redis_url,
             decode_responses=True,
             max_connections=settings.REDIS_MAX_CONNECTIONS,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+            retry=Retry(NoBackoff(), 0),
         )
 
     async def get_client(self) -> aioredis.Redis:
@@ -47,7 +55,7 @@ class RedisManager:
         client = self._client
         try:
             await client.ping()  # type: ignore[reportGeneralTypeIssues]
-            logger.info(f"Redis 连接建立成功: {self.redis_url}")
+            logger.debug("Redis 连接正常")
             return client
         except Exception as exc:
             logger.error(f"无法连接到Redis: {exc}")
@@ -80,45 +88,38 @@ class RedisManager:
         return self._message_locks.setdefault(task_id, asyncio.Lock())
 
     def _task_file(self, task_id: str) -> Path:
-        return self.messages_dir / f"{task_id}.json"
+        return self.messages_dir / f"{ensure_safe_task_id(task_id)}.json"
 
     def _assert_writable(self, task_id: str) -> None:
         if task_id in self._deleting_tasks:
             raise RuntimeError("任务正在删除，不能继续写入消息")
 
-    async def _save_message_to_file(self, task_id: str, message: Message) -> None:
-        """把一条消息追加进任务档案；临时文件 + 原子替换防止半截写入。"""
-        try:
-            self._assert_writable(task_id)
-            self.messages_dir.mkdir(parents=True, exist_ok=True)
-            async with self._get_message_lock(task_id):
-                self._assert_writable(task_id)
-                target = self._task_file(task_id)
-                history: list[dict] = []
-                if target.exists():
-                    loaded = json.loads(target.read_text(encoding="utf-8"))
-                    if isinstance(loaded, list):
-                        history = loaded
+    async def _archive_call(self, function, *args):
+        """线程完成事务后才释放异步锁，避免取消后仍在写入已删除的任务。"""
+        return await run_blocking(function, *args)
 
-                history.append(message.model_dump(mode="json"))
-                staging = target.with_suffix(".json.tmp")
-                staging.write_text(
-                    json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-                staging.replace(target)
-            logger.debug(f"消息已追加到文件: {target}")
-        except Exception as exc:
-            logger.error(f"保存消息到文件失败: {exc}")
-            raise
+    async def _save_message_to_file(self, task_id: str, message: Message) -> None:
+        """兼容调用入口；原子追加事件与任务索引，不重写整个历史。"""
+        safe_id = ensure_safe_task_id(task_id)
+        self._assert_writable(safe_id)
+        async with self._get_message_lock(safe_id):
+            self._assert_writable(safe_id)
+            if status := message_task_status(message.model_dump(mode="json")):
+                message.task_status = status
+            message.sequence = await self._archive_call(
+                self.archive.append, safe_id, message.model_dump(mode="json")
+            )
 
     async def delete_task_record(self, task_id: str) -> bool:
         """删除任务档案与 Redis 临时键；返回是否确有本地档案被删。"""
+        task_id = ensure_safe_task_id(task_id)
         target = self._task_file(task_id)
         staging = target.with_suffix(".json.tmp")
         self._deleting_tasks.add(task_id)
         removed = False
         try:
             async with self._get_message_lock(task_id):
+                removed = await self._archive_call(self.archive.delete, task_id)
                 for path in (target, staging):
                     if path.is_file():
                         path.unlink()
@@ -144,9 +145,7 @@ class RedisManager:
             await self._save_message_to_file(task_id, message)
         try:
             client = await self.get_client()
-            await client.publish(
-                f"task:{task_id}:messages", message.model_dump_json()
-            )
+            await client.publish(f"task:{task_id}:messages", message.model_dump_json())
             logger.debug(
                 f"消息已发布: task={task_id} type={message.msg_type} "
                 f"content={message.content}"
@@ -165,52 +164,25 @@ class RedisManager:
 
     # ---- 历史读取与状态推导 ----
 
-    async def load_task_messages(self, task_id: str) -> list[dict]:
-        target = self._task_file(task_id)
-        if not target.is_file():
-            return []
-        try:
-            async with self._get_message_lock(task_id):
-                data = json.loads(target.read_text(encoding="utf-8"))
-            return data if isinstance(data, list) else []
-        except (OSError, json.JSONDecodeError) as exc:
-            logger.error(f"读取任务消息失败 {task_id}: {exc}")
-            return []
+    async def load_task_messages(
+        self, task_id: str, after: int = 0, limit: int | None = None
+    ) -> list[dict]:
+        """读取持久化历史；可按序号增量读取，旧 JSON 自动导入一次。"""
+        safe_id = ensure_safe_task_id(task_id)
+        async with self._get_message_lock(safe_id):
+            return await self._archive_call(self.archive.load, safe_id, after, limit)
 
     async def task_exists(self, task_id: str) -> bool:
-        if self._task_file(task_id).is_file():
+        safe_id = ensure_safe_task_id(task_id)
+        if await self._archive_call(self.archive.exists, safe_id):
             return True
         try:
             client = await self.get_client()
-            return bool(await client.exists(f"task_id:{task_id}"))
+            return bool(await client.exists(f"task_id:{safe_id}"))
         except Exception:
             return False
 
-    @staticmethod
-    def task_status_from_messages(messages: list[dict]) -> str:
-        """从消息尾部推导任务状态；中途的 success/warning 不算终态。"""
-        for item in reversed(messages):
-            if item.get("msg_type") == "approval":
-                return "awaiting_approval"
-            if item.get("msg_type") != "system":
-                continue
-            kind = item.get("type")
-            content = str(item.get("content", ""))
-            if kind == "success" and content == "任务处理完成":
-                return "completed"
-            if kind == "error" and content.startswith("任务执行失败"):
-                return "failed"
-            if kind == "warning" and (
-                "任务已停止" in content or "服务重启" in content
-            ):
-                return "stopped"
-            if (
-                content == "任务开始处理"
-                or content.startswith("任务从节点 ")
-                or content.startswith("任务继续处理")
-            ):
-                return "running"
-        return "running"
+    task_status_from_messages = staticmethod(task_status_from_messages)
 
     # ---- 用户插话 ----
 
@@ -252,70 +224,24 @@ class RedisManager:
     # ---- 启动重建 ----
 
     async def reconcile_interrupted_tasks(self) -> int:
-        """把档案里仍显示 running 的旧任务标记为因重启中断。"""
+        """从持久化索引恢复状态，重启前仍运行的任务标记为停止。"""
         count = 0
-        for file_path in self.messages_dir.glob("*.json"):
-            task_id = file_path.stem
-            messages = await self.load_task_messages(task_id)
-            if messages and self.task_status_from_messages(messages) == "running":
+        for summary in await self.list_task_summaries():
+            if summary["status"] == "running":
                 await self._save_message_to_file(
-                    task_id,
-                    SystemMessage(content="服务重启，原运行任务已停止", type="warning"),
+                    summary["task_id"],
+                    SystemMessage(
+                        content="服务重启，原运行任务已停止",
+                        type="warning",
+                        task_status="stopped",
+                    ),
                 )
                 count += 1
         return count
 
-    @staticmethod
-    def _infer_title(task_id: str, messages: list[dict]) -> str:
-        """优先取用户首条输入，其次取协调者产出的题目，最后退回 task_id。"""
-        first_user = next(
-            (
-                str(item.get("content", "")).strip()
-                for item in messages
-                if item.get("msg_type") == "user"
-                and str(item.get("content", "")).strip()
-            ),
-            "",
-        )
-        coordinator_title = ""
-        if not first_user:
-            for item in messages:
-                if item.get("agent_type") != "CoordinatorAgent":
-                    continue
-                try:
-                    payload = json.loads(
-                        str(item.get("content", ""))
-                        .replace("```json", "")
-                        .replace("```", "")
-                        .strip()
-                    )
-                except (json.JSONDecodeError, TypeError):
-                    continue
-                if isinstance(payload, dict) and payload.get("title"):
-                    coordinator_title = str(payload["title"]).strip()
-                    break
-        return " ".join((first_user or coordinator_title or task_id).split())[:80]
-
     async def list_task_summaries(self) -> list[dict]:
-        """从消息档案构建可跨进程重启恢复的任务索引。"""
-        summaries: list[dict] = []
-        for file_path in self.messages_dir.glob("*.json"):
-            task_id = file_path.stem
-            messages = await self.load_task_messages(task_id)
-            if not messages:
-                continue
-            summaries.append(
-                {
-                    "task_id": task_id,
-                    "title": self._infer_title(task_id, messages),
-                    "updated_at": datetime.fromtimestamp(
-                        file_path.stat().st_mtime, tz=timezone.utc
-                    ).isoformat(),
-                    "status": self.task_status_from_messages(messages),
-                    "message_count": len(messages),
-                }
-            )
-        return sorted(summaries, key=lambda s: str(s["updated_at"]), reverse=True)
+        """查询持久化任务索引，不再逐任务反序列化全部历史消息。"""
+        return await self._archive_call(self.archive.summaries)
 
 
 redis_manager = RedisManager()

@@ -351,7 +351,9 @@ class WorkflowCheckpoint:
             }
         )
         state["pending_approval"] = None
-        state = self.prepare_resume(state, node_id)
+        state = self.prepare_resume(
+            state, node_id, preserve_interrupted_artifacts=False
+        )
         feedback_by_node = dict(state.get("revision_feedback", {}))
         feedback_by_node[node_id] = normalized_feedback
         state["revision_feedback"] = feedback_by_node
@@ -446,12 +448,20 @@ class WorkflowCheckpoint:
         (self.work_dir / "pilot_results.json").unlink(missing_ok=True)
         (self.work_dir / "final_citations.json").unlink(missing_ok=True)
 
-    def prepare_resume(self, state: dict[str, Any], node_id: str) -> dict[str, Any]:
+    def prepare_resume(
+        self,
+        state: dict[str, Any],
+        node_id: str,
+        *,
+        preserve_interrupted_artifacts: bool = True,
+    ) -> dict[str, Any]:
         """校验续跑节点并使该节点及其下游旧产物失效。
 
         Args:
             state: 当前检查点。
             node_id: 用户选择的节点 ID。
+            preserve_interrupted_artifacts: 仅中断恢复可复用当前未完成节点的
+                产物；人工返修必须传 False，使旧证据失效。
 
         Returns:
             已完成失效处理并落盘的状态。
@@ -462,6 +472,11 @@ class WorkflowCheckpoint:
         available = {item["node_id"] for item in self.resume_nodes(state)}
         if node_id not in available:
             raise WorkflowCheckpointError("所选节点缺少完整前置成果，不能从这里续跑")
+        preserve_selected_artifacts = (
+            preserve_interrupted_artifacts
+            and state.get("current_node") == node_id
+            and node_id not in state.get("completed_nodes", [])
+        )
 
         # 兼容升级前已经执行过 Fable、但尚未记录独立预算字段的任务。
         # 只要评审结论已经落盘，就视为本任务额度已使用，避免续跑再次扣费。
@@ -484,6 +499,17 @@ class WorkflowCheckpoint:
             # 结构章节相互独立：退回单章只作废该章与最终合并，
             # 不牵连其他已完成章节
             invalidated = {node_id, "finalize"}
+        # 先清理磁盘证据，再清空状态中的产物清单。所有上游重做都必须
+        # 经过同一失效路径，否则旧质量报告会让新方案跳过真实执行。
+        invalid_solution_keys = [
+            key
+            for key in self.solution_keys(state)
+            if f"solve:{key}" in invalidated
+            and not (preserve_selected_artifacts and f"solve:{key}" == node_id)
+        ]
+        self._purge_solution_artifacts(
+            invalid_solution_keys, state, dict(state.get("solution_results", {}))
+        )
         state["pending_approval"] = None
         state["completed_nodes"] = [
             item for item in state.get("completed_nodes", []) if item not in invalidated
@@ -539,10 +565,6 @@ class WorkflowCheckpoint:
             state.pop("model_council", None)
             state["model_revision_history"] = {}
             state["model_execution_reviews"] = {}
-            # 换调研方向意味着方案会变：旧求解产物必须物理作废，
-            # 否则续跑时会被"已有产物快速恢复"路径静默复用
-            results = dict(state.get("solution_results", {}))
-            self._purge_solution_artifacts(self.solution_keys(state), state, results)
             state["solution_results"] = {}
             state["write_results"] = {}
             (self.work_dir / "literature_review.json").unlink(missing_ok=True)
@@ -583,7 +605,6 @@ class WorkflowCheckpoint:
             solution_keys = self.solution_keys(state)
             invalid_solution_keys = [key for key in solution_keys if key != "eda"]
             results = dict(state.get("solution_results", {}))
-            self._purge_solution_artifacts(invalid_solution_keys, state, results)
             for key in invalid_solution_keys:
                 results.pop(key, None)
             state["solution_results"] = results
@@ -600,17 +621,7 @@ class WorkflowCheckpoint:
             solution_keys = self.solution_keys(state)
             selected_solution_index = solution_keys.index(selected_key)
             invalid_solution_keys = solution_keys[selected_solution_index:]
-            preserve_selected_artifacts = state.get("current_node") == node_id
             results = dict(state.get("solution_results", {}))
-            self._purge_solution_artifacts(
-                (
-                    invalid_solution_keys[1:]
-                    if preserve_selected_artifacts
-                    else invalid_solution_keys
-                ),
-                state,
-                results,
-            )
             for key in invalid_solution_keys:
                 results.pop(key, None)
             state["solution_results"] = results
