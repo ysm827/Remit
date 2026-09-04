@@ -36,6 +36,10 @@ class CoderCodeExecutionError(CoderAgentRunError):
     """生成的代码持续执行失败，期间没有任何一次成功运行。"""
 
 
+class CoderAgentBudgetError(CoderAgentRunError):
+    """代码手达到硬轮次或执行次数上限，防止成功调用掩盖失控循环。"""
+
+
 class CoderAgent(Agent):
     """以工具调用循环推进编码任务的 Agent。"""
 
@@ -46,6 +50,7 @@ class CoderAgent(Agent):
         work_dir: str,
         max_chat_turns: int | None = settings.MAX_CHAT_TURNS,
         max_retries: int | None = settings.MAX_RETRIES,
+        max_code_executions: int | None = settings.MAX_CODE_EXECUTIONS_PER_RUN,
         code_interpreter: BaseCodeInterpreter | None = None,
         context_window: int = 128000,
         cancel_event: asyncio.Event | None = None,
@@ -59,9 +64,13 @@ class CoderAgent(Agent):
             system_prompt=get_coder_prompt(language),
         )
         self.work_dir = work_dir
-        self.max_chat_turns = max_chat_turns
-        self.max_retries = max_retries
+        self.max_chat_turns = max_chat_turns or settings.MAX_CHAT_TURNS or 20
+        self.max_retries = max_retries or settings.MAX_RETRIES or 3
+        self.max_code_executions = (
+            max_code_executions or settings.MAX_CODE_EXECUTIONS_PER_RUN
+        )
         self.current_chat_turns = 0
+        self.current_code_executions = 0
         self.is_first_run = True
         self.code_interpreter = code_interpreter
 
@@ -83,8 +92,14 @@ class CoderAgent(Agent):
         """
         logger.info(f"{self.__class__.__name__}:开始:执行子任务: {subtask_title}")
         interpreter = self._require_interpreter()
-        # 预算按单次调用计，跨小问 / 修复尝试不共享
+        # 每个小问使用独立模型上下文；运行状态由 notebook/checkpoint 承接，
+        # 避免前一问的大段代码把后续提示膨胀到上下文极限。
+        self.chat_history = []
+        self.current_token_count = 0
+        self.is_first_run = True
+        # 预算按单次调用计，跨小问 / 修复尝试不共享。
         self.current_chat_turns = 0
+        self.current_code_executions = 0
         interpreter.add_section(subtask_title)
         interpreter.notebook_serializer.add_markdown_segmentation_to_notebook(
             "以下代码与输出属于该工作流节点，可按此标题在 notebook 中定位。",
@@ -114,17 +129,14 @@ class CoderAgent(Agent):
             try:
                 response = await self._call_model(tools)
             except Exception as exc:
-                retry_count += 1
-                last_source, last_error = "model", str(exc)
-                logger.error(f"模型服务调用失败: {last_error}")
-                if self.max_retries is None or retry_count < self.max_retries:
-                    await self._notify(
-                        "代码手模型服务连接失败，正在重试 "
-                        f"({retry_count}/{self.max_retries or '∞'})",
-                        "warning",
-                    )
-                    await asyncio.sleep(min(2**retry_count, 5))
-                continue
+                # LLM.chat 已拥有网络重试和备用模型切换权；这里再次重试会把
+                # 4 次网关请求乘成 12 次，因此只负责转换为可续跑的阶段错误。
+                message = (
+                    f"代码手模型服务在内部重试后仍不可用：{exc}。"
+                    "已生成文件均已保留，可从当前节点续跑。"
+                )
+                logger.error(message)
+                raise CoderAgentUnavailableError(message) from exc
 
             if not response.tool_calls:
                 # 没有工具调用 = 模型宣告任务完成
@@ -178,7 +190,7 @@ class CoderAgent(Agent):
 
     def _enforce_budget(self, retry_count: int, last_error: str, last_source: str) -> None:
         """两类预算耗尽时抛出对应异常；轮次预算共用通用异常。"""
-        if self.max_retries is not None and retry_count >= self.max_retries:
+        if retry_count >= self.max_retries:
             if last_source == "model":
                 message = (
                     f"代码手模型服务连接连续失败 {self.max_retries} 次：{last_error}。"
@@ -194,10 +206,11 @@ class CoderAgent(Agent):
             logger.error(message)
             raise error_type(message)
 
-        if self.max_chat_turns is not None and self.current_chat_turns >= self.max_chat_turns:
+        if self.current_chat_turns >= self.max_chat_turns:
             logger.error(f"超过最大聊天次数: {self.max_chat_turns}")
-            raise Exception(
-                f"Reached maximum number of chat turns ({self.max_chat_turns}). Task incomplete."
+            raise CoderAgentBudgetError(
+                f"代码手达到最大对话轮次 {self.max_chat_turns}，任务尚未完成；"
+                "已保留当前产物和 checkpoint。"
             )
 
     async def _notify(self, content: str, level: str) -> None:
@@ -228,6 +241,13 @@ class CoderAgent(Agent):
         if tool_call.name != "execute_code":
             logger.info(f"忽略非代码工具调用: {tool_call.name}")
             return None
+
+        if self.current_code_executions >= self.max_code_executions:
+            raise CoderAgentBudgetError(
+                f"代码手达到单节点 {self.max_code_executions} 次代码执行上限；"
+                "禁止通过成功调用重置总预算，请拆分计算或改用低复杂度方案。"
+            )
+        self.current_code_executions += 1
 
         logger.info(f"调用工具: {tool_call.name}")
         await self._notify(f"代码手调用{tool_call.name}工具", "info")

@@ -10,6 +10,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
+from app.config.setting import settings
 from app.core.llm.errors import ProviderRefusalError
 from app.core.llm.llm import LLM
 from app.schemas.A2A import (
@@ -89,14 +90,13 @@ def _parse_json_object(content: str) -> dict[str, Any]:
 class ModelCouncil:
     """让探索模型与盲审模型独立参与初始模型选型。"""
 
-    # 深审模型整题裁决可能超过 90 秒；超时定为 300 秒，避免长推理请求
-    # 在正常完成前被误判失败并触发熔断。
-    critic_timeout_seconds = 300.0
+    # 深审模型整题裁决允许独立配置，但仍受有限超时约束，避免评审请求
+    # 长时间占住整条工作流。
+    critic_timeout_seconds = settings.MODEL_COUNCIL_CRITIC_TIMEOUT_SECONDS
     # The fallback reviewer receives the complete four-question portfolio. In
-    # large contest tasks this regularly needs more than three minutes even
-    # though the upstream call is still making progress. Keep the timeout above
-    # the observed end-to-end latency so a valid review is not discarded.
-    fallback_timeout_seconds = 600.0
+    # large contest tasks can be slow, so keep a separate bounded timeout rather
+    # than inheriting an unlimited or provider-specific wait.
+    fallback_timeout_seconds = settings.MODEL_COUNCIL_FALLBACK_TIMEOUT_SECONDS
     # 评审模型只参与一次决定整题模型路线的战略裁决。普通小问、格式修复
     # 和自动重试均不得再次调用它，避免一次任务被放大为多笔高价请求。
     critic_call_limit = 1
@@ -117,6 +117,23 @@ class ModelCouncil:
         self.fallback_reasons: dict[str, str] = {}
         self.critic_calls_used = 0
         self.critic_status = "completed"
+
+    @staticmethod
+    def _llm_identity(llm: LLM) -> tuple[str, str, str]:
+        return (
+            str(llm.api_type or "").strip().casefold(),
+            str(llm.base_url or "").strip().rstrip("/").casefold(),
+            str(llm.model or "").strip().casefold(),
+        )
+
+    @classmethod
+    def reviewers_are_independent(cls, primary: LLM, scout: LLM, critic: LLM) -> bool:
+        """至少一个评审必须与主建模手处于不同的模型接入点。"""
+        primary_identity = cls._llm_identity(primary)
+        return any(
+            cls._llm_identity(candidate) != primary_identity
+            for candidate in (scout, critic)
+        )
 
     async def propose(self, coordinator: CoordinatorToModeler) -> ModelScoutProposal:
         """让探索模型在看不到主建模手答案的条件下提出候选集。"""
@@ -241,20 +258,8 @@ class ModelCouncil:
                 ),
                 timeout=self.critic_timeout_seconds,
             )
-        except (ProviderRefusalError, ValueError, TimeoutError, RuntimeError) as exc:
-            reason = (
-                "安全策略拒绝"
-                if isinstance(exc, ProviderRefusalError)
-                else (
-                    "审稿超时"
-                    if isinstance(exc, TimeoutError)
-                    else (
-                        "调用预算已耗尽"
-                        if isinstance(exc, RuntimeError)
-                        else "结构化输出失败"
-                    )
-                )
-            )
+        except Exception as exc:
+            reason = self._failure_reason(exc)
             self.critic_status = "fallback"
             self.fallback_reasons = {key: reason for key in question_keys}
             reviewer = f"{self.scout_llm.model or 'scout'}（备用审稿）"
@@ -276,19 +281,44 @@ class ModelCouncil:
                 label_map=label_map,
                 redact_for_methodology=False,
             )
-            packet = await asyncio.wait_for(
-                self._json_call(
-                    llm=self.scout_llm,
-                    system=(
-                        "你是备用整题战略统计审稿人。一次性比较所有小问的方案、"
-                        "验证设计和泄漏风险，不得把未运行模型写成赢家。"
+            try:
+                packet = await asyncio.wait_for(
+                    self._json_call(
+                        llm=self.scout_llm,
+                        system=(
+                            "你是备用整题战略统计审稿人。一次性比较所有小问的方案、"
+                            "验证设计和泄漏风险，不得把未运行模型写成赢家。"
+                        ),
+                        payload=fallback_payload,
+                        schema=ModelCouncilReview,
+                        label="备用整题战略盲审",
                     ),
-                    payload=fallback_payload,
-                    schema=ModelCouncilReview,
-                    label="备用整题战略盲审",
-                ),
-                timeout=self.fallback_timeout_seconds,
-            )
+                    timeout=self.fallback_timeout_seconds,
+                )
+            except Exception as fallback_exc:
+                fallback_reason = self._failure_reason(
+                    fallback_exc,
+                    timeout_label="备用审稿超时",
+                )
+                self.fallback_reasons = {
+                    key: f"{reason}；{fallback_reason}" for key in question_keys
+                }
+                reviewer = "确定性降级审查"
+                packet = self._deterministic_fallback_review(
+                    question_keys=question_keys,
+                    primary=primary,
+                    scout=scout,
+                )
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=(
+                            f"备用模型审稿出现{fallback_reason}；"
+                            "已使用本地确定性规则保留基线、候选和必做实验，任务继续。"
+                        ),
+                        type="warning",
+                    ),
+                )
 
         self._require_keys(packet.question_reviews, question_keys, "整题盲审结论")
         self.reviewer_by_question = {key: reviewer for key in question_keys}
@@ -308,6 +338,71 @@ class ModelCouncil:
             SystemMessage(content=status_message + "等待主建模手综合并接受人工审核"),
         )
         return packet, label_map
+
+    @staticmethod
+    def _failure_reason(exc: Exception, timeout_label: str = "审稿超时") -> str:
+        if isinstance(exc, ProviderRefusalError):
+            return "安全策略拒绝"
+        if isinstance(exc, TimeoutError):
+            return timeout_label
+        if isinstance(exc, RuntimeError) and "预算" in str(exc):
+            return "调用预算已耗尽"
+        if isinstance(exc, ValueError):
+            return "结构化输出失败"
+        return f"模型服务失败（{type(exc).__name__}）"
+
+    @staticmethod
+    def _deterministic_fallback_review(
+        *,
+        question_keys: list[str],
+        primary: ModelerToCoder,
+        scout: ModelScoutProposal,
+    ) -> ModelCouncilReview:
+        """两个审稿模型都失败时保守降级，不因辅助评审作废整项任务。"""
+        question_reviews: dict[str, dict[str, Any]] = {}
+        for key in question_keys:
+            proposal = scout.questions[key]
+            names = [proposal.recommended_model]
+            names.extend(
+                candidate.name
+                for candidate in proposal.candidate_models
+                if candidate.role == "baseline"
+            )
+            names = list(dict.fromkeys(name for name in names if name))
+            primary_plan = str(primary.questions_solution.get(key, "")).strip()
+            final_plan = (
+                primary_plan
+                or "保留主建模方案，并使用探索者给出的简单基线进行同划分、同指标的真实对照实验。"
+            )
+            if len(final_plan) < 40:
+                final_plan += " 必须先做小样本计时、样本外验证、稳定性检查与失败回退。"
+            question_reviews[key] = {
+                "selected_source": "hybrid",
+                "recommended_models": names or ["simple baseline"],
+                "rationale": (
+                    "外部审稿服务不可用，采用保守组合：主方案不被自动判胜，"
+                    "同时保留简单基线并要求真实运行后再决定。"
+                ),
+                "rejected_options": [],
+                "required_experiments": [
+                    "相同数据划分下比较基线与候选的主指标和运行时间",
+                    "先做小规模计时并外推正式规模，超预算立即回退",
+                ],
+                "final_plan": final_plan,
+            }
+        return ModelCouncilReview.model_validate(
+            {
+                "question_reviews": question_reviews,
+                "global_risks": list(scout.global_data_risks)
+                or ["外部审稿服务不可用"],
+                "minimum_experiment_matrix": [
+                    "简单基线与候选在相同划分、相同指标和硬时间预算下对照"
+                ],
+                "human_review_focus": [
+                    "本轮使用确定性降级审查，需重点核对最终模型是否真实优于基线"
+                ],
+            }
+        )
 
     @staticmethod
     def _build_portfolio_review_payload(

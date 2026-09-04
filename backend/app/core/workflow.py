@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any
 
 from app.config.setting import settings
 from app.core.agents.coder_agent import CoderAgent
@@ -246,8 +246,7 @@ class RemitWorkFlow(WorkFlow):
             state = self.checkpoint.prepare_resume(self.checkpoint.load(), resume_from)
         elif continue_existing:
             state = self.checkpoint.load()
-            if state.get("pending_approval"):
-                raise WorkflowApprovalRequired(dict(state["pending_approval"]))
+            state = self._resolve_pending_approval_on_resume(state)
             state["status"] = "running"
             self.checkpoint.save(state)
         else:
@@ -260,12 +259,31 @@ class RemitWorkFlow(WorkFlow):
         model_council: ModelCouncil | None = None
         if settings.MODEL_COUNCIL_ENABLED:
             scout_llm, critic_llm = llm_factory.get_model_council_llms()
-            model_council = ModelCouncil(
-                task_id=self.task_id,
-                scout_llm=scout_llm,
-                critic_llm=critic_llm,
-                cancel_event=self.cancel_event,
-            )
+            if (
+                settings.MODEL_COUNCIL_REQUIRE_DIVERSE_BACKENDS
+                and not ModelCouncil.reviewers_are_independent(
+                    modeler_llm,
+                    scout_llm,
+                    critic_llm,
+                )
+            ):
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=(
+                            "模型评审组与主建模手使用完全相同的模型接入点，"
+                            "无法提供独立性或故障隔离，本次已自动跳过额外评审调用。"
+                        ),
+                        type="warning",
+                    ),
+                )
+            else:
+                model_council = ModelCouncil(
+                    task_id=self.task_id,
+                    scout_llm=scout_llm,
+                    critic_llm=critic_llm,
+                    cancel_event=self.cancel_event,
+                )
         coordinator_agent = CoordinatorAgent(
             self.task_id,
             coordinator_llm,
@@ -456,9 +474,21 @@ class RemitWorkFlow(WorkFlow):
         quality_report: dict[str, Any] | None = None,
         allow_incomplete: bool = False,
         explain: dict[str, Any] | None = None,
-    ) -> NoReturn:
-        """在节点产物持久化后建立不可绕过的人工审核闸门。"""
+    ) -> None:
+        """按 HIL 配置建立人工闸门；自动模式绝不放行不完整产物。"""
         assert self.checkpoint is not None
+        checkpoint_key = self._hil_checkpoint_key(node_id)
+        if not self._hil_enabled_for(node_id):
+            if allow_incomplete:
+                raise RuntimeError(
+                    f"{node_id} 自动质量门未通过，且人工审核已关闭；"
+                    "任务已明确失败，不会把不完整产物自动放行。"
+                )
+            logger.info(
+                f"人工审核已关闭，节点 {node_id}（{checkpoint_key}）自动继续"
+            )
+            return None
+
         approval = self.checkpoint.request_approval(
             state,
             node_id,
@@ -469,6 +499,50 @@ class RemitWorkFlow(WorkFlow):
             explain=explain,
         )
         raise WorkflowApprovalRequired(approval)
+
+    @staticmethod
+    def _hil_checkpoint_key(node_id: str) -> str:
+        if node_id in {"coordinator", "analysis"}:
+            return "problem_split"
+        if node_id in {"modeler", "pilot"}:
+            return "model_selection"
+        if node_id.startswith("solve:"):
+            return "code_review"
+        return "paper_review"
+
+    @classmethod
+    def _hil_enabled_for(cls, node_id: str) -> bool:
+        checkpoint_key = cls._hil_checkpoint_key(node_id)
+        return settings.HIL_ENABLED and bool(
+            settings.HIL_CHECKPOINTS.get(checkpoint_key, True)
+        )
+
+    def _resolve_pending_approval_on_resume(
+        self, state: dict[str, Any]
+    ) -> dict[str, Any]:
+        """让关闭 HIL 后恢复的旧任务不再困在历史审核状态。"""
+        assert self.checkpoint is not None
+        pending = self.checkpoint.pending_approval(state)
+        if not pending:
+            return state
+
+        node_id = str(pending.get("node_id", ""))
+        if self._hil_enabled_for(node_id):
+            raise WorkflowApprovalRequired(pending)
+
+        is_incomplete = bool(pending.get("allow_incomplete")) or node_id not in set(
+            state.get("completed_nodes", [])
+        )
+        if is_incomplete:
+            raise RuntimeError(
+                f"{node_id} 的历史审核来自未通过的质量门，且人工审核已关闭；"
+                "任务已明确失败，不会把不完整产物自动放行。"
+            )
+
+        logger.info(f"人工审核已关闭，自动释放历史审核节点 {node_id}")
+        return self.checkpoint.auto_continue(
+            state, str(pending.get("checkpoint_id", ""))
+        )
 
     async def _coordinator_node(
         self,
@@ -839,8 +913,8 @@ class RemitWorkFlow(WorkFlow):
         self,
         state: dict[str, Any],
         refined: CoordinatorToModeler,
-    ) -> NoReturn:
-        """持久化结构化题意并建立不可绕过的人工审批闸门。"""
+    ) -> None:
+        """持久化结构化题意，并按配置决定是否建立人工审批闸门。"""
         displayed = {
             key: value.model_dump(mode="json")
             for key, value in refined.question_analyses.items()
@@ -1876,6 +1950,7 @@ class RemitWorkFlow(WorkFlow):
             context_window=settings.CODER_CONTEXT_WINDOW,
             max_retries=settings.MAX_RETRIES,
             max_chat_turns=settings.MAX_CHAT_TURNS,
+            max_code_executions=settings.MAX_CODE_EXECUTIONS_PER_RUN,
         )
 
     async def _write_chapters_parallel(

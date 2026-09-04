@@ -8,7 +8,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from app.config.setting import settings
+from app.config.setting import effective_api_timeout_seconds, settings
 from app.core.llm.content import ImageBlock, iter_content_blocks
 from app.core.llm.providers.base import BaseProvider, DeltaCallback, ProviderRequest
 from app.core.llm.types import StandardResponse, ToolCall, Usage
@@ -21,7 +21,7 @@ class OpenAIResponsesProvider(BaseProvider):
         client = AsyncOpenAI(
             api_key=request.api_key,
             base_url=request.base_url,
-            timeout=settings.API_TIMEOUT_SECONDS,
+            timeout=effective_api_timeout_seconds(),
             max_retries=0,
             default_headers={"User-Agent": "Remit/1.0"},
         )

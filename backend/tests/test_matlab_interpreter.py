@@ -145,6 +145,7 @@ class MatlabInterpreterTests(unittest.IsolatedAsyncioTestCase):
             future.result.side_effect = MatlabEngineTimeoutError(
                 "Execution of MATLAB function timed out"
             )
+            future.cancel.return_value = False
             engine = Mock()
             engine.eval.return_value = future
             interpreter.engine = engine
@@ -169,10 +170,13 @@ class MatlabInterpreterTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(error_occurred)
             self.assertIn("MATLAB 代码执行超过 1 秒", output)
-            self.assertIn("已中断", output)
+            self.assertIn("强制退出", output)
             self.assertEqual(error_message, output)
             future.cancel.assert_called_once_with()
             self.assertIsNone(interpreter._active_future)
+            self.assertIsNone(interpreter.engine)
+            self.assertTrue(interpreter._restart_required)
+            engine.quit.assert_called_once_with()
 
     async def test_installed_matlab_reuses_session_and_workspace(self) -> None:
         executable = MatlabCodeInterpreter.discover_executable()

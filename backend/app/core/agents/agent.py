@@ -1,6 +1,7 @@
 """Agent 公共骨架：对话历史、取消协作与上下文压缩。"""
 
 import asyncio
+import json
 from typing import Any
 
 from app.core.llm.llm import LLM, simple_chat
@@ -23,7 +24,12 @@ def _rough_tokens(text: str) -> int:
 
 
 def _message_tokens(msg: dict) -> int:
-    return _rough_tokens(msg.get("content") or "") + _MESSAGE_OVERHEAD_TOKENS
+    parts = [str(msg.get("content") or "")]
+    if msg.get("reasoning_content"):
+        parts.append(str(msg["reasoning_content"]))
+    if msg.get("tool_calls"):
+        parts.append(json.dumps(msg["tool_calls"], ensure_ascii=False))
+    return _rough_tokens("\n".join(parts)) + _MESSAGE_OVERHEAD_TOKENS
 
 
 class Agent:

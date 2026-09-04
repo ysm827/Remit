@@ -5,6 +5,7 @@ from typing import Any
 
 from anthropic import AsyncAnthropic
 
+from app.config.setting import effective_api_timeout_seconds
 from app.core.llm.content import ImageBlock, iter_content_blocks
 from app.core.llm.errors import ProviderRefusalError
 from app.core.llm.providers.base import BaseProvider, ProviderRequest
@@ -15,7 +16,12 @@ class AnthropicProvider(BaseProvider):
     """Claude 系列模型接入。"""
 
     async def send(self, request: ProviderRequest) -> StandardResponse:
-        client = AsyncAnthropic(api_key=request.api_key, base_url=request.base_url)
+        client = AsyncAnthropic(
+            api_key=request.api_key,
+            base_url=request.base_url,
+            timeout=effective_api_timeout_seconds(),
+            max_retries=0,
+        )
         system_prompt, converted = self._convert_messages(request.messages)
 
         payload: dict[str, Any] = {

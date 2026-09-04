@@ -89,6 +89,7 @@ async def create_interpreter(
         task_id=task_id,
         work_dir=work_dir,
         notebook_serializer=notebook_serializer,
+        timeout=timeout or settings.PYTHON_EXECUTION_TIMEOUT_SECONDS,
     )
     await python.initialize()
     return python

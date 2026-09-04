@@ -20,6 +20,7 @@ from app.config.setting import settings
 from app.schemas.response import OutputItem, ResultModel, StdErrModel, SystemMessage
 from app.services.redis_manager import redis_manager
 from app.tools.base_interpreter import BaseCodeInterpreter
+from app.tools.execution_guard import assess_code_execution
 from app.tools.notebook_serializer import NotebookSerializer
 from app.utils.log_util import logger
 
@@ -45,7 +46,11 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
         super().__init__(task_id, work_dir, notebook_serializer)
         self.work_path = Path(work_dir).resolve()
         self.executable = executable or self.discover_executable()
-        self.timeout = timeout or settings.MATLAB_EXECUTION_TIMEOUT_SECONDS
+        requested_timeout = timeout or settings.MATLAB_EXECUTION_TIMEOUT_SECONDS
+        self.timeout = max(
+            0.01,
+            min(float(requested_timeout), float(settings.CODE_EXECUTION_HARD_LIMIT_SECONDS)),
+        )
         self.calls_dir = self.work_path / "matlab_calls"
         self.metadata_path = self.work_path / "execution_backend.json"
         self.call_index = 0
@@ -53,6 +58,7 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
         self.engine_module: Any | None = None
         self.engine: Any | None = None
         self._active_future: Any | None = None
+        self._restart_required = False
         self._execution_lock = asyncio.Lock()
         self._dll_handles: list[Any] = []
 
@@ -132,6 +138,7 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
                 self._active_future = None
 
             self.version = await asyncio.to_thread(self._configure_engine)
+            self._restart_required = False
         except asyncio.CancelledError:
             self._cancel_active_future()
             await self.cleanup()
@@ -257,6 +264,21 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
     async def execute_code(self, code: str) -> tuple[str, bool, str]:
         """在常驻 MATLAB 会话中执行脚本，保留变量并捕获文本输出。"""
         async with self._execution_lock:
+            assessment = assess_code_execution(
+                code,
+                language=self.language,
+                work_dir=self.work_path,
+            )
+            if not assessment.allowed:
+                return await self._reject_execution(assessment.reason)
+
+            if self.engine is None and self._restart_required:
+                try:
+                    await self.initialize()
+                except MatlabUnavailableError as exc:
+                    return await self._reject_execution(
+                        f"MATLAB 超时后重建失败: {exc}"
+                    )
             if self.engine is None:
                 error = "MATLAB Engine 未初始化或已经关闭"
                 return error, True, error
@@ -276,6 +298,8 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
             stdout = io.StringIO()
             stderr = io.StringIO()
             exception_text = ""
+            timed_out = False
+            cancel_confirmed = False
             try:
                 await asyncio.to_thread(
                     self.engine.cd,
@@ -292,20 +316,30 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
                     background=True,
                 )
                 self._active_future = future
-                await asyncio.to_thread(future.result, self.timeout)
+                async with self.execution_heartbeat("MATLAB 代码"):
+                    await asyncio.to_thread(future.result, self.timeout)
             except asyncio.CancelledError:
                 self._cancel_active_future()
                 raise
             except Exception as exc:
                 if self._is_timeout_error(exc):
-                    self._cancel_active_future()
+                    timed_out = True
+                    cancel_confirmed = self._cancel_active_future()
                     exception_text = (
-                        f"MATLAB 代码执行超过 {self.timeout:.0f} 秒，已中断"
+                        f"MATLAB 代码执行超过 {self.timeout:g} 秒，"
+                        + (
+                            "已中断异步任务，Engine 将重建"
+                            if cancel_confirmed
+                            else "异步任务无法安全取消，Engine 已强制退出并将在下次调用重建"
+                        )
                     )
                 else:
                     exception_text = str(exc)
             finally:
                 self._active_future = None
+
+            if timed_out:
+                await self._retire_engine_after_timeout()
 
             cleaned_stdout = self._clean_output(stdout.getvalue())
             cleaned_stderr = self._clean_output(stderr.getvalue())
@@ -347,6 +381,27 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
             await self._push_to_websocket(content_to_display)
             return combined, error_occurred, error_message
 
+    async def _reject_execution(self, reason: str) -> tuple[str, bool, str]:
+        self.notebook_serializer.add_code_cell_error_to_notebook(reason)
+        await redis_manager.publish_message(
+            self.task_id,
+            SystemMessage(content=reason, type="warning"),
+        )
+        await self._push_to_websocket([StdErrModel(msg=reason)])
+        return reason, True, reason
+
+    async def _retire_engine_after_timeout(self) -> None:
+        """超时后丢弃会话，绝不把仍忙碌的 Engine 交给下一次执行。"""
+        engine, self.engine = self.engine, None
+        self._restart_required = True
+        if engine is None:
+            return
+        grace = max(float(settings.CODE_EXECUTION_CANCEL_GRACE_SECONDS), 0.01)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(engine.quit), timeout=grace)
+        except Exception as exc:
+            logger.warning(f"MATLAB 超时会话未能在宽限期内退出: {exc}")
+
     def _build_user_script(self, code: str) -> str:
         """确保 run 临时切换到审计目录时，用户产物仍写入任务根目录。"""
         root = self._matlab_quote(self.work_path)
@@ -357,14 +412,15 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
             f"{code}\n"
         )
 
-    def _cancel_active_future(self) -> None:
+    def _cancel_active_future(self) -> bool:
         future = self._active_future
         if future is None:
-            return
+            return False
         try:
-            future.cancel()
+            return bool(future.cancel())
         except Exception as exc:
             logger.warning(f"中断 MATLAB 执行失败: {exc}")
+            return False
 
     def _is_timeout_error(self, exc: BaseException) -> bool:
         """同时识别 Python 与 MATLAB Engine 各自定义的超时异常。"""
@@ -384,6 +440,7 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
     async def cleanup(self) -> None:
         """关闭当前任务独占的 MATLAB 会话。"""
         self._cancel_active_future()
+        self._restart_required = False
         engine, self.engine = self.engine, None
         if engine is not None:
             try:

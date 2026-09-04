@@ -4,6 +4,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from app.config.setting import effective_api_timeout_seconds
 from app.core.llm.providers.base import BaseProvider, ProviderRequest
 from app.core.llm.types import StandardResponse, ToolCall, Usage
 
@@ -12,7 +13,12 @@ class OpenAIChatProvider(BaseProvider):
     """覆盖 OpenAI 及兼容该端点的中转服务。"""
 
     async def send(self, request: ProviderRequest) -> StandardResponse:
-        client = AsyncOpenAI(api_key=request.api_key, base_url=request.base_url)
+        client = AsyncOpenAI(
+            api_key=request.api_key,
+            base_url=request.base_url,
+            timeout=effective_api_timeout_seconds(),
+            max_retries=0,
+        )
         payload = self._build_payload(
             request.messages,
             request.model,

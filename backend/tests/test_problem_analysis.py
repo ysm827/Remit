@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.config.setting import settings
 from app.core.agents.coordinator_agent import CoordinatorAgent
 from app.core.agents.modeler_agent import ModelerAgent
 from app.core.llm.types import StandardResponse, Usage
@@ -471,6 +472,7 @@ class ProblemAnalysisTests(unittest.IsolatedAsyncioTestCase):
                     "app.core.workflow.redis_manager.publish_message",
                     new=AsyncMock(),
                 ),
+                patch.object(settings, "HIL_ENABLED", True),
                 self.assertRaises(WorkflowApprovalRequired) as raised,
             ):
                 await workflow._analysis_node(state, initial, coordinator)
@@ -535,7 +537,10 @@ class ProblemAnalysisTests(unittest.IsolatedAsyncioTestCase):
                 side_effect=AssertionError("不应重复调用模型")
             )
 
-            with self.assertRaises(WorkflowApprovalRequired) as raised:
+            with (
+                patch.object(settings, "HIL_ENABLED", True),
+                self.assertRaises(WorkflowApprovalRequired) as raised,
+            ):
                 await workflow._analysis_node(state, refined, coordinator)
 
             self.assertEqual(raised.exception.approval["node_id"], "analysis")

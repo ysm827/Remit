@@ -9,12 +9,31 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from app.core.workflow import RemitWorkFlow
-from app.routers.modeling_router import _active_tasks, cancel_task
+from app.core.agents.coder_agent import CoderAgentUnavailableError
+from app.routers.modeling_router import (
+    _active_tasks,
+    _exception_message,
+    _is_transient_task_failure,
+    cancel_task,
+)
 from app.schemas.response import SystemMessage, UserMessage
 from app.services.redis_manager import RedisManager
 
 
 class TaskCancellationTests(unittest.IsolatedAsyncioTestCase):
+    def test_failure_policy_keeps_blank_errors_actionable(self) -> None:
+        self.assertEqual(_exception_message(TimeoutError()), "TimeoutError")
+        self.assertFalse(
+            _is_transient_task_failure(
+                RuntimeError("复杂度保护器拒绝执行")
+            )
+        )
+        self.assertTrue(
+            _is_transient_task_failure(
+                CoderAgentUnavailableError("provider offline")
+            )
+        )
+
     async def asyncTearDown(self) -> None:
         for task, _ in list(_active_tasks.values()):
             task.cancel()

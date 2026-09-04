@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import httpx
 
-from app.config.setting import settings
+from app.config.setting import effective_api_timeout_seconds
 from app.core.llm.content import ImageBlock, TextBlock, iter_content_blocks
 from app.core.llm.providers.base import BaseProvider, ProviderRequest
 from app.core.llm.types import StandardResponse, ToolCall, Usage
@@ -52,7 +52,7 @@ class GeminiProvider(BaseProvider):
                     }
                 }
 
-        timeout = httpx.Timeout(settings.API_TIMEOUT_SECONDS)
+        timeout = httpx.Timeout(effective_api_timeout_seconds())
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 url,

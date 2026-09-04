@@ -5,9 +5,14 @@
 """
 
 import abc
+import asyncio
+import contextlib
 import re
+import time
+from collections.abc import AsyncIterator
 
-from app.schemas.response import InterpreterMessage, OutputItem
+from app.config.setting import settings
+from app.schemas.response import InterpreterMessage, OutputItem, SystemMessage
 from app.services.redis_manager import redis_manager
 from app.tools.notebook_serializer import NotebookSerializer
 from app.utils.log_util import logger
@@ -75,6 +80,37 @@ class BaseCodeInterpreter(abc.ABC):
         """向小节追加一段文本输出。"""
         self.add_section(section)
         self.section_output[section]["content"].append(text)
+
+    @contextlib.asynccontextmanager
+    async def execution_heartbeat(self, label: str) -> AsyncIterator[None]:
+        """长计算期间定期告诉前端仍在运行，结束时可靠回收心跳任务。"""
+        interval = max(float(settings.CODE_EXECUTION_HEARTBEAT_SECONDS), 0.0)
+        task: asyncio.Task[None] | None = None
+        if interval > 0:
+            task = asyncio.create_task(self._heartbeat_loop(label, interval))
+        try:
+            yield
+        finally:
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+    async def _heartbeat_loop(self, label: str, interval: float) -> None:
+        started = time.monotonic()
+        while True:
+            await asyncio.sleep(interval)
+            elapsed = int(time.monotonic() - started)
+            try:
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(
+                        content=f"{label}仍在运行（已耗时 {elapsed} 秒）",
+                        type="info",
+                    ),
+                )
+            except Exception as exc:
+                logger.warning(f"代码执行心跳发送失败: {exc}")
 
     def get_code_output(self, section: str) -> str:
         """取回小节的全部文本输出。"""

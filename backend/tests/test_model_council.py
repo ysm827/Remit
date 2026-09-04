@@ -3,7 +3,7 @@
 import asyncio
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 from pydantic import ValidationError
@@ -203,6 +203,26 @@ class _RefusingCritic:
 
 
 class ModelCouncilReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
+    def test_identical_reviewers_are_not_treated_as_independent(self):
+        def llm(model: str, base_url: str):
+            value = MagicMock()
+            value.api_type = "openai-responses"
+            value.model = model
+            value.base_url = base_url
+            return value
+
+        primary = llm("gpt-5.6-sol", "https://same.example/v1")
+        scout = llm("gpt-5.6-sol", "https://same.example/v1/")
+        critic = llm("gpt-5.6-sol", "https://same.example/v1")
+        self.assertFalse(
+            ModelCouncil.reviewers_are_independent(primary, scout, critic)
+        )
+
+        critic.model = "another-model"
+        self.assertTrue(
+            ModelCouncil.reviewers_are_independent(primary, scout, critic)
+        )
+
     async def test_multi_question_review_uses_one_strategic_critic_call(self):
         critic = _PortfolioCritic()
         council = ModelCouncil(
@@ -375,6 +395,40 @@ class ModelCouncilReviewRegressionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             timeout_council.fallback_reasons["ques1"],
             "审稿超时",
+        )
+
+        slow_fallback = _PortfolioCritic()
+        original_chat = slow_fallback.chat
+
+        async def delayed_chat(**kwargs):
+            await asyncio.sleep(1)
+            return await original_chat(**kwargs)
+
+        slow_fallback.chat = delayed_chat  # type: ignore[method-assign]
+        double_timeout_council = ModelCouncil(
+            task_id="double-timeout-fallback",
+            scout_llm=slow_fallback,  # type: ignore[arg-type]
+            critic_llm=_RefusingCritic(),  # type: ignore[arg-type]
+        )
+        double_timeout_council.fallback_timeout_seconds = 0.01
+        redis_manager.publish_message = noop
+        try:
+            degraded_review, _ = await double_timeout_council.review(
+                coordinator=coordinator,
+                primary=primary,
+                scout=scout,
+            )
+        finally:
+            redis_manager.publish_message = original_publish
+
+        self.assertIn("ques1", degraded_review.question_reviews)
+        self.assertIn(
+            "备用审稿超时",
+            double_timeout_council.fallback_reasons["ques1"],
+        )
+        self.assertEqual(
+            double_timeout_council.reviewer_by_question["ques1"],
+            "确定性降级审查",
         )
 
 

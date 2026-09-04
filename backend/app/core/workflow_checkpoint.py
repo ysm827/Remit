@@ -261,6 +261,7 @@ class WorkflowCheckpoint:
             "summary": summary.strip(),
             "artifacts": sorted(set(artifacts or [])),
             "quality_report": quality_report or {},
+            "allow_incomplete": allow_incomplete,
             "revision_count": int(revision_counts.get(node_id, 0)),
             "revision_targets": [
                 {"node_id": item["node_id"], "label": item["label"]}
@@ -283,11 +284,26 @@ class WorkflowCheckpoint:
 
     def approve(self, state: dict[str, Any], checkpoint_id: str) -> dict[str, Any]:
         """记录人工批准并解锁下一个节点。"""
+        return self._accept_approval(state, checkpoint_id, decision="approve")
+
+    def auto_continue(
+        self, state: dict[str, Any], checkpoint_id: str
+    ) -> dict[str, Any]:
+        """审核功能关闭时，记录自动放行并解锁已完成节点。"""
+        return self._accept_approval(state, checkpoint_id, decision="auto_continue")
+
+    def _accept_approval(
+        self,
+        state: dict[str, Any],
+        checkpoint_id: str,
+        *,
+        decision: str,
+    ) -> dict[str, Any]:
         pending = self._validate_pending_approval(state, checkpoint_id)
         state.setdefault("approval_history", []).append(
             {
                 **pending,
-                "decision": "approve",
+                "decision": decision,
                 "feedback": "",
                 "decided_at": self._now(),
             }

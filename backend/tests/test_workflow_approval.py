@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 from fastapi import BackgroundTasks, HTTPException
 
 from app.core.workflow import RemitWorkFlow, WorkflowApprovalRequired
+from app.config.setting import settings
 from app.core.workflow_checkpoint import (
     WorkflowCheckpoint,
     WorkflowCheckpointError,
@@ -66,7 +67,15 @@ class WorkflowApprovalTests(unittest.IsolatedAsyncioTestCase):
             workflow = RemitWorkFlow()
             workflow.checkpoint = checkpoint
 
-            with self.assertRaises(WorkflowApprovalRequired) as raised:
+            with (
+                patch.object(settings, "HIL_ENABLED", True),
+                patch.object(
+                    settings,
+                    "HIL_CHECKPOINTS",
+                    {"problem_split": True},
+                ),
+                self.assertRaises(WorkflowApprovalRequired) as raised,
+            ):
                 await workflow._require_human_approval(
                     state,
                     "coordinator",
@@ -81,6 +90,91 @@ class WorkflowApprovalTests(unittest.IsolatedAsyncioTestCase):
                 raised.exception.approval["checkpoint_id"],
             )
             self.assertEqual(reloaded["current_node"], "coordinator")
+
+    async def test_global_hil_disable_skips_completed_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = WorkflowCheckpoint(tmp)
+            state = checkpoint.initialize(self._problem())
+            self._completed_node(checkpoint, state)
+            workflow = RemitWorkFlow()
+            workflow.checkpoint = checkpoint
+
+            with patch.object(settings, "HIL_ENABLED", False):
+                result = await workflow._require_human_approval(
+                    state,
+                    "coordinator",
+                    summary="已拆分 1 个小问",
+                )
+
+            self.assertIsNone(result)
+            self.assertIsNone(checkpoint.load().get("pending_approval"))
+
+    async def test_hil_disable_does_not_auto_approve_incomplete_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = WorkflowCheckpoint(tmp)
+            state = checkpoint.initialize(self._problem())
+            self._completed_node(checkpoint, state)
+            workflow = RemitWorkFlow()
+            workflow.checkpoint = checkpoint
+
+            with (
+                patch.object(settings, "HIL_ENABLED", False),
+                self.assertRaisesRegex(RuntimeError, "人工审核已关闭"),
+            ):
+                await workflow._require_human_approval(
+                    state,
+                    "coordinator",
+                    summary="质量门未通过",
+                    allow_incomplete=True,
+                )
+
+    def test_resume_releases_historical_approval_when_hil_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = WorkflowCheckpoint(tmp)
+            state = checkpoint.initialize(self._problem())
+            self._completed_node(checkpoint, state)
+            pending = checkpoint.request_approval(
+                state, "coordinator", summary="等待验收"
+            )
+            workflow = RemitWorkFlow()
+            workflow.checkpoint = checkpoint
+
+            with patch.object(settings, "HIL_ENABLED", False):
+                resumed = workflow._resolve_pending_approval_on_resume(state)
+
+            self.assertIsNone(resumed["pending_approval"])
+            self.assertIn("coordinator", resumed["approved_nodes"])
+            self.assertEqual(
+                resumed["approval_history"][-1]["decision"], "auto_continue"
+            )
+            self.assertEqual(
+                resumed["approval_history"][-1]["checkpoint_id"],
+                pending["checkpoint_id"],
+            )
+
+    def test_resume_does_not_release_incomplete_historical_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = WorkflowCheckpoint(tmp)
+            state = checkpoint.initialize(self._problem())
+            pending = checkpoint.request_approval(
+                state,
+                "coordinator",
+                summary="质量门未通过",
+                allow_incomplete=True,
+            )
+            workflow = RemitWorkFlow()
+            workflow.checkpoint = checkpoint
+
+            with (
+                patch.object(settings, "HIL_ENABLED", False),
+                self.assertRaisesRegex(RuntimeError, "不会把不完整产物自动放行"),
+            ):
+                workflow._resolve_pending_approval_on_resume(state)
+
+            self.assertEqual(
+                checkpoint.load()["pending_approval"]["checkpoint_id"],
+                pending["checkpoint_id"],
+            )
 
     async def test_approval_unlocks_next_node_but_stale_request_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

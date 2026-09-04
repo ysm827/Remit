@@ -75,8 +75,10 @@ def _server_hinted_delay(error: Exception) -> float | None:
     if hint is None:
         return None
     try:
-        # 封顶 5 分钟，防止异常响应头把任务钉死几个小时
-        return min(max(float(hint), 1.0), 300.0)
+        return min(
+            max(float(hint), 1.0),
+            float(settings.LLM_RETRY_AFTER_MAX_SECONDS),
+        )
     except (TypeError, ValueError):
         return None
 
@@ -222,6 +224,7 @@ class LLM:
         retry_limit = max_retries if max_retries is not None else settings.MAX_RETRIES
         if retry_limit is None:
             retry_limit = 3
+        retry_limit = min(max(int(retry_limit), 1), settings.LLM_HARD_RETRY_LIMIT)
 
         on_delta = self._make_delta_hook(agent_name, sub_title, publish)
 
@@ -287,7 +290,10 @@ class LLM:
             raise
         logger.error(f"第{attempt}次重试: {error}")
         if _is_retryable_gateway_error(error):
-            return max(retry_limit, settings.GATEWAY_MAX_RETRIES)
+            return min(
+                max(retry_limit, settings.GATEWAY_MAX_RETRIES),
+                settings.LLM_HARD_RETRY_LIMIT,
+            )
         return retry_limit
 
     async def _switch_to_fallback_quietly(self) -> bool:

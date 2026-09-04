@@ -116,6 +116,26 @@ def validate_pilot_results(
                     "但 metric_value 不是有限数值"
                 )
                 continue
+            runtime_value = item.get("runtime_seconds")
+            try:
+                runtime_seconds = float(runtime_value)
+            except (TypeError, ValueError):
+                runtime_seconds = math.nan
+            notes = str(item.get("notes", ""))[:160]
+            budget_seconds = plan.questions[key].time_budget_minutes * 60
+            if ran_ok and (
+                not math.isfinite(runtime_seconds) or runtime_seconds < 0
+            ):
+                errors.append(
+                    f"{key} 候选 {item.get('name', '?')} ran_ok=true "
+                    "但 runtime_seconds 不是有效非负数"
+                )
+                continue
+            if ran_ok and runtime_seconds > budget_seconds:
+                ran_ok = False
+                notes = (
+                    f"超过 {budget_seconds} 秒硬预算，已按失败处理。" + notes
+                )[:160]
             if ran_ok:
                 ok_count += 1
             candidates.append(
@@ -125,9 +145,11 @@ def validate_pilot_results(
                     "metric_value": metric_number
                     if math.isfinite(metric_number)
                     else None,
-                    "runtime_seconds": item.get("runtime_seconds"),
+                    "runtime_seconds": runtime_seconds
+                    if math.isfinite(runtime_seconds)
+                    else None,
                     "ran_ok": ran_ok,
-                    "notes": str(item.get("notes", ""))[:160],
+                    "notes": notes,
                 }
             )
         if ok_count < 1:

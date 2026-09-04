@@ -56,7 +56,9 @@ class Settings(BaseSettings):
     FALLBACK_REASONING_EFFORT: str | None = None
 
     DISABLE_RESPONSE_STORAGE: bool = True
-    API_TIMEOUT_SECONDS: float = 600.0
+    API_TIMEOUT_SECONDS: float = 180.0
+    # 即使旧配置仍写着 600 秒，也不能让一次坏请求占住工作流十分钟。
+    API_HARD_TIMEOUT_SECONDS: float = 180.0
 
     # ---- 四个核心 Agent 的独立模型接入 ----
     COORDINATOR_API_TYPE: ApiType | None = None
@@ -98,6 +100,9 @@ class Settings(BaseSettings):
 
     # ---- 模型评审组：独立探索者 + 匿名盲审者 ----
     MODEL_COUNCIL_ENABLED: bool = False
+    MODEL_COUNCIL_REQUIRE_DIVERSE_BACKENDS: bool = True
+    MODEL_COUNCIL_CRITIC_TIMEOUT_SECONDS: float = 180.0
+    MODEL_COUNCIL_FALLBACK_TIMEOUT_SECONDS: float = 180.0
 
     MODEL_SCOUT_API_TYPE: ApiType | None = None
     MODEL_SCOUT_API_KEY: str | None = None
@@ -114,15 +119,27 @@ class Settings(BaseSettings):
     MODEL_CRITIC_CONTEXT_WINDOW: int = 262144
 
     # ---- 运行控制 ----
-    MAX_CHAT_TURNS: int | None = None
-    MAX_RETRIES: int | None = None
-    GATEWAY_MAX_RETRIES: int = 12
+    MAX_CHAT_TURNS: int | None = 20
+    MAX_CODE_EXECUTIONS_PER_RUN: int = 12
+    MAX_RETRIES: int | None = 3
+    GATEWAY_MAX_RETRIES: int = 4
+    LLM_HARD_RETRY_LIMIT: int = 4
+    LLM_RETRY_AFTER_MAX_SECONDS: float = 60.0
     E2B_API_KEY: str | None = None
     CODE_EXECUTION_BACKEND: str = "matlab"
     MATLAB_EXECUTABLE: str | None = None
     MATLAB_STARTUP_TIMEOUT_SECONDS: float = 90.0
-    MATLAB_EXECUTION_TIMEOUT_SECONDS: float = 3000.0
+    MATLAB_EXECUTION_TIMEOUT_SECONDS: float = 300.0
     MATLAB_FALLBACK_TO_PYTHON: bool = True
+    PYTHON_EXECUTION_TIMEOUT_SECONDS: float = 300.0
+    CODE_EXECUTION_HARD_LIMIT_SECONDS: float = 300.0
+    CODE_EXECUTION_HEARTBEAT_SECONDS: float = 15.0
+    CODE_EXECUTION_CANCEL_GRACE_SECONDS: float = 10.0
+    CODE_COMPLEXITY_GUARD_ENABLED: bool = True
+    CODE_LITERAL_LOOP_ITERATION_LIMIT: int = 2_000_000
+    TASK_TIMEOUT_SECONDS: float = 7200.0
+    TASK_AUTO_RESUME_LIMIT: int = 1
+    TASK_AUTO_RESUME_BASE_DELAY_SECONDS: int = 30
     LOG_LEVEL: str = "DEBUG"
     DEBUG: bool = True
     REDIS_URL: str = "redis://redis:6379/0"
@@ -148,6 +165,12 @@ class Settings(BaseSettings):
     # ---- 人机协作审批 ----
     HIL_ENABLED: bool = True
     HIL_TIMEOUT: int = 300
+    HIL_CHECKPOINTS: dict[str, bool] = {
+        "problem_split": True,
+        "model_selection": True,
+        "code_review": False,
+        "paper_review": True,
+    }
 
     model_config = SettingsConfigDict(
         env_file=(
@@ -174,3 +197,11 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def effective_api_timeout_seconds() -> float:
+    """兼容旧配置，同时执行不可绕过的单请求超时上限。"""
+    return max(
+        1.0,
+        min(float(settings.API_TIMEOUT_SECONDS), float(settings.API_HARD_TIMEOUT_SECONDS)),
+    )

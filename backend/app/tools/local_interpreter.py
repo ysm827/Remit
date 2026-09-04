@@ -1,13 +1,18 @@
 """本地执行后端：通过本机 Jupyter 内核跑 Python。"""
 
+import asyncio
 import os
+import threading
 from collections.abc import Iterator
+from typing import Any
 
 import jupyter_client
 
 from app.schemas.response import OutputItem, ResultModel, StdErrModel, SystemMessage
+from app.config.setting import settings
 from app.services.redis_manager import redis_manager
 from app.tools.base_interpreter import BaseCodeInterpreter
+from app.tools.execution_guard import assess_code_execution
 from app.tools.notebook_serializer import NotebookSerializer
 from app.utils.log_util import logger
 
@@ -51,18 +56,26 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
         task_id: str,
         work_dir: str,
         notebook_serializer: NotebookSerializer,
+        timeout: float | None = None,
     ) -> None:
         super().__init__(task_id, work_dir, notebook_serializer)
+        requested_timeout = timeout or settings.PYTHON_EXECUTION_TIMEOUT_SECONDS
+        self.timeout = max(
+            0.01,
+            min(float(requested_timeout), float(settings.CODE_EXECUTION_HARD_LIMIT_SECONDS)),
+        )
         self.km = None
         self.kc = None
         self.interrupt_signal = False
+        self._execution_abort = threading.Event()
+        self._execution_lock = asyncio.Lock()
 
     # ---- 生命周期 ----
 
     async def initialize(self) -> None:
         logger.info("初始化本地内核")
-        self._start_kernel()
-        self._pre_execute_code()
+        await asyncio.to_thread(self._start_kernel)
+        await asyncio.to_thread(self._pre_execute_code)
 
     def _start_kernel(self) -> None:
         self.km, self.kc = jupyter_client.manager.start_new_kernel(
@@ -102,33 +115,81 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
         self._run_raw(bootstrap)
 
     async def cleanup(self) -> None:
-        assert self.kc is not None and self.km is not None
-        self.kc.shutdown()
-        self.km.shutdown_kernel()
+        if self.kc is None or self.km is None:
+            return
+        await asyncio.to_thread(self._shutdown_kernel, False)
         logger.info("关闭内核")
+
+    def _shutdown_kernel(self, now: bool) -> None:
+        if self.kc is not None:
+            try:
+                self.kc.stop_channels()
+            except Exception:
+                pass
+        if self.km is not None:
+            self.km.shutdown_kernel(now=now)
 
     def restart_jupyter_kernel(self) -> None:
         """关掉旧内核、起新内核并重跑引导代码。"""
-        assert self.kc is not None
-        self.kc.shutdown()
+        self._shutdown_kernel(True)
         self._start_kernel()
         self.interrupt_signal = False
+        self._execution_abort.clear()
         os.makedirs(self.work_dir, exist_ok=True)
         self._pre_execute_code()
 
     def send_interrupt_signal(self) -> None:
         self.interrupt_signal = True
+        self._execution_abort.set()
+        if self.km is not None:
+            try:
+                self.km.interrupt_kernel()
+            except Exception as exc:
+                logger.warning(f"中断 Python 内核失败: {exc}")
 
     # ---- 代码执行 ----
 
     async def execute_code(self, code: str) -> tuple[str, bool, str]:
+        async with self._execution_lock:
+            return await self._execute_code_locked(code)
+
+    async def _execute_code_locked(self, code: str) -> tuple[str, bool, str]:
         logger.info(f"执行代码: {code}")
+        assessment = assess_code_execution(
+            code,
+            language=self.language,
+            work_dir=self.work_dir,
+        )
+        if not assessment.allowed:
+            return await self._reject_execution(assessment.reason)
+
         self.notebook_serializer.add_code_cell_to_notebook(code)
 
         await redis_manager.publish_message(
             self.task_id, SystemMessage(content="开始执行代码")
         )
-        marks = self._run_raw(code)
+        self._execution_abort.clear()
+        worker = asyncio.create_task(asyncio.to_thread(self._run_raw, code))
+        try:
+            async with self.execution_heartbeat("Python 代码"):
+                marks = await asyncio.wait_for(
+                    asyncio.shield(worker),
+                    timeout=self.timeout,
+                )
+        except asyncio.TimeoutError:
+            await self._recover_kernel_after_timeout(worker)
+            error = f"Python 代码执行超过 {self.timeout:g} 秒，内核已中断并重启"
+            self.notebook_serializer.add_code_cell_error_to_notebook(error)
+            await redis_manager.publish_message(
+                self.task_id,
+                SystemMessage(content=error, type="error"),
+            )
+            await self._push_to_websocket([StdErrModel(msg=error)])
+            return error, True, error
+        except asyncio.CancelledError:
+            self.send_interrupt_signal()
+            raise
+
         await redis_manager.publish_message(
             self.task_id, SystemMessage(content="代码执行完成")
         )
@@ -165,24 +226,53 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
         await self._push_to_websocket(display)
         return combined, failed, error_detail
 
+    async def _reject_execution(self, reason: str) -> tuple[str, bool, str]:
+        self.notebook_serializer.add_code_cell_error_to_notebook(reason)
+        await redis_manager.publish_message(
+            self.task_id,
+            SystemMessage(content=reason, type="warning"),
+        )
+        await self._push_to_websocket([StdErrModel(msg=reason)])
+        return reason, True, reason
+
+    async def _recover_kernel_after_timeout(
+        self,
+        worker: asyncio.Task[list[tuple[str, str]]],
+    ) -> None:
+        """先软中断，再强制重建内核，避免失控代码留在后台继续跑。"""
+        self.send_interrupt_signal()
+        grace = max(float(settings.CODE_EXECUTION_CANCEL_GRACE_SECONDS), 0.01)
+        try:
+            await asyncio.wait_for(asyncio.shield(worker), timeout=grace)
+        except Exception as exc:
+            logger.warning(f"Python 内核未在宽限期内停止，将强制重启: {exc}")
+        await asyncio.to_thread(self.restart_jupyter_kernel)
+
     def _run_raw(self, code: str) -> list[tuple[str, str]]:
         """把代码发给内核，收割 iopub 消息并归类为 ``(标记, 内容)``。"""
         assert self.kc is not None and self.km is not None
-        self.kc.execute(code)
+        kc, km = self.kc, self.km
+        kc.execute(code)
         collected: list[tuple[str, str]] = []
-        for msg in self._harvest_iopub():
+        for msg in self._harvest_iopub(kc, km):
             collected.extend(self._classify(msg))
         return collected
 
-    def _harvest_iopub(self) -> Iterator[dict]:
+    def _harvest_iopub(self, kc: Any, km: Any) -> Iterator[dict]:
         """阻塞读取 iopub 直到内核回到 idle；收到中断信号时打断内核。"""
-        assert self.kc is not None and self.km is not None
         while True:
+            if self._execution_abort.is_set():
+                return
+            if self.interrupt_signal:
+                km.interrupt_kernel()
+                self.interrupt_signal = False
             try:
-                msg = self.kc.get_iopub_msg(timeout=1)
+                msg = kc.get_iopub_msg(timeout=1)
             except Exception:
+                if self._execution_abort.is_set():
+                    return
                 if self.interrupt_signal:
-                    self.km.interrupt_kernel()
+                    km.interrupt_kernel()
                     self.interrupt_signal = False
                 continue
             yield msg

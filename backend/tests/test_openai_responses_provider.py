@@ -2,8 +2,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.config.setting import settings
-from app.config.setting import ApiType
+from app.config.setting import ApiType, effective_api_timeout_seconds, settings
 from app.core.llm.llm import LLM
 from app.core.llm.providers.openai_responses import OpenAIResponsesProvider
 from app.core.llm.types import StandardResponse
@@ -92,9 +91,9 @@ class OpenAIResponsesProviderTests(unittest.IsolatedAsyncioTestCase):
             client_factory.call_args.kwargs["default_headers"]["User-Agent"],
             "Remit/1.0",
         )
-        self.assertGreaterEqual(
+        self.assertEqual(
             client_factory.call_args.kwargs["timeout"],
-            300,
+            effective_api_timeout_seconds(),
         )
 
     async def test_default_retry_limit_uses_project_setting(self):

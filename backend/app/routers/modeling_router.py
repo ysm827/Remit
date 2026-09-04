@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile
 from app.core.workflow import RemitWorkFlow, WorkflowApprovalRequired
+from app.core.agents.coder_agent import CoderAgentUnavailableError
 from app.core.workflow_checkpoint import (
     WorkflowCheckpoint,
     WorkflowCheckpointError,
@@ -59,13 +60,41 @@ _scheduled_tasks: set[str] = set()
 
 # 失败自动续跑: task_id -> 已用次数；成功、审批或人工干预后清零
 _auto_resume_counts: Dict[str, int] = {}
-_AUTO_RESUME_LIMIT = 2
+_AUTO_RESUME_LIMIT = settings.TASK_AUTO_RESUME_LIMIT
 # 事件循环只持任务弱引用，必须自持强引用防止延迟续跑任务被回收
 _auto_resume_handles: set[asyncio.Task] = set()
 
 # UI 单次验证请求会等待 60 秒。后端必须更早结束，才能把供应商网络
 # 超时转换成结构化错误，而不是让浏览器误报“验证服务不可达”。
 API_VALIDATION_TIMEOUT_SECONDS = 45.0
+
+_TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504, 520, 522, 524}
+
+
+def _exception_message(error: BaseException) -> str:
+    """TimeoutError 等异常字符串为空时仍给用户可定位的信息。"""
+    detail = str(error).strip()
+    return detail or type(error).__name__
+
+
+def _is_transient_task_failure(error: BaseException) -> bool:
+    """只有供应商/网络瞬断允许整任务自动续跑，计算失败不得原样重放。"""
+    if isinstance(error, CoderAgentUnavailableError):
+        return True
+    current: BaseException | None = error
+    while current is not None:
+        if getattr(current, "status_code", None) in _TRANSIENT_STATUS_CODES:
+            return True
+        if type(current).__name__ in {
+            "APIConnectionError",
+            "ConnectError",
+            "ConnectionError",
+            "ReadError",
+            "RemoteProtocolError",
+        }:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 _runtime_configured_agents: set[str] = set()
@@ -405,8 +434,7 @@ async def run_modeling_task_async(
 
     task_completed = False
     try:
-        # 设置超时时间（5 小时）
-        await asyncio.wait_for(task, timeout=3600 * 5)
+        await asyncio.wait_for(task, timeout=settings.TASK_TIMEOUT_SECONDS)
         task_completed = True
         workflow.mark_status("completed")
         _auto_resume_counts.pop(task_id, None)
@@ -448,21 +476,27 @@ async def run_modeling_task_async(
         stopped = SystemMessage(content="建模任务已停止", type="warning")
         await redis_manager.publish_message(task_id, stopped)
     except Exception as e:
-        logger.error(f"任务 {task_id} 执行失败: {e}")
+        error_message = _exception_message(e)
+        logger.exception(f"任务 {task_id} 执行失败: {error_message}")
         workflow.mark_status("failed")
         attempt = _auto_resume_counts.get(task_id, 0) + 1
-        will_retry = attempt <= _AUTO_RESUME_LIMIT
-        delay_seconds = 60 * attempt
+        transient = _is_transient_task_failure(e)
+        will_retry = transient and attempt <= _AUTO_RESUME_LIMIT
+        delay_seconds = settings.TASK_AUTO_RESUME_BASE_DELAY_SECONDS * attempt
         await redis_manager.publish_message(
             task_id,
             SystemMessage(
                 content=(
-                    f"任务执行失败: {str(e)}"
+                    f"任务执行失败: {error_message}"
                     + (
                         f"；将在 {delay_seconds} 秒后从检查点自动续跑"
                         f"（第 {attempt}/{_AUTO_RESUME_LIMIT} 次）"
                         if will_retry
-                        else "；自动续跑次数已用完，请人工在页面上续跑或退回"
+                        else (
+                            "；该错误不是网络瞬断，已停止自动重放，请调整方案后续跑"
+                            if not transient
+                            else "；自动续跑次数已用完，请人工在页面上续跑或退回"
+                        )
                     )
                 ),
                 type="error",
@@ -486,7 +520,10 @@ async def run_modeling_task_async(
         try:
             await workflow.cleanup()
         except Exception as cleanup_error:
-            logger.error(f"清理任务 {task_id} 的代码解释器失败: {cleanup_error}")
+            logger.exception(
+                f"清理任务 {task_id} 的代码解释器失败: "
+                f"{_exception_message(cleanup_error)}"
+            )
         # 从注册表中清理
         _active_tasks.pop(task_id, None)
         _scheduled_tasks.discard(task_id)
