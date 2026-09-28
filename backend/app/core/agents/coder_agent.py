@@ -540,7 +540,7 @@ class CoderAgent(Agent):
                 },
             ),
         )
-        await self.append_chat_history(self._assistant_history_entry(response))
+        await self.append_assistant_response(response)
 
         await publish_activity(
             self.task_id,

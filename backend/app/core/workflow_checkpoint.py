@@ -551,6 +551,10 @@ class WorkflowCheckpoint:
         state["approved_nodes"] = [
             item for item in state.get("approved_nodes", []) if item not in invalidated
         ]
+        state["node_outcomes"] = {
+            key: value for key, value in state.get("node_outcomes", {}).items()
+            if key not in invalidated
+        }
         if "pilot" in invalidated and not preserve_pilot:
             self._invalidate_pilot_state(state)
         elif preserve_pilot:

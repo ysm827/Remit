@@ -213,7 +213,7 @@ def owner(node: str) -> str:
 def snapshot(root: Path) -> dict:
     """所有角色与前端读取同一张表，状态来自真实执行检查点。"""
     from app.core.workflow_checkpoint import WorkflowCheckpoint
-    from app.core.project_audit import evaluated_node_status
+    from app.core.project_audit import evaluated_node_status, evaluate_pilot
 
     state = read_json(root / "workflow_state.json")
     meta = read_json(root / ".project.json")
@@ -235,7 +235,8 @@ def snapshot(root: Path) -> dict:
                 "label": WorkflowCheckpoint.node_label(node, state),
                 "role": owner(node),
                 "status": node_status,
-                "issues": (state.get("node_outcomes", {}).get(node) or {}).get(
+                "issues": (evaluate_pilot(state) if node == "pilot" else
+                           (state.get("node_outcomes", {}).get(node) or {})).get(
                     "issues", []
                 ),
             }
@@ -361,7 +362,7 @@ def checkpoint_event(root: Path, state: dict) -> None:
     """检查点改变时记录每个开始、完成、暂停和返修转移。"""
     activate_directives(root, state)
     data = {
-        key: state.get(key) for key in ("status", "current_node", "completed_nodes")
+        key: state.get(key) for key in ("status", "current_node", "completed_nodes", "node_outcomes", "pilot_skipped")
     }
     pending = state.get("pending_approval") or {}
     data["checkpoint_id"] = pending.get("checkpoint_id")
@@ -380,6 +381,12 @@ def checkpoint_event(root: Path, state: dict) -> None:
         if not state.get("current_node") and state.get("completed_nodes")
         else "状态更新"
     )
+    if phase == "步骤完成":
+        from app.core.project_audit import evaluated_node_status
+
+        outcome = evaluated_node_status(state, node)
+        phase = {"skipped": "步骤已跳过，未验证", "warning": "步骤结束，仍需核验",
+                 "failed": "步骤失败"}.get(outcome, phase)
     record(root, owner(node), "checkpoint", f"{label} · {phase}", data)
 
 

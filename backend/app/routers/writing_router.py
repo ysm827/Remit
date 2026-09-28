@@ -473,7 +473,7 @@ async def _generate(
                 + "\n"
                 + str(config.get(key, ""))
             )
-            prompt += flows._citation_block()
+            prompt += flows._citation_block() + "\n" + str(evidence.get("evidence_notice") or "")
             response = await agent.run(
                 prompt,
                 available_images=entry.get("paper_ready_images", []),
@@ -489,6 +489,7 @@ async def _generate(
         for key, prompt in flows.get_write_flows(
             output, config, problem.get("ques_all", "")
         ).items():
+            prompt += "\n" + str(evidence.get("evidence_notice") or "")
             if not core_changed and key in cached:
                 try:
                     saved = WriterResponse.model_validate(cached[key])

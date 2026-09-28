@@ -512,7 +512,9 @@ class RemitWorkFlow(WorkFlow):
         ledger = state.get("citation_ledger")
         if not isinstance(ledger, dict) or not ledger:
             ledger = load_citation_ledger(self.work_dir)
-        flows.citation_brief = build_citation_brief(ledger)
+        from app.core.project_audit import pilot_evidence_notice
+
+        flows.citation_brief = (build_citation_brief(ledger) + "\n" + pilot_evidence_notice(state)).strip()
 
     async def _publish_progress(self, state: dict[str, Any]) -> None:
         """推送实时进度快照；失败只记日志，不阻断工作流。"""
@@ -1293,6 +1295,8 @@ class RemitWorkFlow(WorkFlow):
         if self.code_interpreter is None:
             raise RuntimeError("code interpreter is not initialized")
         node_id = "pilot"
+        state.pop("pilot_skipped", None)
+        state.setdefault("node_outcomes", {}).pop("pilot", None)
         await self._start_node(state, node_id)
         await self._check_cancelled()
         await redis_manager.publish_message(
@@ -1369,6 +1373,13 @@ class RemitWorkFlow(WorkFlow):
             # the pilot and issue the same invalid request in the next node.
             raise
         except Exception as exc:
+            if not isinstance(exc, PilotValidationError):
+                state.setdefault("node_outcomes", {})["pilot"] = {
+                    "status": "failed", "issues": [f"探索实验技术故障：{exc}"],
+                    "summary": "已保留探索进度，需修复技术故障后继续",
+                }
+                self.checkpoint.save(state)
+                raise
             # 探索实验是增强环节：失败降级按原方案继续，绝不阻塞主流程
             logger.error(f"探索实验降级跳过: {exc}")
             await redis_manager.publish_message(
@@ -1379,6 +1390,9 @@ class RemitWorkFlow(WorkFlow):
                 ),
             )
             state["pilot_skipped"] = str(exc)
+            from app.core.project_audit import evaluate_pilot
+
+            state.setdefault("node_outcomes", {})["pilot"] = evaluate_pilot(state)
             # 同一代码手实例将继续正式求解：撤销探索阶段的产物限制指令
             try:
                 await coder_agent.append_chat_history(

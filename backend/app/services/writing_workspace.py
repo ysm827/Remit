@@ -132,12 +132,20 @@ def sync_results(task_root: Path, state: dict[str, Any]) -> dict[str, Any]:
             "analysis_response",
             "data_profile",
             "literature_review",
+            "workflow_features",
+            "node_outcomes",
+            "pilot_skipped",
+            "pilot_results",
+            "pilot_decision",
         )
     }
     sources: dict[str, Path] = {}
     from app.services.competitions import project_competition
 
     payload["competition"] = project_competition(task_root)
+    from app.core.project_audit import pilot_evidence_notice
+
+    payload["evidence_notice"] = pilot_evidence_notice(state)
     for result in (state.get("solution_results") or {}).values():
         for name in set(
             result.get("artifacts", []) + result.get("paper_ready_images", [])

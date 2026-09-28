@@ -10,7 +10,7 @@ const limit = ref(30);
 const statuses: Record<string, string> = {
  running: "进行中", completed: "已完成", failed: "执行失败", stopped: "已暂停",
  cancelled: "已取消", interrupted: "已中断", awaiting_approval: "待你验收",
- warning: "仍需核验", pending: "待执行", needs_info: "待你补充", ready: "待开始",
+ warning: "仍需核验", skipped: "已跳过，未验证", pending: "待执行", needs_info: "待你补充", ready: "待开始",
 };
 const stage = computed(() => {
  const steps = props.state?.steps || [];
@@ -58,7 +58,7 @@ const currentDetail = computed(() => {
 const headline = computed(() => stage.value ? short(stage.value.label, 90) : short(latest.value, 110));
 const stageStatus = computed(() => stage.value?.status || props.state?.status || '');
 const completed = computed(() => (props.state?.steps || []).filter(s => s.status === 'completed').slice(-2));
-const warnings = computed(() => (props.state?.steps || []).filter(s => s.status === 'warning'));
+const warnings = computed(() => (props.state?.steps || []).filter(s => ['warning', 'skipped'].includes(s.status)));
 const warningIssues = computed(() => [...new Set(warnings.value.flatMap(s => s.issues || []))]);
 const calls = computed(() => props.events.filter(e => e.kind === "tool" && e.data.input != null).length);
 const repairs = computed(() => props.events.filter(e => /自动修复|重新生成|重新尝试|正在重试/.test(e.content)).length);
@@ -91,7 +91,7 @@ function toggleRaw(event: Event) { rawOpen.value = (event.target as HTMLDetailsE
    <p v-if="completed.length" class="completed-line"><span class="detail-label">最近完成</span>{{ completed.map(s => s.label).join('、') }}</p>
    <p v-if="stage && useful.length" class="current-line"><span class="detail-label">当前进展</span>{{ short(currentDetail) }}</p>
    <p v-if="attention" class="attention-note" role="status">{{ attention }}</p>
-   <div v-if="warnings.length" class="warning-note"><p><span class="detail-label">仍需核验</span>{{ warnings.map(s => s.label).join('、') }}<span v-if="warningIssues.length">（{{ warningIssues.length }} 项）</span></p><details v-if="warningIssues.length"><summary>查看待核验事项</summary><ul><li v-for="issue in warningIssues" :key="issue">{{ issue }}</li></ul></details></div>
+   <div v-if="warnings.length" class="warning-note"><p><span class="detail-label">仍需核验</span>{{ warnings.map(s => s.label + (s.status === 'skipped' ? '（已跳过，未验证）' : '')).join('、') }}<span v-if="warningIssues.length">（{{ warningIssues.length }} 项）</span></p><details v-if="warningIssues.length"><summary>查看待核验事项</summary><ul><li v-for="issue in warningIssues" :key="issue">{{ issue }}</li></ul></details></div>
    <ol v-if="milestones.length" class="milestones" aria-label="最近关键进展"><li v-for="event in milestones" :key="event.seq"><span>{{ short(progressText(event)) }}</span><time>{{ time(event.at) }}</time></li></ol>
    <p v-else-if="!stage" class="progress-empty">尚未收到阶段结果；工具调用次数不代表完成进度。</p>
    <footer class="progress-meta"><span v-if="latestAt">最近活动 {{ time(latestAt) }}</span><span v-if="calls">工具调用 {{ calls }} 次</span><span v-if="repairs">自动修复 {{ repairs }} 次</span></footer>

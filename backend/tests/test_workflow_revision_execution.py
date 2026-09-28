@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.config.setting import settings
 from app.core import workflow as workflow_module
 from app.core.deliverable_contract import build_stage_contract
+from app.core.pilot import PilotValidationError
 from app.core.workflow import RemitWorkFlow, WorkflowApprovalRequired
 from app.core.workflow_checkpoint import WorkflowCheckpoint
 from app.models.user_output import UserOutput
@@ -424,8 +425,8 @@ class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
                 finalize_with_pilot=AsyncMock(return_value=pilot_decision),
             )
             if pilot_fails:
-                modeler.design_pilot_plan.side_effect = RuntimeError(
-                    "pilot unavailable"
+                modeler.design_pilot_plan.side_effect = PilotValidationError(
+                    "候选比较未满足最低要求"
                 )
 
             async def run_pilot(**_kwargs):
@@ -507,6 +508,8 @@ class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(question_call["value"]["model_plan"], expected)
             self.assertIn(expected, question_call["value"]["coder_prompt"])
             persisted = checkpoint.load()
+            if pilot_fails:
+                self.assertEqual(persisted["node_outcomes"]["pilot"]["status"], "skipped")
             self.assertEqual(
                 persisted["modeler_response"]["questions_solution"]["ques1"], expected
             )

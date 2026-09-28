@@ -65,6 +65,16 @@ const snapshot: TeamState = {
 		{ id: 'modeler', label: '总体建模方案', role: 'modeler', status: 'running' },
 	],
 };
+it('跳过的探索不进入最近完成，并一直保留未验证提醒', () => {
+ const state = { ...snapshot, steps: [
+  { id: 'pilot', label: '候选探索', role: 'coder', status: 'skipped', issues: ['候选结果不完整，沿用原方案'] },
+  { id: 'solve:ques1', label: '第一问', role: 'coder', status: 'running' },
+ ], current_node: 'solve:ques1' };
+ const wrapper = mount(ActivitySummary, { props: { events: [], state } });
+ expect(wrapper.get('.warning-note').text()).toContain('已跳过，未验证');
+ expect(wrapper.get('.warning-note').text()).toContain('沿用原方案');
+ expect(wrapper.text()).not.toContain('最近完成');
+});
 it('默认展示阶段、已完成与未核验项，心跳不会挤掉关键结果', () => {
 	const events = [event(1, '调研结果：检索 24 篇文献，精读 1 篇'), event(2, '已生成 4 问分析，但证据核验尚未完整'),
 		...Array.from({length: 390}, (_, i) => event(i + 3, '协调手正在输出…'))];

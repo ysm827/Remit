@@ -105,9 +105,15 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
         if not self.executable:
             raise MatlabUnavailableError("未找到 MATLAB 可执行文件")
         executable = Path(self.executable).resolve()
-        if executable.parent.name.lower() != "bin":
+        parent = executable.parent
+        if parent.name.lower() in {"win64", "glnxa64", "maci64", "maca64"}:
+            parent = parent.parent
+        if parent.name.lower() != "bin":
             raise MatlabUnavailableError(f"无法从路径识别 MATLAB 根目录: {executable}")
-        return executable.parent.parent
+        root = parent.parent
+        if not (root / "extern" / "engines" / "python").is_dir():
+            raise MatlabUnavailableError(f"MATLAB 安装缺少 Python Engine: {root}")
+        return root
 
     async def initialize(self) -> None:
         """加载 MATLAB Engine 并真实启动一个可复用的 MATLAB 会话。"""
@@ -255,6 +261,7 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
         if self.engine is None:
             raise MatlabUnavailableError("MATLAB Engine 未创建")
         self.engine.cd(str(self.work_path), nargout=0)
+        self.engine.addpath(str(Path(__file__).with_name("matlab_helpers")), nargout=0)
         self.engine.eval(
             "set(groot, 'defaultFigureVisible', 'off');",
             nargout=0,

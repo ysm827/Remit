@@ -300,6 +300,7 @@ const statuses: Record<string, string> = {
 	awaiting_approval: "待验收",
 	failed: "失败",
 	warning: "部分完成，需核验",
+	skipped: "已跳过，未验证",
 	stopped: "已停止",
 	cancelled: "已取消",
 	interrupted: "已中断",
