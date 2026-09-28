@@ -1,4 +1,4 @@
-; Native per-user installer. User projects/configuration live outside {app}.
+; Native installer. User projects/configuration live outside {app}.
 [Setup]
 AppId={{D1041570-17E4-4B55-AD90-3D1B29B30510}}
 AppName=Remit
@@ -41,6 +41,17 @@ Name: "{autodesktop}\Remit"; Filename: "{app}\runtime\python\pythonw.exe"; Param
 Filename: "{app}\runtime\python\pythonw.exe"; Parameters: "-B ""{app}\tools\desktop_runtime.py"""; Description: "打开 Remit"; Flags: nowait postinstall skipifsilent
 
 [Code]
+function RemitRunning(): Boolean;
+var Code: Integer;
+begin
+  Result := False;
+  if FileExists(ExpandConstant('{app}\tools\desktop_runtime.py')) then
+    if Exec(ExpandConstant('{app}\runtime\python\python.exe'),
+      '-B "' + ExpandConstant('{app}\tools\desktop_runtime.py') + '" --is-running',
+      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then
+      Result := Code = 0;
+end;
+
 function NextButtonClick(CurPageID: Integer): Boolean;
 var I: Integer; Directory: String;
 begin
@@ -59,7 +70,7 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
-  if FileExists(ExpandConstant('{localappdata}\Remit\Desktop\desktop.json')) then
+  if RemitRunning() then
     Result := '请先从托盘退出 Remit，保留进度后再继续安装。';
 end;
 
@@ -82,7 +93,7 @@ end;
 
 function InitializeUninstall(): Boolean;
 begin
-  Result := not FileExists(ExpandConstant('{localappdata}\Remit\Desktop\desktop.json'));
+  Result := not RemitRunning();
   if not Result then MsgBox('请先从托盘退出 Remit，再卸载。项目和设置会保留。', mbInformation, MB_OK);
 end;
 

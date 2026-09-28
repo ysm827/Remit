@@ -43,6 +43,8 @@ jobs:
       - run: python tools/check_public_tree.py
       - name: Build and verify bundled runtime
         run: python tools/build_desktop.py --build-root "${{ runner.temp }}/Remit build"
+      - name: Install, relocate and verify the finished package
+        run: python tools/test_desktop_installer.py --build-root "${{ runner.temp }}/Remit build"
       - name: Preserve verification reports
         if: always()
         uses: actions/upload-artifact@v4

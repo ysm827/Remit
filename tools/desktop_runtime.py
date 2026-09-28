@@ -150,6 +150,8 @@ def start(data: Path, *, smoke: bool = False, report: Path | None = None):
     stop.unlink(missing_ok=True)
     owner.unlink(missing_ok=True)
     redis_port, api_port = free_port(), free_port()
+    while api_port == redis_port:
+        api_port = free_port()
     secret = secrets.token_urlsafe(32)
     url = f"http://127.0.0.1:{api_port}"
     env.update(REDIS_URL=f"redis://:{secret}@127.0.0.1:{redis_port}/0",
@@ -248,6 +250,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--stop", action="store_true")
+    parser.add_argument("--is-running", action="store_true")
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
@@ -256,6 +259,12 @@ def main():
         return
     data = data_directory()
     data.mkdir(parents=True, exist_ok=True)
+    if args.is_running:
+        lock = lock_instance(data)
+        if lock:
+            lock.close()
+            raise SystemExit(1)
+        return
     if args.stop:
         (data / "stop.request").touch()
         for _ in range(30):
