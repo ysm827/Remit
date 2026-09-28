@@ -1,0 +1,291 @@
+"""MATLAB 优先执行后端与 Python 回退策略测试。"""
+
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
+
+from app.config.setting import settings
+from app.core.functions import get_coder_tools
+from app.core.prompts.coder import get_coder_prompt
+from app.tools.interpreter_factory import create_interpreter
+from app.tools.local_interpreter import LocalCodeInterpreter
+from app.tools.matlab_interpreter import MatlabCodeInterpreter, MatlabUnavailableError
+from app.tools.notebook_serializer import NotebookSerializer
+
+
+class MatlabInterpreterTests(unittest.IsolatedAsyncioTestCase):
+    """验证本机 MATLAB 主路径和严格的不可用回退路径。"""
+
+    def test_matlab_prompt_and_tool_schema_forbid_python(self) -> None:
+        prompt = get_coder_prompt("matlab")
+        tools = get_coder_tools("matlab")
+
+        self.assertIn("MATLAB code", prompt)
+        self.assertIn("never Python", prompt)
+        description = tools[0]["function"]["description"]
+        self.assertIn("MATLAB syntax only", description)
+        self.assertIn("Do not send Python code", description)
+
+    def test_error_context_uses_actual_matlab_source_location(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "call_0002.m"
+            script.write_text(
+                "T = table(1);\nT.可计算 = true;\ndisp('经度（°）');\n",
+                encoding="utf-8",
+            )
+            for error in (
+                f"错误: 文件: {script} 行: 2 列: 3\n文本字符无效。\n出错 run (第 112 行)",
+                "出错 call_0002 (第 2 行)\n文本字符无效。",
+                f"Error: File: {script} Line: 2 Column: 3\nInvalid text character.",
+            ):
+                with self.subTest(error=error):
+                    context = MatlabCodeInterpreter._source_error_context(script, error)
+                    self.assertIn("第2行", context)
+                    self.assertIn("2: T.可计算 = true;", context)
+                    self.assertIn("T.('中文列名')", context)
+                    self.assertIn("经度（°）", context)
+            self.assertEqual(
+                MatlabCodeInterpreter._source_error_context(
+                    script, "出错 run (第 112 行)"
+                ),
+                "",
+            )
+
+    def test_macos_engine_architecture_matches_python_process(self) -> None:
+        with (
+            patch("app.tools.matlab_interpreter.os.name", "posix"),
+            patch("app.tools.matlab_interpreter.sys.platform", "darwin"),
+            patch(
+                "app.tools.matlab_interpreter.platform.machine", return_value="arm64"
+            ),
+        ):
+            self.assertEqual(
+                MatlabCodeInterpreter._candidate_engine_architectures(),
+                ["maca64"],
+            )
+
+        with (
+            patch("app.tools.matlab_interpreter.os.name", "posix"),
+            patch("app.tools.matlab_interpreter.sys.platform", "darwin"),
+            patch(
+                "app.tools.matlab_interpreter.platform.machine", return_value="x86_64"
+            ),
+        ):
+            self.assertEqual(
+                MatlabCodeInterpreter._candidate_engine_architectures(),
+                ["maci64"],
+            )
+
+    def test_runtime_library_paths_are_prepended_without_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "bin"
+            second = Path(tmp) / "sys"
+            first.mkdir()
+            second.mkdir()
+            with patch.dict(os.environ, {"DYLD_LIBRARY_PATH": str(second)}):
+                MatlabCodeInterpreter._prepend_environment_paths(
+                    "DYLD_LIBRARY_PATH", [first, second]
+                )
+                self.assertEqual(
+                    os.environ["DYLD_LIBRARY_PATH"].split(os.pathsep),
+                    [str(first), str(second)],
+                )
+
+    async def test_factory_uses_python_only_after_matlab_probe_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            notebook = NotebookSerializer(work_dir=tmp)
+            with (
+                patch.object(settings, "CODE_EXECUTION_BACKEND", "matlab"),
+                patch.object(settings, "MATLAB_FALLBACK_TO_PYTHON", True),
+                patch.object(
+                    MatlabCodeInterpreter,
+                    "initialize",
+                    new=AsyncMock(
+                        side_effect=MatlabUnavailableError("license unavailable")
+                    ),
+                ),
+                patch.object(
+                    LocalCodeInterpreter,
+                    "initialize",
+                    new=AsyncMock(),
+                ) as python_initialize,
+                patch(
+                    "app.tools.interpreter_factory.redis_manager.publish_message",
+                    new=AsyncMock(),
+                ),
+            ):
+                interpreter = await create_interpreter(
+                    task_id="fallback-test",
+                    work_dir=tmp,
+                    notebook_serializer=notebook,
+                )
+
+            self.assertIsInstance(interpreter, LocalCodeInterpreter)
+            python_initialize.assert_awaited_once()
+            metadata = json.loads(
+                (Path(tmp) / "execution_backend.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(metadata["selected_backend"], "python")
+            self.assertTrue(metadata["python_fallback"])
+            self.assertIn("license unavailable", metadata["fallback_reason"])
+
+    async def test_project_python_override_skips_matlab_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            notebook = NotebookSerializer(work_dir=tmp)
+            with (
+                patch.object(settings, "CODE_EXECUTION_BACKEND", "matlab"),
+                patch.object(
+                    MatlabCodeInterpreter,
+                    "initialize",
+                    new=AsyncMock(),
+                ) as matlab_initialize,
+                patch.object(
+                    LocalCodeInterpreter,
+                    "initialize",
+                    new=AsyncMock(),
+                ) as python_initialize,
+            ):
+                interpreter = await create_interpreter(
+                    task_id="python-project",
+                    work_dir=tmp,
+                    notebook_serializer=notebook,
+                    preferred_backend="python",
+                )
+
+            self.assertIsInstance(interpreter, LocalCodeInterpreter)
+            matlab_initialize.assert_not_awaited()
+            python_initialize.assert_awaited_once()
+
+    async def test_matlab_failure_is_fatal_when_fallback_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(settings, "CODE_EXECUTION_BACKEND", "matlab"),
+                patch.object(settings, "MATLAB_FALLBACK_TO_PYTHON", False),
+                patch.object(
+                    MatlabCodeInterpreter,
+                    "initialize",
+                    new=AsyncMock(side_effect=MatlabUnavailableError("not installed")),
+                ),
+            ):
+                with self.assertRaises(MatlabUnavailableError):
+                    await create_interpreter(
+                        task_id="no-fallback-test",
+                        work_dir=tmp,
+                        notebook_serializer=NotebookSerializer(work_dir=tmp),
+                    )
+
+    async def test_engine_timeout_cancels_active_future(self) -> None:
+        class MatlabEngineTimeoutError(Exception):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            interpreter = MatlabCodeInterpreter(
+                task_id="matlab-timeout-test",
+                work_dir=tmp,
+                notebook_serializer=NotebookSerializer(work_dir=tmp),
+                executable=r"C:\MATLAB\bin\matlab.exe",
+                timeout=1,
+            )
+            interpreter.calls_dir.mkdir(parents=True, exist_ok=True)
+            future = Mock()
+            future.result.side_effect = MatlabEngineTimeoutError(
+                "Execution of MATLAB function timed out"
+            )
+            future.cancel.return_value = False
+            engine = Mock()
+            engine.eval.return_value = future
+            interpreter.engine = engine
+            interpreter.engine_module = SimpleNamespace(
+                TimeoutError=MatlabEngineTimeoutError
+            )
+
+            with (
+                patch(
+                    "app.tools.matlab_interpreter.redis_manager.publish_message",
+                    new=AsyncMock(),
+                ),
+                patch.object(
+                    interpreter,
+                    "_push_to_websocket",
+                    new=AsyncMock(),
+                ),
+            ):
+                output, error_occurred, error_message = await interpreter.execute_code(
+                    "pause(10);"
+                )
+
+            self.assertTrue(error_occurred)
+            self.assertIn("MATLAB 代码执行超过 1 秒", output)
+            self.assertIn("强制退出", output)
+            self.assertEqual(error_message, output)
+            future.cancel.assert_called_once_with()
+            self.assertIsNone(interpreter._active_future)
+            self.assertIsNone(interpreter.engine)
+            self.assertTrue(interpreter._restart_required)
+            engine.quit.assert_called_once_with()
+
+    async def test_installed_matlab_reuses_session_and_workspace(self) -> None:
+        executable = MatlabCodeInterpreter.discover_executable()
+        if not executable:
+            self.skipTest("本机未安装 MATLAB")
+        with tempfile.TemporaryDirectory() as tmp:
+            interpreter = MatlabCodeInterpreter(
+                task_id="matlab-live-test",
+                work_dir=tmp,
+                notebook_serializer=NotebookSerializer(work_dir=tmp),
+                executable=executable,
+                timeout=60,
+            )
+            try:
+                with patch(
+                    "app.tools.matlab_interpreter.redis_manager.publish_message",
+                    new=AsyncMock(),
+                ):
+                    await interpreter.initialize()
+                    interpreter.add_section("ques1")
+                    first_output, first_error, _ = await interpreter.execute_code(
+                        "x = 41; fprintf('FIRST_VALUE=%d\\n', x);"
+                    )
+                    second_output, second_error, _ = await interpreter.execute_code(
+                        "x = x + 1; writematrix(x, 'matlab_result.csv'); "
+                        "fprintf('SECOND_VALUE=%d\\n', x);"
+                    )
+                    bad_output, bad_error, _ = await interpreter.execute_code(
+                        "T = table(1); T.可计算 = true;"
+                    )
+                    fixed_output, fixed_error, _ = await interpreter.execute_code(
+                        "T = table(1); T.('可计算') = true; "
+                        "disp('经度（°）与体积（m³）'); "
+                        "fprintf('CHINESE_COLUMN_OK=%d\\n', T.('可计算'));"
+                    )
+
+                self.assertFalse(first_error, first_output)
+                self.assertFalse(second_error, second_output)
+                self.assertIn("FIRST_VALUE=41", first_output)
+                self.assertIn("SECOND_VALUE=42", second_output)
+                self.assertTrue(bad_error, bad_output)
+                self.assertIn("实际报错源码", bad_output)
+                self.assertIn("T.可计算", bad_output)
+                self.assertFalse(fixed_error, fixed_output)
+                self.assertIn("CHINESE_COLUMN_OK=1", fixed_output)
+                self.assertIn("经度（°）与体积（m³）", fixed_output)
+                self.assertEqual(
+                    (Path(tmp) / "matlab_result.csv")
+                    .read_text(encoding="utf-8")
+                    .strip(),
+                    "42",
+                )
+                metadata = json.loads(
+                    (Path(tmp) / "execution_backend.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(metadata["selected_backend"], "matlab")
+                self.assertEqual(metadata["backend_mode"], "persistent_engine")
+                self.assertFalse(metadata["python_fallback"])
+            finally:
+                await interpreter.cleanup()

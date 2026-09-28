@@ -1,0 +1,179 @@
+{
+  "retrieved": "2026-09-27",
+  "files": [
+    {
+      "path": "vendor/math-modeling-skill/LICENSE",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/LICENSE",
+      "sha256": "10cd93aa81d449521db143e36bf3ea180a9bc40608877f9350036e20063fec3e",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/SKILL.md",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/SKILL.md",
+      "sha256": "408dacc97e34b31cf39d207d2ab6c9ef488c704094963f03e55109483f88fa65",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/assets/latex/cumcm/main.tex",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/assets/latex/cumcm/main.tex",
+      "sha256": "935c45cee114fd277af3335a12f4bbd879d54edfcc70ed4f6ae3f7ae9aee138c",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/assets/latex/cumcm/refs.bib",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/assets/latex/cumcm/refs.bib",
+      "sha256": "48b4595973c70e3e6b19801fcd6ab0c2dacd56f8430abdfb9504179d8eb21fc3",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/assets/latex/mcm/main.tex",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/assets/latex/mcm/main.tex",
+      "sha256": "7483aefec7d9c01e35a7a69f6e8a0bb15b1463bcbb2c4af869a68640c1c750da",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/assets/latex/mcm/refs.bib",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/assets/latex/mcm/refs.bib",
+      "sha256": "016747883da43e62d5c7c7616c4b583c0a3b3e6bce31debd1e2130dace850503",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/assets/latex/yjs/main.tex",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/assets/latex/yjs/main.tex",
+      "sha256": "f9cf7471c867fd541a88b951191668f41c8b06fe3ac2e82426068489c07f8211",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/assets/latex/yjs/refs.bib",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/assets/latex/yjs/refs.bib",
+      "sha256": "94652f16fe8af7455ffa9e101ea61c6eca9c3709055e6972b390cc3899fbd3b0",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/references/algorithm-details.md",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/references/algorithm-details.md",
+      "sha256": "3a85164f1c13c538a252d7cdf7eaf7c407337b7bccb1d0b9b370b799765bf525",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/references/algorithm-implementations.md",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/references/algorithm-implementations.md",
+      "sha256": "93ddb2765c3ae5d2654ea34ca685535fe8873740fde206d8b511d3f888ddde08",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/references/checklists.md",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/references/checklists.md",
+      "sha256": "5ee3ece9d364dc33a60e65ad82f02060279ac32c95b2ce115954152d8e9a1c96",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/references/contests.md",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/references/contests.md",
+      "sha256": "3061136291411f95a7eeb99c665bfd4b4b22cce6a34b59a13ea6790b6bb4af77",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/references/github-resources.md",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/references/github-resources.md",
+      "sha256": "1d38ec9533878c7f3099f7ce7068d0e0b543d79b590036ff22551ba65ad0c503",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/references/innovation-playbook.md",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/references/innovation-playbook.md",
+      "sha256": "f5528c86de33a1ed1be0089425bdf41f67396ea303e038967b7e438f02c1f3d5",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/references/model-implementations.md",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/references/model-implementations.md",
+      "sha256": "4a0f8f6b44f43e9db7f0d45ebc25c5ecd5c96a1dbb4355fea7f0c3a56f00ae02",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/references/model-library.md",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/references/model-library.md",
+      "sha256": "d335e3751f0d4b1542c07fb9e1533580a464fc25715c018d28c26c4458cf61be",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/references/paper-examples.md",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/references/paper-examples.md",
+      "sha256": "70622aa13b4d6675d9161e2fa8a4d45aa419e9e0c0d1ad834ed16386f3da50c7",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/references/paper-structure.md",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/references/paper-structure.md",
+      "sha256": "553c0e1e7232c9f9b9e92773ec947a1c7059928a16ebc46542c503f93cec9ae1",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/references/scoring-rubric.md",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/references/scoring-rubric.md",
+      "sha256": "de356dd3ebdfa7da884c73dcae06f47d530fe455aea0a5a8d3f94440eeef91a4",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/math-modeling-skill/references/templates.md",
+      "source": "https://raw.githubusercontent.com/anticipate218/math-modeling-skill/387bea0d9ffa00b8642d9ca988c7f360688d4322/references/templates.md",
+      "sha256": "2d0ca6502bb86b337c2faccb5ea544180be8d2af5d78d519ad1bd46a8fc5adbf",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "source": "https://raw.githubusercontent.com/sweetcornna/mathodology/0cfcd93f1dc8ddd26f928f7ec88a09ae3a1d70f6/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "sha256": "776e985fa77b2d570d1dbdff6e99d18ef91cd5bec15ea716a006f86022274beb",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/agents/openai.yaml",
+      "source": "https://raw.githubusercontent.com/sweetcornna/mathodology/0cfcd93f1dc8ddd26f928f7ec88a09ae3a1d70f6/.claude/skills/mathodology-agent-pipeline/agents/openai.yaml",
+      "sha256": "758fedd7f69ed6f241f718ce64fea6aa5a53e3513f587b3ab8b6dbd4ab138710",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md",
+      "source": "https://raw.githubusercontent.com/sweetcornna/mathodology/0cfcd93f1dc8ddd26f928f7ec88a09ae3a1d70f6/.claude/skills/mathodology-award-gates/SKILL.md",
+      "sha256": "3aebadb6a82c521a077c8be2714f538aace04f5a75538badee1cc0c91f8282e1",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/mathodology/.claude/skills/mathodology-award-gates/agents/openai.yaml",
+      "source": "https://raw.githubusercontent.com/sweetcornna/mathodology/0cfcd93f1dc8ddd26f928f7ec88a09ae3a1d70f6/.claude/skills/mathodology-award-gates/agents/openai.yaml",
+      "sha256": "4f6fd3cd2f0ff2fbf2f0703ad15bc5ce282f7da59c339630b4a4971817b0436d",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/mathodology/.claude/skills/mathodology-evidence-search/SKILL.md",
+      "source": "https://raw.githubusercontent.com/sweetcornna/mathodology/0cfcd93f1dc8ddd26f928f7ec88a09ae3a1d70f6/.claude/skills/mathodology-evidence-search/SKILL.md",
+      "sha256": "2842d67dd34b59cda62a06145ff30816f5e7cd78e96ce6fce6539d8b119e9133",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/mathodology/.claude/skills/mathodology-evidence-search/agents/openai.yaml",
+      "source": "https://raw.githubusercontent.com/sweetcornna/mathodology/0cfcd93f1dc8ddd26f928f7ec88a09ae3a1d70f6/.claude/skills/mathodology-evidence-search/agents/openai.yaml",
+      "sha256": "43a44e9c06d34dc98a94dca6831a451b65f8d2673cfed2bcfddacb0b96022838",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/mathodology/.claude/workflows/mathodology-award-submission.md",
+      "source": "https://raw.githubusercontent.com/sweetcornna/mathodology/0cfcd93f1dc8ddd26f928f7ec88a09ae3a1d70f6/.claude/workflows/mathodology-award-submission.md",
+      "sha256": "6a54c60f9cec18f290d36ab74e374ab6cbe20aff6c9ea98bb7a2f3e926066e4d",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/mathodology/.claude/workflows/mathodology-contest-variants.md",
+      "source": "https://raw.githubusercontent.com/sweetcornna/mathodology/0cfcd93f1dc8ddd26f928f7ec88a09ae3a1d70f6/.claude/workflows/mathodology-contest-variants.md",
+      "sha256": "f96086de915265addce64f3a3c0fd3e3598c78b9e5dd025bb67b1fa1e0071c56",
+      "license": "MIT"
+    },
+    {
+      "path": "vendor/mathodology/LICENSE",
+      "source": "https://raw.githubusercontent.com/sweetcornna/mathodology/0cfcd93f1dc8ddd26f928f7ec88a09ae3a1d70f6/LICENSE",
+      "sha256": "77dc390b7e3754d7c88363ca54041bea0c2f24c809007c6e591469daf034db94",
+      "license": "MIT"
+    }
+  ]
+}

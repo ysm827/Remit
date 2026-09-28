@@ -1,0 +1,46 @@
+name: Bug report
+description: Report a reproducible problem in Remit
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include API keys, private task data, or security vulnerabilities.
+  - type: input
+    id: version
+    attributes:
+      label: Remit revision
+      description: Commit SHA, release, or branch used
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows desktop
+        - Windows source setup
+        - Docker
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide the smallest safe sequence that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior and logs
+      description: Redact credentials, personal data, and private inputs.
+    validations:
+      required: true

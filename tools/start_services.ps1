@@ -1,0 +1,228 @@
+﻿[CmdletBinding()]
+param(
+    [switch]$Visible,
+    [switch]$Check
+)
+
+$ErrorActionPreference = "Stop"
+$Root = Split-Path -Parent $PSScriptRoot
+$RedisDirectory = Join-Path $Root "tools\redis"
+$RedisExecutable = Join-Path $RedisDirectory "redis-server.exe"
+$BackendDirectory = Join-Path $Root "backend"
+$BackendPython = Join-Path $BackendDirectory ".venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $BackendPython -PathType Leaf)) {
+    $BackendPython = Join-Path $BackendDirectory "venv\Scripts\python.exe"
+}
+$FrontendDirectory = Join-Path $Root "frontend"
+$LogDirectory = Join-Path $Root "logs"
+$RedisPort = 16379
+$BackendPort = 18000
+$FrontendPort = 15173
+
+function Assert-LauncherDependencies {
+    if (-not (Test-Path -LiteralPath $RedisExecutable -PathType Leaf)) {
+        throw "Redis executable not found: $RedisExecutable"
+    }
+    if (-not (Test-Path -LiteralPath $BackendPython -PathType Leaf)) {
+        throw "Backend virtual environment not found. Run: cd backend; uv sync"
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $FrontendDirectory "package.json") -PathType Leaf)) {
+        throw "Frontend package.json not found: $FrontendDirectory"
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $FrontendDirectory "node_modules") -PathType Container)) {
+        throw "Frontend dependencies are missing. Run: cd frontend; pnpm install"
+    }
+    $viteEntryPoint = Join-Path $FrontendDirectory "node_modules\vite\bin\vite.js"
+    if (-not (Test-Path -LiteralPath $viteEntryPoint -PathType Leaf)) {
+        throw "Frontend Vite entry point not found. The project may have moved. Run: cd frontend; pnpm install --force --frozen-lockfile"
+    }
+
+    $nodeCommand = Get-Command "node.exe" -ErrorAction SilentlyContinue
+    if ($null -eq $nodeCommand) {
+        throw "Node.js 24 is required but node.exe was not found. Install Node.js 24 and reopen the launcher."
+    }
+    $nodeVersion = (& $nodeCommand.Source --version).Trim()
+    if ($nodeVersion -notmatch '^v24\.') {
+        throw "Node.js 24 is required (found $nodeVersion). Install Node.js 24 and reopen the launcher."
+    }
+
+    $pnpmCommand = Get-Command "pnpm.cmd" -ErrorAction SilentlyContinue
+    if ($null -eq $pnpmCommand) {
+        throw "pnpm 10 is required but pnpm.cmd was not found. Run: corepack enable (or npm install -g pnpm@10.6.3)"
+    }
+    $pnpmVersion = (& $pnpmCommand.Source --version).Trim()
+    if ($pnpmVersion -notmatch '^10\.') {
+        throw "pnpm 10 is required (found $pnpmVersion). Run: corepack prepare pnpm@10.6.3 --activate"
+    }
+    $script:PnpmCommand = $pnpmCommand.Source
+}
+
+function Test-ListeningPort([int]$Port) {
+    return $script:ListeningPorts -contains $Port
+}
+
+function Get-ProjectOwnedParentMatch([int]$ProcessId, [string]$RootPattern) {
+    # uv 托管的 venv 里 Scripts\python.exe 只是启动器，真正干活的解释器是它派生的
+    # uv 子进程，监听端口的往往就是这个子进程。只看监听者本身会把项目自己的服务
+    # 误判成外部程序并拒绝启动，因此向上追溯父进程确认归属。
+    $parentId = [int](
+        Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    ).ParentProcessId
+    for ($depth = 0; $depth -lt 4 -and $parentId -gt 0; $depth++) {
+        $parentInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $parentId" -ErrorAction SilentlyContinue
+        if ($null -eq $parentInfo) { return $false }
+        if ($parentInfo.ExecutablePath -match $RootPattern) { return $true }
+        $parentId = [int]$parentInfo.ParentProcessId
+    }
+    return $false
+}
+
+function Test-ProjectOwnedListener([int]$Port) {
+    $rootPattern = [regex]::Escape($Root.TrimEnd('\') + '\')
+    $listeners = @(
+        Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique
+    )
+    if ($listeners.Count -eq 0) {
+        return $false
+    }
+
+    foreach ($listenerId in $listeners) {
+        $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $listenerId" -ErrorAction SilentlyContinue
+        if ($null -eq $processInfo) {
+            return $false
+        }
+        $identity = "$($processInfo.ExecutablePath) $($processInfo.CommandLine)"
+        if ($identity -match $rootPattern) {
+            continue
+        }
+        if (-not (Get-ProjectOwnedParentMatch -ProcessId $listenerId -RootPattern $rootPattern)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Save-ServicePid([string]$Name, [System.Diagnostics.Process]$Process) {
+    $pidPath = Join-Path $LogDirectory "$Name.pid"
+    # PID 会被系统复用；同时保存创建时间和程序路径才能识别同一次启动。
+    # Start-Process 刚返回时 $Process.Path 常为 $null，一旦写成 null，停止脚本
+    # 就会放弃按 PID 回收，留下占用端口的残留服务让下次启动直接失败。
+    try { $Process.Refresh() } catch { }
+    $executablePath = $null
+    try { $executablePath = $Process.Path } catch { }
+    if ([string]::IsNullOrWhiteSpace($executablePath)) {
+        $executablePath = (
+            Get-CimInstance Win32_Process -Filter "ProcessId = $($Process.Id)" -ErrorAction SilentlyContinue
+        ).ExecutablePath
+    }
+    $identity = @{
+        ProcessId = $Process.Id
+        StartedUtcTicks = $Process.StartTime.ToUniversalTime().Ticks.ToString()
+        ExecutablePath = $executablePath
+        ProjectRoot = $Root
+        Service = $Name
+    }
+    $identity | ConvertTo-Json | Set-Content -LiteralPath "$pidPath.json" -Encoding UTF8
+    Set-Content -LiteralPath $pidPath -Value $Process.Id -Encoding ascii -NoNewline
+}
+
+function Initialize-BackendEnvironment {
+    $envPath = Join-Path $BackendDirectory ".env.dev"
+    $examplePath = Join-Path $BackendDirectory ".env.example"
+    if (-not (Test-Path -LiteralPath $envPath -PathType Leaf) -and
+        (Test-Path -LiteralPath $examplePath -PathType Leaf)) {
+        Copy-Item -LiteralPath $examplePath -Destination $envPath
+        Write-Host "[INIT] Generated backend\.env.dev from .env.example. Add provider API keys when needed."
+    }
+}
+
+function Start-ProjectService {
+    param(
+        [string]$Name,
+        [int]$Port,
+        [string]$FilePath,
+        [string[]]$ArgumentList,
+        [string]$WorkingDirectory
+    )
+
+    if (Test-ListeningPort $Port) {
+        if (Test-ProjectOwnedListener $Port) {
+            Write-Host "[OK] $Name is already listening on port $Port."
+            return
+        }
+        throw "Port $Port is occupied by another application. Stop that application before starting Remit."
+    }
+
+    $startParameters = @{
+        FilePath = $FilePath
+        ArgumentList = $ArgumentList
+        WorkingDirectory = $WorkingDirectory
+        PassThru = $true
+    }
+    if ($Visible) {
+        $startParameters.WindowStyle = "Normal"
+    }
+    else {
+        $startParameters.WindowStyle = "Hidden"
+        $startParameters.RedirectStandardOutput = Join-Path $LogDirectory "$Name.out.log"
+        $startParameters.RedirectStandardError = Join-Path $LogDirectory "$Name.err.log"
+    }
+
+    $process = Start-Process @startParameters
+    Save-ServicePid -Name $Name -Process $process
+    Write-Host "[STARTED] $Name (PID $($process.Id), port $Port)"
+}
+
+Assert-LauncherDependencies
+if ($Check) {
+    Write-Host "LAUNCHER_CHECK_OK"
+    exit 0
+}
+
+Initialize-BackendEnvironment
+New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
+$ListeningPorts = @(
+    [System.Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+        ForEach-Object { $_.Port }
+)
+
+Write-Host "=============================================="
+Write-Host " Remit: Redis + FastAPI + Vue"
+Write-Host " Mode: $(if ($Visible) { 'visible terminals' } else { 'hidden background services' })"
+Write-Host "=============================================="
+
+Start-ProjectService `
+    -Name "redis" `
+    -Port $RedisPort `
+    -FilePath $RedisExecutable `
+    -ArgumentList @("--port", "$RedisPort", "--bind", "127.0.0.1", "::1") `
+    -WorkingDirectory $RedisDirectory
+
+Start-ProjectService `
+    -Name "backend" `
+    -Port $BackendPort `
+    -FilePath $BackendPython `
+    -ArgumentList @(
+        "-m", "uvicorn", "app.main:app",
+        "--host", "127.0.0.1", "--port", "$BackendPort",
+        "--ws-ping-interval", "60", "--ws-ping-timeout", "120"
+    ) `
+    -WorkingDirectory $BackendDirectory
+
+$pnpmInvocation = '"{0}" run dev --host 127.0.0.1 --port {1} --strictPort' -f $PnpmCommand, $FrontendPort
+$frontendCmdSwitch = if ($Visible) { "/k" } else { "/c" }
+Start-ProjectService `
+    -Name "frontend" `
+    -Port $FrontendPort `
+    -FilePath $env:ComSpec `
+    -ArgumentList @("/d", "/s", $frontendCmdSwitch, "`"$pnpmInvocation`"") `
+    -WorkingDirectory $FrontendDirectory
+
+Write-Host ""
+Write-Host "Frontend: http://localhost:$FrontendPort"
+Write-Host "Backend:  http://localhost:$BackendPort"
+if (-not $Visible) {
+    Write-Host "Logs:     $LogDirectory"
+    Write-Host "Stop:     double-click win_stop.bat"
+}

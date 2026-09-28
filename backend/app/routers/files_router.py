@@ -1,0 +1,136 @@
+"""任务文件服务：下载链接、清单、CSV 预览与目录定位。"""
+
+import csv
+import os
+import subprocess
+import asyncio
+import sys
+from pathlib import Path
+from urllib.parse import quote
+
+from fastapi import APIRouter, HTTPException
+
+from app.config.setting import settings
+from app.utils.file_types import input_filenames, is_data_file
+from app.utils.common_utils import ensure_safe_task_id, get_current_files, get_work_dir
+
+router = APIRouter()
+
+_CSV_PREVIEW_MAX_BYTES = 5 * 1024 * 1024
+_CSV_PREVIEW_MAX_ROWS = 50
+_CSV_PREVIEW_MAX_COLUMNS = 30
+_LEGACY_FINAL_OUTPUTS = {
+    "res.md",
+    "res_polished.md",
+    "res.docx",
+    "res_polished.docx",
+    "res_polished.pdf",
+}
+
+
+def _resolve_task_directory(task_id: str) -> Path:
+    """所有文件接口使用同一任务目录边界。"""
+    try:
+        safe_id = ensure_safe_task_id(task_id)
+        return Path(get_work_dir(safe_id)).resolve()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="非法任务ID") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="任务工作目录不存在") from exc
+
+
+def _resolve_task_file(task_id: str, filename: str) -> Path:
+    """把 (task_id, filename) 解析为工作目录内的安全绝对路径。"""
+    work_dir = _resolve_task_directory(task_id)
+    if not filename or "\\" in filename or ":" in filename:
+        raise HTTPException(status_code=400, detail="非法文件路径")
+    target = (work_dir / filename).resolve()
+    if not target.is_relative_to(work_dir):
+        raise HTTPException(status_code=400, detail="文件路径越出工作目录")
+    return target
+
+
+@router.get("/download_url")
+async def get_download_url(task_id: str, filename: str) -> dict:
+    target = _resolve_task_file(task_id, filename)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    safe_id = ensure_safe_task_id(task_id)
+    return {
+        "download_url": f"{settings.SERVER_HOST}/static/{safe_id}/{quote(filename, safe='/')}"
+    }
+
+
+@router.get("/download_all_url")
+async def get_download_all_url(task_id: str) -> dict:
+    return await get_download_url(task_id, "all.zip")
+
+
+@router.get("/files")
+async def get_files(task_id: str) -> list[dict]:
+    root = _resolve_task_directory(task_id)
+    return [
+        {
+            "filename": name,
+            "file_type": name.split(".")[-1],
+            "is_dataset": is_data_file(name) or name in input_filenames(root),
+            "download_url": f"{settings.SERVER_HOST}/static/{root.name}/{quote(name, safe='/')}",
+        }
+        for name in get_current_files(str(root), "all")
+        if (root / name).is_file()
+        and (root / name).resolve().is_relative_to(root)
+        and name not in _LEGACY_FINAL_OUTPUTS
+        and not any(part.startswith(".") for part in Path(name).parts)
+    ]
+
+
+@router.get("/preview_csv")
+async def preview_csv(task_id: str, filename: str, max_rows: int = 20) -> dict:
+    """返回 CSV 的列名与前若干行，供前端直接渲染表格。"""
+    target = _resolve_task_file(task_id, filename)
+
+    if target.suffix.lower() != ".csv":
+        raise HTTPException(status_code=400, detail="仅支持预览 CSV 文件")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    if target.stat().st_size > _CSV_PREVIEW_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="文件过大，请下载后查看")
+
+    row_limit = max(1, min(max_rows, _CSV_PREVIEW_MAX_ROWS))
+    try:
+        with target.open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            columns = list(reader.fieldnames or [])[:_CSV_PREVIEW_MAX_COLUMNS]
+            rows: list[dict[str, str]] = []
+            truncated = False
+            for index, row in enumerate(reader):
+                if index >= row_limit:
+                    truncated = True
+                    break
+                rows.append({col: str(row.get(col) or "") for col in columns})
+    except (OSError, csv.Error, UnicodeError) as exc:
+        raise HTTPException(status_code=422, detail=f"CSV 解析失败: {exc}") from exc
+
+    return {
+        "filename": filename,
+        "columns": columns,
+        "rows": rows,
+        "truncated": truncated,
+    }
+
+
+@router.get("/open_folder")
+async def open_folder(task_id: str) -> dict:
+    """在系统文件管理器中打开任务工作目录。"""
+    work_dir = str(_resolve_task_directory(task_id))
+    if os.name == "nt":
+        command = ["explorer", work_dir]
+    elif os.name == "posix":
+        command = ["open" if sys.platform == "darwin" else "xdg-open", work_dir]
+    else:
+        raise HTTPException(status_code=500, detail=f"不支持的操作系统: {os.name}")
+    try:
+        await asyncio.to_thread(subprocess.run, command, check=False, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(status_code=503, detail="无法打开系统文件管理器") from exc
+    return {"message": "打开工作目录成功", "work_dir": work_dir}
