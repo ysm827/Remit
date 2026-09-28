@@ -55,6 +55,7 @@ def environment(data: Path, root: Path = ROOT) -> dict[str, str]:
     env.update({
         "PYTHONPATH": str(root / "backend"), "PYTHONUTF8": "1",
         "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1",
+        "REMIT_BUNDLED_TEX": "1",
         "REMIT_USER_CONFIG_PATH": str(data / ".env.user"),
         "JUPYTER_PATH": str(data / "jupyter"),
         "JUPYTER_CONFIG_DIR": str(data / "jupyter/config"),

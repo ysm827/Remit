@@ -46,7 +46,7 @@ font_files = [
 for font_file in font_files:
     font_manager.fontManager.addfont(str(font_file))
 
-preferred = ['SimHei', 'Noto Sans CJK SC', 'Microsoft YaHei', 'sans-serif']
+preferred = ['FandolHei', 'SimHei', 'Noto Sans CJK SC', 'Microsoft YaHei', 'sans-serif']
 pyplot.rcParams.update({{
     'font.family': 'sans-serif',
     'font.sans-serif': preferred,

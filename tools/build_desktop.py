@@ -30,7 +30,7 @@ def run(args, *, cwd=REPO, env=None):
     print("+", args[0], " ".join(args[1:4]), flush=True)
     # Windows shell wrappers (pnpm.cmd) need their resolved path with shell=False.
     args[0] = shutil.which(args[0]) or args[0]
-    subprocess.run(args, cwd=cwd, env=env, check=True)
+    subprocess.run(args, cwd=cwd, env=env, check=True, timeout=1800)
 
 
 def sha256(path):
@@ -125,24 +125,31 @@ def runtime_tex(stage, build):
     tlmgr = binary / ("tlmgr.bat" if WINDOWS else "tlmgr")
     env = os.environ.copy()
     env["PATH"] = str(binary) + os.pathsep + env.get("PATH", "")
+    env["TEXLIVE_DOWNLOADER"] = "curl"
+    env["LC_ALL"] = "C"
+    env["LANG"] = "C"
     # A fixed mirror keeps the database and signature from different redirects
     # from disagreeing while CTAN mirrors are synchronizing.
     run([tlmgr, "option", "repository", "https://ctan.math.illinois.edu/systems/texlive/tlnet"], env=env)
     run([tlmgr, "update", "--self"], env=env)
     run([tlmgr, "option", "docfiles", "1"], env=env)
+    tlcommand = ([target / "tlpkg/tlperl/bin/perl.exe", target / "texmf-dist/scripts/texlive/tlmgr.pl"]
+                 if WINDOWS else [tlmgr])
+    if WINDOWS:
+        env["PERL5LIB"] = str(target / "tlpkg/tlperl/lib")
     # Resolve document dependencies at build time, never in the user's first session.
-    run([tlmgr, "install", "ctex", "fandol", "xecjk", "xetex", "geometry", "amsmath",
+    run([*tlcommand, "install", "ctex", "fandol", "xecjk", "xetex", "geometry", "amsmath",
          "amsfonts", "booktabs", "fancyhdr", "fontspec", "unicode-math", "enumitem",
          "titlesec", "titling", "setspace", "caption", "float", "multirow",
          "pgf", "listings", "tools", "hyperref", "xcolor", "natbib", "etoolbox"], env=env)
-    run([tlmgr, "install", "--reinstall", "fandol"], env=env)
+    run([*tlcommand, "install", "--reinstall", "fandol"], env=env)
     font = target / "texmf-dist/fonts/opentype/public/fandol/FandolHei-Regular.otf"
     if not font.is_file():
         raise RuntimeError("TinyTeX did not supply Fandol CJK font")
     (stage / "backend/fonts").mkdir(exist_ok=True)
     shutil.copy2(font, stage / "backend/fonts" / font.name)
     shutil.copytree(target / "texmf-dist/doc/fonts/fandol", stage / "licenses/fandol", dirs_exist_ok=True)
-    packages = subprocess.check_output([str(tlmgr), "info", "--only-installed"], env=env)
+    packages = subprocess.check_output([str(p) for p in [*tlcommand, "info", "--only-installed"]], env=env)
     (stage / "licenses/tex-packages.txt").write_bytes(packages)
 
 

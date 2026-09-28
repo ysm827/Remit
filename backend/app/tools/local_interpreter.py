@@ -109,7 +109,7 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
             "        _loaded = True\n"
             "if _loaded:\n"
             "    print(f'中文字体已加载，可用字体数: {len(font_manager.fontManager.ttflist)}')\n"
-            "plt.rcParams['font.sans-serif'] = ['SimHei', 'Heiti SC', 'STHeiti', "
+            "plt.rcParams['font.sans-serif'] = ['FandolHei', 'SimHei', 'Heiti SC', 'STHeiti', "
             "'PingFang SC', 'Noto Sans CJK SC', 'Noto Sans SC', "
             "'WenQuanYi Micro Hei', 'Microsoft YaHei', 'sans-serif']\n"
             "plt.rcParams['axes.unicode_minus'] = False\n"

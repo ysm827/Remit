@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import subprocess
@@ -169,6 +170,8 @@ def _compile_latex(tex_path: Path, build_dir: Path) -> str:
         tex_path.name,
     ]
     logs: list[str] = []
+    if os.environ.get("REMIT_BUNDLED_TEX") == "1":
+        command.insert(1, "-output-driver=xdvipdfmx -q -E")
     for compile_pass in range(1, 3):
         try:
             completed = subprocess.run(

@@ -94,7 +94,7 @@ plt.rcParams.update({{
     'savefig.bbox': 'tight',
     'savefig.pad_inches': 0.1,
 }})
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Noto Sans CJK SC', 'Noto Sans SC', 'DejaVu Sans']
+plt.rcParams['font.sans-serif'] = ['FandolHei', 'SimHei', 'Noto Sans CJK SC', 'Noto Sans SC', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
 COLORS = {{
