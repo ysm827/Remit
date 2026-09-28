@@ -1,5 +1,9 @@
 {
   "python": "3.12.13",
+  "llvm_license": {
+    "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-21.1.8/LICENSE.TXT",
+    "sha256": "8d85c1057d742e597985c7d4e6320b015a9139385cff4cbae06ffc0ebe89afee"
+  },
   "vc_redist": {
     "url": "https://aka.ms/vs/17/release/vc_redist.x64.exe",
     "sha256": "cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b"

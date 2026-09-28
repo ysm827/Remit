@@ -125,13 +125,15 @@ def runtime_tex(stage, build):
     tlmgr = binary / ("tlmgr.bat" if WINDOWS else "tlmgr")
     env = os.environ.copy()
     env["PATH"] = str(binary) + os.pathsep + env.get("PATH", "")
-    run([tlmgr, "option", "repository", "https://mirrors.ctan.org/systems/texlive/tlnet"], env=env)
+    # A fixed mirror keeps the database and signature from different redirects
+    # from disagreeing while CTAN mirrors are synchronizing.
+    run([tlmgr, "option", "repository", "https://ctan.math.illinois.edu/systems/texlive/tlnet"], env=env)
     run([tlmgr, "update", "--self"], env=env)
     run([tlmgr, "option", "docfiles", "1"], env=env)
     # Resolve document dependencies at build time, never in the user's first session.
     run([tlmgr, "install", "ctex", "fandol", "xecjk", "xetex", "geometry", "amsmath",
          "amsfonts", "booktabs", "fancyhdr", "fontspec", "unicode-math", "enumitem",
-         "titlesec", "titling", "setspace", "caption", "subcaption", "float", "multirow",
+         "titlesec", "titling", "setspace", "caption", "float", "multirow",
          "pgf", "listings", "tools", "hyperref", "xcolor", "natbib", "etoolbox"], env=env)
     run([tlmgr, "install", "--reinstall", "fandol"], env=env)
     font = target / "texmf-dist/fonts/opentype/public/fandol/FandolHei-Regular.otf"
@@ -142,6 +144,23 @@ def runtime_tex(stage, build):
     shutil.copytree(target / "texmf-dist/doc/fonts/fandol", stage / "licenses/fandol", dirs_exist_ok=True)
     packages = subprocess.check_output([str(tlmgr), "info", "--only-installed"], env=env)
     (stage / "licenses/tex-packages.txt").write_bytes(packages)
+
+
+def mac_openmp(stage, build):
+    if WINDOWS:
+        return
+    # XGBoost's wheel searches Homebrew for OpenMP. Bundle it and rewrite the
+    # load command so end users never need Homebrew or a compiler.
+    run(["brew", "install", "libomp"])
+    prefix = Path(subprocess.check_output(["brew", "--prefix", "libomp"], text=True).strip())
+    library = stage / "runtime/python/lib/python3.12/site-packages/xgboost/lib"
+    shutil.copy2(prefix / "lib/libomp.dylib", library / "libomp.dylib")
+    run(["install_name_tool", "-change", "@rpath/libomp.dylib", "@loader_path/libomp.dylib", library / "libxgboost.dylib"])
+    for name in ("libomp.dylib", "libxgboost.dylib"):
+        run(["codesign", "--force", "--sign", "-", library / name])
+    shutil.copy2(download("llvm_license", build / "downloads"), stage / "licenses/LLVM-LICENSE.txt")
+    (stage / "licenses/libomp-build.json").write_text(
+        subprocess.check_output(["brew", "info", "--json=v2", "libomp"], text=True), encoding="utf-8")
 
 
 def runtime_redis(stage, build):
@@ -270,6 +289,7 @@ def main():
         run(["pnpm", "build"], cwd=REPO / "frontend", env=env)
     source_files(stage)
     python = runtime_python(stage, build)
+    mac_openmp(stage, build)
     runtime_tex(stage, build)
     runtime_redis(stage, build)
     verify(stage, python, build)
