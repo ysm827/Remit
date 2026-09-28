@@ -125,11 +125,15 @@ def runtime_tex(stage, build):
     tlmgr = binary / ("tlmgr.bat" if WINDOWS else "tlmgr")
     env = os.environ.copy()
     env["PATH"] = str(binary) + os.pathsep + env.get("PATH", "")
+    run([tlmgr, "option", "repository", "https://mirrors.ctan.org/systems/texlive/tlnet"], env=env)
+    run([tlmgr, "update", "--self"], env=env)
+    run([tlmgr, "option", "docfiles", "1"], env=env)
     # Resolve document dependencies at build time, never in the user's first session.
-    run([tlmgr, "install", "ctex", "fandol", "xeCJK", "xetex", "geometry", "amsmath",
+    run([tlmgr, "install", "ctex", "fandol", "xecjk", "xetex", "geometry", "amsmath",
          "amsfonts", "booktabs", "fancyhdr", "fontspec", "unicode-math", "enumitem",
          "titlesec", "titling", "setspace", "caption", "subcaption", "float", "multirow",
          "pgf", "listings", "tools", "hyperref", "xcolor", "natbib", "etoolbox"], env=env)
+    run([tlmgr, "install", "--reinstall", "fandol"], env=env)
     font = target / "texmf-dist/fonts/opentype/public/fandol/FandolHei-Regular.otf"
     if not font.is_file():
         raise RuntimeError("TinyTeX did not supply Fandol CJK font")
@@ -249,6 +253,8 @@ def main():
     if sys.platform not in {"win32", "darwin"}:
         parser.error("Build on native Windows or macOS")
     build = args.build_root.resolve()
+    if WINDOWS and not str(build).isascii():
+        parser.error("TinyTeX build tools require an ASCII build path, e.g. E:/RemitDesktopBuild")
     stage = build / ("stage/Remit" if WINDOWS else "dmg/Remit.app/Contents/Resources")
     if stage.exists() and not args.reuse:
         parser.error("Build exists; choose a fresh directory or --reuse. No files were deleted.")

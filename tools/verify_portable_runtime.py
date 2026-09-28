@@ -68,7 +68,7 @@ async def verify(root: Path, *, with_latex: bool = False) -> dict:
                 await interpreter.initialize()
                 interpreter.add_section("portable-check")
                 output, failed, error = await interpreter.execute_code(
-                    "import sys,json,numpy,pandas,scipy,h5py,openpyxl,docx,fitz,matplotlib\n"
+                    "import sys,json,numpy,pandas,scipy,h5py,openpyxl,docx,fitz,matplotlib,sklearn,xgboost,shap,statsmodels\n"
                     "matplotlib.use('Agg')\nimport matplotlib.pyplot as plt\n"
                     "from matplotlib.font_manager import FontProperties\n"
                     "from matplotlib.ft2font import FT2Font\n"

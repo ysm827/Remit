@@ -5,9 +5,9 @@ AppName=Remit
 AppVersion={#Version}
 AppPublisher=Remit contributors
 AppPublisherURL=https://github.com/zhou2030109-glitch/Remit-Agent
-DefaultDirName={localappdata}\Programs\RemitDesktop
+DefaultDirName={autopf}\Remit
 DefaultGroupName=Remit
-PrivilegesRequired=lowest
+PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
@@ -41,6 +41,21 @@ Name: "{autodesktop}\Remit"; Filename: "{app}\runtime\python\pythonw.exe"; Param
 Filename: "{app}\runtime\python\pythonw.exe"; Parameters: "-B ""{app}\tools\desktop_runtime.py"""; Description: "打开 Remit"; Flags: nowait postinstall skipifsilent
 
 [Code]
+function NextButtonClick(CurPageID: Integer): Boolean;
+var I: Integer; Directory: String;
+begin
+  Result := True;
+  if CurPageID = wpSelectDir then begin
+    Directory := ExpandConstant('{app}');
+    for I := 1 to Length(Directory) do
+      if Ord(Directory[I]) > 127 then begin
+        MsgBox('论文编译组件需要英文安装路径。请保留默认目录；项目和用户名可以包含中文。', mbInformation, MB_OK);
+        Result := False;
+        Exit;
+      end;
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
