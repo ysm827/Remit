@@ -3371,7 +3371,6 @@ dependencies = [
     { name = "ansi2html" },
     { name = "anthropic" },
     { name = "celery" },
-    { name = "chromadb" },
     { name = "e2b-code-interpreter" },
     { name = "fastapi", extra = ["standard"] },
     { name = "h5py" },
@@ -3396,20 +3395,25 @@ dependencies = [
     { name = "python-docx" },
     { name = "python-multipart" },
     { name = "pywebview" },
-    { name = "rank-bm25" },
     { name = "redis" },
     { name = "requests" },
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "seaborn" },
     { name = "semanticscholar" },
-    { name = "sentence-transformers" },
     { name = "shap" },
     { name = "statsmodels" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websocket" },
     { name = "xgboost" },
     { name = "xlrd" },
+]
+
+[package.optional-dependencies]
+embeddings = [
+    { name = "chromadb" },
+    { name = "rank-bm25" },
+    { name = "sentence-transformers" },
 ]
 
 [package.dev-dependencies]
@@ -3425,7 +3429,7 @@ requires-dist = [
     { name = "ansi2html", specifier = ">=1.9.2" },
     { name = "anthropic", specifier = ">=0.40.0" },
     { name = "celery", specifier = ">=5.4.0" },
-    { name = "chromadb", specifier = ">=0.4.0" },
+    { name = "chromadb", marker = "extra == 'embeddings'", specifier = ">=0.4.0" },
     { name = "e2b-code-interpreter", specifier = ">=1.0.5" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.141.1" },
     { name = "h5py", specifier = ">=3.11" },
@@ -3450,14 +3454,14 @@ requires-dist = [
     { name = "python-docx", specifier = ">=1.1.2" },
     { name = "python-multipart", specifier = ">=0.0.32" },
     { name = "pywebview", specifier = ">=6.2.1" },
-    { name = "rank-bm25", specifier = ">=0.2.2" },
+    { name = "rank-bm25", marker = "extra == 'embeddings'", specifier = ">=0.2.2" },
     { name = "redis", specifier = ">=5.2.1" },
     { name = "requests", specifier = ">=2.34.2" },
     { name = "scikit-learn", specifier = ">=1.6.1" },
     { name = "scipy", specifier = ">=1.15.2" },
     { name = "seaborn", specifier = ">=0.13.2" },
     { name = "semanticscholar", specifier = ">=0.10.0" },
-    { name = "sentence-transformers", specifier = ">=2.2.0" },
+    { name = "sentence-transformers", marker = "extra == 'embeddings'", specifier = ">=2.2.0" },
     { name = "shap", specifier = ">=0.51.0" },
     { name = "statsmodels", specifier = ">=0.14.4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.52.4" },
@@ -3465,6 +3469,7 @@ requires-dist = [
     { name = "xgboost", specifier = ">=3.0.0" },
     { name = "xlrd", specifier = ">=2.0.1" },
 ]
+provides-extras = ["embeddings"]
 
 [package.metadata.requires-dev]
 dev = [

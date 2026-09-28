@@ -15,7 +15,7 @@ from app.config.setting import settings
 
 EDITABLE = {".tex", ".bib", ".sty", ".cls", ".txt"}
 ASSETS = {".png", ".jpg", ".jpeg", ".pdf", ".eps", ".svg", ".csv", ".ttf", ".otf"}
-TEMPLATE = r"""\documentclass[UTF8,a4paper,12pt]{ctexart}
+TEMPLATE = r"""\documentclass[UTF8,a4paper,12pt,fontset=fandol]{ctexart}
 \usepackage[margin=2.5cm]{geometry}
 \usepackage{amsmath,amssymb,graphicx,booktabs}
 \title{数学建模论文}

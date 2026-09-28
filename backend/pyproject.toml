@@ -42,9 +42,6 @@ dependencies = [
     "seaborn>=0.13.2",
     # 文献检索与向量检索
     "semanticscholar>=0.10.0",
-    "chromadb>=0.4.0",
-    "sentence-transformers>=2.2.0",
-    "rank-bm25>=0.2.2",
     # 文档读写与转换
     "openpyxl>=3.1.5",
     "xlrd>=2.0.1",
@@ -62,6 +59,11 @@ dependencies = [
     "icecream>=2.1.4",
     "h5py>=3.11",
 ]
+
+[project.optional-dependencies]
+# Reserved for users developing embedding integrations; the current workbench
+# uses its local method library and does not import these packages.
+embeddings = ["chromadb>=0.4.0", "sentence-transformers>=2.2.0", "rank-bm25>=0.2.2"]
 
 [dependency-groups]
 dev = [

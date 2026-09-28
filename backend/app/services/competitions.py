@@ -123,7 +123,7 @@ def template(root: Path) -> str:
     preamble = (
         r"\documentclass[a4paper,12pt]{article}"
         if english
-        else r"\documentclass[UTF8,a4paper,zihao=-4]{ctexart}"
+        else r"\documentclass[UTF8,a4paper,zihao=-4,fontset=fandol]{ctexart}"
     ) + "\n"
     preamble += r"""\usepackage[margin=2.5cm]{geometry}
 \usepackage{amsmath,amssymb,graphicx,booktabs}

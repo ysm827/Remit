@@ -90,7 +90,7 @@ def get_work_dir(task_id: str) -> str:
 def get_config_template(comp_template: CompTemplate = CompTemplate.CHINA) -> dict:
     """读取竞赛模板对应的论文骨架配置。"""
     if comp_template == CompTemplate.CHINA:
-        return load_toml(os.path.join("app", "config", "md_template.toml"))
+        return load_toml(str(Path(__file__).resolve().parents[1] / "config/md_template.toml"))
     return {}
 
 

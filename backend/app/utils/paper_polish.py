@@ -740,6 +740,8 @@ def load_font(
     """Load a Chinese-capable font."""
     backend_root = Path(__file__).resolve().parents[2]
     candidates = [
+        work_dir / "FandolHei-Regular.otf",
+        backend_root / "fonts" / "FandolHei-Regular.otf",
         work_dir / "simhei.ttf",
         backend_root / "fonts" / "simhei.ttf",
         backend_root / "fonts" / "SimHei.ttf",

@@ -1,0 +1,76 @@
+name: Desktop installers
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'tools/**'
+      - 'backend/**'
+      - 'frontend/**'
+      - '.github/workflows/desktop.yml'
+    tags: ['v*-beta.*']
+permissions:
+  contents: read
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            name: Windows-x64
+          - runner: macos-15
+            name: macOS-arm64
+          - runner: macos-15-intel
+            name: macOS-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.12.10'
+          python-version: '3.12.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm install -g pnpm@10.6.3
+      - run: pnpm install --frozen-lockfile
+        working-directory: frontend
+      - run: python tools/check_public_tree.py
+      - name: Build and verify bundled runtime
+        run: python tools/build_desktop.py --build-root "${{ runner.temp }}/Remit build"
+      - name: Preserve verification reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checks-${{ matrix.name }}
+          path: ${{ runner.temp }}/Remit build/reports/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.name }}
+          path: ${{ runner.temp }}/Remit build/output/*
+          compression-level: 0
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installer-*
+          merge-multiple: true
+          path: installers
+      - name: Publish tested unsigned preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" installers/* --prerelease --title "Remit $RELEASE_TAG · Desktop preview" --notes-file docs/desktop-release-notes.md

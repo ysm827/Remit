@@ -1,4 +1,4 @@
-"""Verify a staged Windows installation using its own Python, without model calls."""
+"""Verify a relocated installation using only its bundled tools, without model calls."""
 
 from __future__ import annotations
 
@@ -14,13 +14,15 @@ from unittest.mock import AsyncMock, patch
 
 
 async def verify(root: Path, *, with_latex: bool = False) -> dict:
-    expected = root / "runtime/python/python.exe"
+    expected = root / "runtime/python" / ("python.exe" if sys.platform == "win32" else "bin/python3")
     if Path(sys.executable).resolve() != expected.resolve():
         raise RuntimeError(
             "Run this script with the installation's runtime/python/python.exe"
         )
     backend = root / "backend"
-    os.chdir(backend)
+    data = Path(os.environ.get("REMIT_DATA_DIR", str(backend))).resolve()
+    (data / "project").mkdir(parents=True, exist_ok=True)
+    os.chdir(data)
     sys.path.insert(0, str(backend))
     from loguru import logger
     from app.main import app
@@ -30,15 +32,22 @@ async def verify(root: Path, *, with_latex: bool = False) -> dict:
     from app.utils.common_utils import _install_fonts
 
     logger.remove()
+    import pypandoc
+    pandoc = Path(pypandoc.get_pandoc_path()).resolve()
+    if not pandoc.is_relative_to(root):
+        raise RuntimeError("Pandoc came from the build host")
+    if "packaged converter" not in pypandoc.convert_text("**packaged converter**", "html", format="md"):
+        raise RuntimeError("Bundled Pandoc conversion failed")
     report = {
         "python": str(expected),
         "app_imported": bool(app.routes),
         "writing_skill_loaded": bool(paper_library.context("gmcm")),
         "live_model_tested": False,
         "latex_compilation_tested": False,
+        "bundled_pandoc_verified": True,
     }
     with tempfile.TemporaryDirectory(
-        prefix="portable-check-", dir=backend / "project"
+        prefix="portable-check-", dir=data / "project"
     ) as tmp:
         work = Path(tmp).resolve()
         _install_fonts(work)
@@ -101,6 +110,8 @@ async def verify(root: Path, *, with_latex: bool = False) -> dict:
             from app.services import competitions, writing_workspace
 
             report["latex_compiler"] = shutil.which("xelatex")
+            if not Path(report["latex_compiler"] or "").resolve().is_relative_to(root):
+                raise RuntimeError("XeLaTeX came from the build host")
             checks = {}
             for contest in ("cumcm", "gmcm", "mcm-icm"):
                 build = work / contest
