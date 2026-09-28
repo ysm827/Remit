@@ -308,4 +308,6 @@ Parallel Computing 等主要工具箱。
 
 def get_coder_prompt(language: str) -> str:
     """按执行后端返回对应语言的系统提示词。"""
-    return MATLAB_CODER_PROMPT if language == "matlab" else CODER_PROMPT
+    from app.core.prompts.persona import remit_voice
+
+    return remit_voice("coder") + (MATLAB_CODER_PROMPT if language == "matlab" else CODER_PROMPT)

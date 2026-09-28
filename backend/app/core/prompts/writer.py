@@ -1,11 +1,12 @@
 """写作 Agent 的系统提示词。"""
 
 from app.schemas.enums import FormatOutPut
+from app.core.prompts.persona import remit_voice
 
 
 def get_writer_prompt(format_output: FormatOutPut = FormatOutPut.LaTeX) -> str:
     """生成证据优先的写作提示；最终格式由确定性渲染器负责。"""
-    return f"""
+    return remit_voice("writer") + f"""
 ## 版式硬约束
 - 摘要控制在一页以内，只保留问题、方法、结果、结论；每个问题的段落以结论开头，关键数字用 **粗体**。
 - 公式一律保留 LaTeX 源码形态，不得口语化改写。

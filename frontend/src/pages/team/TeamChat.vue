@@ -66,6 +66,7 @@ import {
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import ActivitySummary from "./ActivitySummary.vue";
 import RoleAvatar from "./RoleAvatar.vue";
+import RemitWelcome from "./RemitWelcome.vue";
 import { roleLabels as labels } from "./roles";
 import ProjectFiles from "./ProjectFiles.vue";
 import UserMessage from "./UserMessage.vue";
@@ -583,6 +584,7 @@ async function send(
 }
 function setDraft(value: string) {
 	draft.value = value;
+	void nextTick(() => composerInput.value?.focus());
 }
 function handleKey(event: KeyboardEvent) {
 	if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -702,14 +704,14 @@ onBeforeUnmount(() => {
    <div class="header-actions"><span v-if="task_id && connection !== '实时同步'" class="connection">{{ connection }}</span><button v-if="task_id && view !== 'chat'" class="icon-button" aria-label="切换项目对话" :aria-pressed="chatOpen" @click="chatOpen = !chatOpen; boardOpen = false"><MessageSquare :size="18" /></button><button v-if="task_id" class="icon-button" :aria-expanded="boardOpen" aria-label="切换共享状态表" @click="boardOpen = !boardOpen; chatOpen = false"><ListChecks :size="18" /></button><button v-if="task_id" class="icon-button" aria-label="对话显示选项" :aria-expanded="optionsOpen" @click="optionsOpen = !optionsOpen"><MoreHorizontal :size="18" /></button></div>
   </header>
 
-  <div v-if="optionsOpen" ref="displayOptions" class="display-options"><div class="timeline-filters"><select v-model="filter" aria-label="筛选角色"><option value="all">全部角色</option><option value="coordinator">协调手</option><option value="modeler">建模手</option><option value="coder">代码手</option><option value="writer">论文手</option></select><label><input v-model="showDetails" type="checkbox" />展开执行明细</label></div></div>
+  <div v-if="optionsOpen" ref="displayOptions" class="display-options"><div class="timeline-filters"><select v-model="filter" aria-label="筛选角色"><option value="all">全部角色</option><option value="coordinator">{{ labels.coordinator }}</option><option value="modeler">{{ labels.modeler }}</option><option value="coder">{{ labels.coder }}</option><option value="writer">{{ labels.writer }}</option></select><label><input v-model="showDetails" type="checkbox" />展开执行明细</label></div></div>
   <div v-if="state?.archived" class="archive-banner">此项目已归档。请在左侧项目菜单中恢复后继续。</div>
   <div class="workspace-content">
    <section v-show="view === 'paper'" class="paper-host"><PaperEditorView v-if="task_id && paperOpened" ref="paperEditor" :task_id="task_id" embedded /></section>
    <ProjectFiles v-if="task_id && view === 'files'" :task_id="task_id" :sequence="state?.sequence || 0" />
    <section v-show="view === 'chat' || chatOpen || !task_id" class="conversation" :class="{copilot:view !== 'chat','new-project':!task_id}">
     <header v-if="view !== 'chat'" class="copilot-heading"><strong>项目对话</strong><button class="icon-button" aria-label="关闭项目对话" @click="chatOpen = false"><X :size="16" /></button></header>
-    <div v-if="!task_id" class="welcome"><h1>有什么想一起解决？</h1><p>可以先聊想法，也可以上传赛题与数据。</p></div>
+    <RemitWelcome v-if="!task_id" @prompt="setDraft" />
     <div v-else ref="scrollArea" class="conversation-scroll" @scroll="trackScroll">
      <section class="timeline" aria-label="团队对话与执行记录">
 
@@ -740,11 +742,11 @@ onBeforeUnmount(() => {
      <section v-if="!task_id && contestOptionsOpen" class="contest-options" aria-label="赛事设置"><header><strong>{{ selectedCompetition?.name }}</strong><button class="icon-button" aria-label="关闭赛事设置" @click="contestOptionsOpen = false"><X :size="15" /></button></header><div class="contest-fields"><label>年份 <input v-model.number="competitionYear" aria-label="赛事年份" type="number" min="2000" max="2100" /></label><label>论文语言 <select v-model="paperLanguage" aria-label="论文语言"><option value="">赛事默认</option><option value="zh">中文</option><option value="en">英文</option></select></label></div><textarea v-model="competitionRequirements" aria-label="补充赛事要求" placeholder="补充当届规则、组别、题号、页数或提交要求（可选）" /><small>{{ selectedCompetition?.event_note || (selectedCompetition?.rules_status === 'format_verified' && competitionYear === selectedCompetition.year ? '已核对所列年份的主要版式要求，赛区与提交要求仍需复核' : '已加载建模技能，具体版式请结合当届规则核对') }}</small><a v-for="source in selectedCompetition?.sources" :key="source.url" :href="source.url" target="_blank" rel="noopener">查看赛事资料 ↗</a></section>
      <div v-if="error" role="alert" class="send-error">{{ error }}</div>
      <div v-if="adjustmentOpen" class="adjustment-menu" role="dialog" aria-label="选择调整时机"><header><strong>何时应用这条修改要求？</strong><button class="icon-button" aria-label="关闭调整选项" @click="adjustmentOpen = false"><X :size="15" /></button></header><button @click="send(draft, undefined, 'immediate')"><strong>立即调整</strong><small>停止当前步骤，按新要求继续</small></button><button @click="send(draft, undefined, 'after_step')"><strong>当前步骤完成后调整</strong><small>保留当前执行，将要求加入后续步骤</small></button></div>
-     <div class="composer"><textarea ref="composerInput" v-model="draft" rows="1" :aria-label="task_id ? '给团队发送指令' : '描述建模问题'" :placeholder="view === 'paper' && editPaper ? '描述修改要求，可先在源码中选中一段…' : task_id ? '继续对话，或提出修改…' : problemText ? '补充要求（可选）' : '描述你的建模问题…'" @keydown="handleKey" />
+     <div class="composer"><textarea ref="composerInput" v-model="draft" rows="1" :aria-label="task_id ? '给团队发送指令' : '描述建模问题'" :placeholder="view === 'paper' && editPaper ? '描述修改要求，可先在源码中选中一段…' : task_id ? '继续对话，或提出修改…' : problemText ? '补充要求（可选）' : '把题目、想法，或卡住的地方告诉 Remit…'" @keydown="handleKey" />
       <div class="composer-toolbar"><div class="composer-options">
        <div class="attachment-control"><button class="icon-button" aria-label="添加赛题或数据" :disabled="sending || state?.archived" :aria-expanded="attachmentMenu" @click="attachmentMenu = !attachmentMenu"><Plus :size="19" /></button><div v-if="attachmentMenu" class="attachment-menu"><button @click="uploadsOpen = true; attachmentMenu = false"><FileText :size="15" />赛题文档 <small>PDF / Word</small></button><button @click="fileInput?.click(); attachmentMenu = false"><Paperclip :size="15" />数据附件 <small>不限格式 · 多选</small></button><button @click="folderInput?.click(); attachmentMenu = false"><FolderOpen :size="15" />数据文件夹 <small>包含子文件夹</small></button></div></div>
        <template v-if="!task_id"><select v-model="executionBackend" aria-label="计算环境"><option value="python">Python</option><option value="matlab">MATLAB</option></select><select v-model="competitionId" aria-label="选择数学建模竞赛"><option v-for="contest in competitions" :key="contest.id" :value="contest.id">{{ contest.name }}</option></select><button class="icon-button" aria-label="赛事设置" @click="contestOptionsOpen = !contestOptionsOpen"><Settings2 :size="15" /></button></template>
-       <select v-if="task_id && view !== 'paper'" v-model="target" aria-label="指派角色"><option value="all">协调手</option><option value="modeler">@ 建模手</option><option value="coder">@ 代码手</option><option value="writer">@ 论文手</option></select><label v-if="task_id && view === 'paper'" class="edit-mode"><input v-model="editPaper" type="checkbox" />修改源码</label>
+       <select v-if="task_id && view !== 'paper'" v-model="target" aria-label="指派角色"><option value="all">{{ labels.coordinator }}</option><option value="modeler">@ {{ labels.modeler }}</option><option value="coder">@ {{ labels.coder }}</option><option value="writer">@ {{ labels.writer }}</option></select><label v-if="task_id && view === 'paper'" class="edit-mode"><input v-model="editPaper" type="checkbox" />修改源码</label>
       </div><div class="send-actions"><button v-if="state?.status === 'running' && view !== 'paper'" class="text-link" :disabled="!draft.trim() || sending || state?.archived" @click="adjustmentOpen = !adjustmentOpen">调整任务</button><button v-if="state?.status === 'running'" class="icon-button" aria-label="停止建模" @click="send('停止建模','stop')"><Square :size="15" /></button><button class="send-button" :disabled="!canSend || state?.archived" :aria-label="'发送'" @click="send(draft, view === 'paper' && editPaper ? 'edit_paper' : undefined)"><LoaderCircle v-if="sending" :size="17" class="spin" /><ArrowUp v-else :size="19" /></button></div></div>
      </div>
      <p class="composer-hint">{{ !task_id ? '普通消息直接对话；建模任务先确认计划，再开始执行' : view === 'paper' && editPaper ? '修改建议经你接受后才写入源码' : state?.status === 'running' ? 'Enter 对话 · 调整执行请点“调整任务”' : 'Enter 发送 · Shift + Enter 换行' }}</p>

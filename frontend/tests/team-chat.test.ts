@@ -97,6 +97,19 @@ const event: TeamEvent = {
 };
 
 describe("团队对话调度与恢复", () => {
+ it("小队入口填写草稿，不擅自发送或启动建模", async () => {
+  const wrapper = mount(TeamChat);
+  await flushPromises();
+  expect(wrapper.text()).toContain("嗨，我是 Remit");
+  const buttons = wrapper.findAll(".crew button");
+  expect(buttons).toHaveLength(4);
+  await buttons[2].trigger("click");
+  expect((wrapper.get(".composer textarea").element as HTMLTextAreaElement).value).toContain("点点");
+  expect(api.sendTeamMessage).not.toHaveBeenCalled();
+  expect(api.submitModelingTask).not.toHaveBeenCalled();
+  wrapper.unmount();
+ });
+
 	it("大量重复心跳不挤掉默认可见的关键进展", async () => {
 		const wrapper = mount(TeamChat, { props: { task_id: "project-1" } });
 		await flushPromises();
@@ -148,7 +161,7 @@ describe("团队对话调度与恢复", () => {
 		] });
 		await flushPromises();
 		const headings = wrapper.findAll('.role-heading');
-		expect(headings.slice(0, 4).map(node => node.text())).toEqual(['协调手', '建模手', '代码手', '论文手']);
+		expect(headings.slice(0, 4).map(node => node.text())).toEqual(['团团 · 协调手', '灵灵 · 建模手', '点点 · 代码手', '墨墨 · 论文手']);
 		expect(new Set(headings.slice(0, 4).map(node => node.get('svg').html())).size).toBe(4);
 		expect(wrapper.findAll('article.event')).toHaveLength(5);
 		expect(wrapper.get('.event-error').text()).toContain('本步骤失败，请检查附件');

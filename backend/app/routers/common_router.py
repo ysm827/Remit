@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from app.core.llm.llm_factory import LLMFactory
+from app.core.prompts.persona import remit_voice
 from app.core.progress import build_progress_message
 from app.core.project_audit import evaluate_analysis, evaluate_research
 from app.core.workflow_checkpoint import WorkflowCheckpoint
@@ -355,7 +356,7 @@ async def post_task_copilot(task_id: str, request: TaskCopilotRequest):
                 {
                     "role": "system",
                     "content": (
-                        "你是 Project Copilot 的只读建模审稿人。只依据真实落盘证据回答，"
+                        remit_voice() + "你正在只读复核建模成果。只依据真实落盘证据回答，"
                         "严格区分已运行结果、候选方案和推测；禁止虚构指标。"
                         "本次回答不得改变工作流、不得调用代码工具，也不得调用 Fable。"
                         "用简洁中文先给结论，再列证据与下一步。"

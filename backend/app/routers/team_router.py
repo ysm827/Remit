@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
 
 from app.core.llm.llm_factory import LLMFactory
+from app.core.prompts.persona import remit_voice
 from app.core.workflow_checkpoint import WorkflowCheckpoint
 from app.routers import modeling_router, writing_router
 from app.routers.files_router import _resolve_task_directory
@@ -247,7 +248,7 @@ async def make_plan(task_id: str, body: ChatRequest, root: Path) -> Plan:
                     {
                         "role": "system",
                         "content": (
-                            "你是 Remit 协调手，正在与用户直接对话。用中文回答最新问题，"
+                            remit_voice(body.role) + "正在与用户直接对话。用中文回答最新问题，"
                             "只读分析下面的实际进度、产物和历史，不派活，不停止、不重跑、不批准。"
                             "直接输出给用户看的答复，不输出调度JSON。"
                             "问进度时先说目前做到哪、已完成什么、卡在哪里、接下来做什么；"
@@ -277,14 +278,14 @@ async def make_plan(task_id: str, body: ChatRequest, root: Path) -> Plan:
         reply = (response.content or "").strip()
         if not reply:
             raise ValueError("协调手暂未返回答复，当前计算继续进行，请稍后再问。")
-        return Plan(action="reply", reply=reply)
+        return Plan(action="reply", role=body.role, reply=reply)
     response = await asyncio.wait_for(
         coordinator.chat(
             history=[
                 {
                     "role": "system",
                     "content": (
-                        "你是 Remit 的调度协调者。用户通过对话指挥建模手(modeler)、编程/代码手(coder)、论文手(writer)。"
+                        remit_voice(body.role) + "你负责 Remit 的调度。用户通过对话指挥建模手(modeler)、编程/代码手(coder)、论文手(writer)。"
                         "只输出一个 JSON 对象，字段 action,role,node_id,instruction,reply。"
                         "action 必须是 reply(讨论/解释), instruct(为指定角色保存下一轮执行要求), stop(停止建模), "
                         "resume(续跑中断流程), revise(按用户要求重做节点), approve(明确验收当前节点), "
@@ -409,7 +410,7 @@ async def execute_plan(
         return await propose(task_id, instruction, body.paper_context)
     state = checkpoint.load()
     if action == "reply":
-        return {"message": plan.reply or "请说明希望哪个角色完成什么工作。"}
+        return {"message": plan.reply or "我在呢。告诉 Remit 你想先解决哪一小步吧。"}
     if action == "instruct":
         if body.timing:
             return await apply_adjustment(task_id, body, root, background)
@@ -427,14 +428,14 @@ async def execute_plan(
         _interruptions[task_id] = _interruptions.get(task_id, 0) + 1
         result = await writing_router.cancel(task_id)
         return {
-            "message": "已请求停止论文手。"
+            "message": "已请墨墨停下写作，正在等待当前操作结束。"
             if result["status"] == "stopping"
             else "论文手当前没有运行。"
         }
     if action == "compile":
         result = await writing_router.compile_source(task_id)
         return {
-            "message": "PDF 编译完成。"
+            "message": "PDF 编译好啦，可以打开查看排版了。"
             if result["status"] == "completed"
             else "编译未通过，请在论文编辑器查看错误日志。",
             "link": f"/writing/{task_id}",
@@ -458,7 +459,7 @@ async def execute_plan(
         )
         await writing_router.generate(task_id)
         return {
-            "message": "已启动论文手，使用已验收建模成果生成独立初稿。每个章节的进展会同步到这里。",
+            "message": "墨墨开始整理初稿啦！会使用已验收的建模成果，每个章节的进展都会告诉你。",
             "link": f"/writing/{task_id}",
         }
     pending = state.get("pending_approval")
@@ -623,7 +624,7 @@ async def _process(task_id: str, body: ChatRequest, root: Path) -> None:
             )
             result = await execute_plan(task_id, body, plan, root, background)
             await asyncio.to_thread(
-                team.record, root, "coordinator", "reply", result["message"], result
+                team.record, root, (body.role if plan.action == "reply" and body.role != "all" else "coordinator"), "reply", result["message"], result
             )
             await asyncio.to_thread(
                 team.finish_command, root, body.request_id, "completed", result

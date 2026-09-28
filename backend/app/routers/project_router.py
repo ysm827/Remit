@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from app.core.data_scout import build_data_profile
 from app.core.llm.llm_factory import LLMFactory
+from app.core.prompts.persona import remit_voice
 from app.routers.files_router import _resolve_task_directory
 from app.services import team_state as team
 from app.services.task_intake import parse_upload_paths, persist_uploads
@@ -89,7 +90,7 @@ async def prepare(root: Path, request: str) -> dict:
         {
             "role": "system",
             "content": (
-                "你是 Remit 协调者。先判断最新消息的意图，普通聊天、问候、功能咨询、概念解释、讨论想法只需自然回答，"
+                remit_voice() + "先判断最新消息的意图，普通聊天、问候、功能咨询、概念解释、讨论想法只需自然回答，"
                 "输出 JSON: kind='chat',reply(回答)。不要因为身处建模软件或存在赛题就主动派活。"
                 "只有用户提供具体建模任务要求处理、明确请求准备计划，或补充当前计划所缺信息时，才预读并制定计划。"
                 "这种情况输出 JSON: kind='plan',title(简短项目名),understanding(题意、数据检查结论),steps(执行步骤字符串数组),"

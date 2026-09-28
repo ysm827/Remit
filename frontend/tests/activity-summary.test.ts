@@ -80,7 +80,7 @@ it('默认展示阶段、已完成与未核验项，心跳不会挤掉关键结�
 		...Array.from({length: 390}, (_, i) => event(i + 3, '协调手正在输出…'))];
 	const wrapper = mount(ActivitySummary, { props: { events, state: snapshot } });
 	expect(wrapper.get('.progress-label').text()).toBe('总体建模方案');
-	expect(wrapper.get('.progress-role').text()).toBe('建模手');
+	expect(wrapper.get('.progress-role').text()).toBe('灵灵 · 建模手');
 	expect(wrapper.get('.completed-line').text()).toContain('题意识别与问题拆解');
 	expect(wrapper.get('.completed-line').text()).not.toContain('数据核验');
 	expect(wrapper.get('.warning-note').text()).toContain('仍需核验');

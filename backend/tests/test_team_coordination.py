@@ -377,8 +377,9 @@ def test_invalid_planner_output_is_recorded_without_dispatch(project, monkeypatc
     assert team.events(root)[-1]["kind"] == "error"
 
 
+@pytest.mark.parametrize("role,name", [("all", "团团"), ("modeler", "灵灵"), ("coder", "点点"), ("writer", "墨墨")])
 @pytest.mark.parametrize("conversation_only,status", [(False, "running"), (True, "completed")])
-def test_progress_question_returns_model_answer_without_workflow_actions(project, monkeypatch, conversation_only, status):
+def test_progress_question_returns_model_answer_without_workflow_actions(project, monkeypatch, conversation_only, status, role, name):
     from app.routers import common_router
     root, checkpoint = project
     state = checkpoint.load()
@@ -393,7 +394,7 @@ def test_progress_question_returns_model_answer_without_workflow_actions(project
     resume = AsyncMock()
     monkeypatch.setattr(modeling_router, "cancel_task", cancel)
     monkeypatch.setattr(modeling_router, "resume_task", resume)
-    asyncio.run(router._process("team-test", router.ChatRequest(request_id="progress-question", content="现在到底进行得怎么样了", conversation_only=conversation_only), root))
+    asyncio.run(router._process("team-test", router.ChatRequest(request_id="progress-question", content="现在到底进行得怎么样了", conversation_only=conversation_only, role=role), root))
     assert team.events(root)[-1]["kind"] == "reply"
     assert "还没有完成验证" in team.events(root)[-1]["content"]
     cancel.assert_not_awaited()
@@ -403,3 +404,5 @@ def test_progress_question_returns_model_answer_without_workflow_actions(project
     context = json.loads(chat.call_args.kwargs["history"][1]["content"])
     assert context["evidence"] == evidence
     assert context["latest_user_request"] == "现在到底进行得怎么样了"
+    assert team.events(root)[-1]["role"] == ("coordinator" if role == "all" else role)
+    assert name in chat.call_args.kwargs["history"][0]["content"]
