@@ -140,7 +140,7 @@ def runtime_tex(stage, build):
     (stage / "backend/fonts").mkdir(exist_ok=True)
     shutil.copy2(font, stage / "backend/fonts" / font.name)
     shutil.copytree(target / "texmf-dist/doc/fonts/fandol", stage / "licenses/fandol", dirs_exist_ok=True)
-    packages = subprocess.check_output([str(tlmgr), "info", "--only-installed", "--data", "name,localrev"], env=env)
+    packages = subprocess.check_output([str(tlmgr), "info", "--only-installed"], env=env)
     (stage / "licenses/tex-packages.txt").write_bytes(packages)
 
 
@@ -183,6 +183,9 @@ def verify(stage, python, build):
 
 
 def windows_installer(stage, build, output):
+    redist = download("vc_redist", build / "downloads")
+    (stage / "runtime/installers").mkdir(exist_ok=True)
+    shutil.copy2(redist, stage / "runtime/installers/vc_redist.x64.exe")
     inno = build / "inno"
     compiler = inno / "ISCC.exe"
     if not compiler.exists():

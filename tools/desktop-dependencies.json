@@ -1,5 +1,9 @@
 {
   "python": "3.12.13",
+  "vc_redist": {
+    "url": "https://aka.ms/vs/17/release/vc_redist.x64.exe",
+    "sha256": "cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b"
+  },
   "tinytex_windows": {
     "url": "https://github.com/rstudio/tinytex-releases/releases/download/v2026.09/TinyTeX-v2026.09.zip",
     "sha256": "e82d8b78fcf5740639f10ac8518f0c83c9202830e6bba364c70104601c12c6be"

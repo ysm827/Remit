@@ -66,6 +66,8 @@ def environment(data: Path, root: Path = ROOT) -> dict[str, str]:
         "TEXMFHOME": str(data / "texmf"),
         "PATH": os.pathsep.join([str(python.parent), str(tex_directory(root)), env.get("PATH", "")]),
     })
+    sites = python.parent / "Lib/site-packages" if WINDOWS else root / "runtime/python/lib/python3.12/site-packages"
+    env["PYPANDOC_PANDOC"] = str(sites / "pypandoc/files" / ("pandoc.exe" if WINDOWS else "pandoc"))
     return env
 
 

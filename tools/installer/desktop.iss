@@ -67,6 +67,11 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var Code: Integer;
 begin
   if CurStep = ssPostInstall then begin
+    if not Exec(ExpandConstant('{app}\runtime\installers\vc_redist.x64.exe'),
+      '/install /quiet /norestart', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then
+      RaiseException('无法安装 Microsoft C++ 运行库。');
+    if (Code <> 0) and (Code <> 3010) and (Code <> 1638) then
+      RaiseException('Microsoft C++ 运行库安装失败，错误码：' + IntToStr(Code));
     if not Exec(ExpandConstant('{app}\runtime\python\python.exe'),
       '-B "' + ExpandConstant('{app}\tools\desktop_runtime.py') + '" --check',
       ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then

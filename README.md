@@ -12,6 +12,10 @@
 
 ## 快速启动：Docker
 
+桌面安装包正在通过原生 Windows / macOS 构建验证。正式可下载的预览包会出现在
+[Releases](https://github.com/zhou2030109-glitch/Remit-Agent/releases)，包括 Windows x64、Mac Apple 芯片与 Intel 版本。
+安装包内置计算与论文工具，首次打开仍需填写自己的模型服务信息。详细范围见 [桌面分发说明](docs/desktop-distribution.md)。
+
 安装 Git 和支持 Linux 容器的 Docker Compose，在终端运行：
 
 ```sh
