@@ -312,6 +312,27 @@ def test_writer_repairs_rejected_section_once_without_publishing_invalid_prose(w
     assert attempt["attempt"] == 2
     assert attempt["response"]["response_content"] == repaired
 
+    if repair_succeeds:
+        return
+    # Simulate a corrected validator recognizing the saved response; no new model
+    # call is needed, but the retained candidate must be validated again.
+    with (
+        patch("app.core.llm.llm_factory.LLMFactory.get_writer_llm", return_value=object()),
+        patch("app.models.user_output.UserOutput._section_order", return_value=["eda"]),
+        patch("app.core.agents.writer_agent.WriterAgent.run", AsyncMock()) as resumed,
+        patch("app.core.deliverable_contract.validate_writer_section") as validate,
+        patch("app.core.flows.Flows.get_write_flows", return_value={}),
+        patch("app.utils.paper_polish.polish_markdown", side_effect=lambda text, *_: text),
+        patch("app.utils.paper_polish._convert_markdown_to_latex", side_effect=lambda text, path, *_: path.write_text(text, encoding="utf-8")),
+        patch("app.services.competitions.adapt_generated_source", side_effect=lambda _, text: text),
+        patch.object(writing_router, "compile_source", AsyncMock()),
+    ):
+        asyncio.run(writing_router._generate("paper-test", root, inputs["revision"]))
+    resumed.assert_not_awaited()
+    validate.assert_called_once()
+    assert validate.call_args.args[:2] == ("eda", repaired)
+    assert workspace.read_json(root / "workspace.json")["generation"]["status"] == "completed"
+
 
 def test_generation_resume_is_limited_to_failed_same_input(tmp_path):
     root = workspace.ensure_workspace(tmp_path)

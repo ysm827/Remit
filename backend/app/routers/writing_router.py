@@ -426,6 +426,11 @@ async def _generate(
             root, "running", generation_id=generation_id, input_revision=revision
         )
         cached = workspace.read_json(scratch / ".remit" / "paper_sections.json")
+        # A technical validator fix may make a previously rejected response valid.
+        # Every candidate still passes the same current checks before publication.
+        for attempt_path in (scratch / ".attempts").glob("*.json"):
+            if attempt_path.stem not in cached:
+                cached[attempt_path.stem] = workspace.read_json(attempt_path).get("response", {})
         problem = evidence.get("problem") or {}
         template = CompTemplate(problem.get("comp_template", "CHINA"))
         config = get_config_template(template) or get_config_template(

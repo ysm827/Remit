@@ -1609,7 +1609,7 @@ _METRIC_KEYWORD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 # 负号仅在非数字前生效：避免把区间 "0.75-0.85" 的右端点解析成负数
-_NUMBER_PATTERN = re.compile(r"(?<![\d.])-?\d+(?:\.\d+)?")
+_NUMBER_PATTERN = re.compile(r"(?<![\d.])[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
 # 显著性水平、常见比例等惯用常数不参与溯源，避免误杀
 _GROUNDING_COMMON_CONSTANTS = {
     0.0,
@@ -1666,7 +1666,7 @@ def _is_grounded_number(
 ) -> bool:
     # 正文数字可能是真实值的原样或百分数写法；允许 1% 相对差或同精度舍入。
     # 容差必须随 /100 候选同尺度缩放，否则整数百分数编造会全部漏杀。
-    tolerance_floor = 0.5 * 10 ** (-decimals)
+    tolerance_floor = 0.5 * 10.0 ** max(-323, min(308, -decimals))
     for candidate, floor in (
         (text_number, tolerance_floor),
         (text_number / 100.0, tolerance_floor / 100.0),
@@ -1819,12 +1819,16 @@ def validate_writer_section(
                 number = float(raw)
             except ValueError:
                 continue
+            if not math.isfinite(number):
+                ungrounded.append(f"{keyword}…{raw}")
+                continue
             if number in _GROUNDING_COMMON_CONSTANTS:
                 continue
-            if "." not in raw and abs(number) <= 12:
+            if "." not in raw and "e" not in raw.lower() and abs(number) <= 12:
                 # 问题编号、折数等小整数不参与溯源
                 continue
-            decimals = len(raw.split(".")[1]) if "." in raw else 0
+            mantissa, _, exponent = raw.lower().partition("e")
+            decimals = (len(mantissa.split(".")[1]) if "." in mantissa else 0) - int(exponent or "0")
             if not _is_grounded_number(number, decimals, grounding_values):
                 snippet = f"{keyword}…{raw}"
                 if snippet not in ungrounded:
