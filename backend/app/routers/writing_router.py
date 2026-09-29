@@ -411,6 +411,7 @@ async def _generate(
     snapshot = root / ".inputs" / revision
     generation_id = generation_id or _generation_id(root, revision)
     scratch = root / ".drafts" / generation_id
+    original_revision = workspace.project_revision(root)
 
     async def record_event(_task_id, event):
         if event.msg_type != "activity":
@@ -538,17 +539,31 @@ async def _generate(
             encoding="utf-8",
         )
         async with _lock(task_id):
+            activate = workspace.project_revision(root) == original_revision
             shutil.copytree(
                 snapshot / "assets", root / asset_prefix, dirs_exist_ok=True
             )
             shutil.copy2(scratch / name, root / name)
+            if activate:
+                meta = _meta(root)
+                meta["main"] = name
+                workspace.write_json(root / "workspace.json", meta)
             _set_generation(
                 root,
                 "completed",
                 file=name,
                 input_revision=revision,
-                message="初稿已生成，选择此文件并设为主文件后编译；请核对正文与证据。",
+                message=("初稿已生成并打开，正在准备 PDF 预览；请核对正文与证据。" if activate else
+                         "初稿已另存。检测到写作期间有编辑，已保留当前主文件，请选择初稿查看。"),
             )
+        if activate:
+            try:
+                await compile_source(task_id)
+            except Exception as exc:
+                # A PDF failure must not erase a successfully saved draft.
+                async with _lock(task_id):
+                    _set_generation(root, "completed", file=name,
+                                    message=f"初稿已保存，PDF 预览尚未完成：{str(exc)[:300]}")
     except asyncio.CancelledError:
         async with _lock(task_id):
             _set_generation(

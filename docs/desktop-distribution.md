@@ -34,6 +34,6 @@ python tools/build_desktop.py --build-root /absolute/ascii/build-directory
 
 Windows 可用 `E:/RemitDesktopBuild`。目录必须独立于用户数据。首次使用空目录，中断后加 `--reuse`；脚本不会自动删除原目录。依赖包下载校验 SHA-256，Python 包按 uv.lock 的哈希安装。
 
-`.github/workflows/desktop.yml` 在三种原生系统分别构建。发布 `v*-beta.*` 标签后，仅在三个构建均通过时生成预发布 Release。没有签名凭据时仅做 macOS 运行所需的 ad-hoc 签名，不宣称获得发布者验证。
+`.github/workflows/desktop.yml` 通过手动触发或预发布标签在三种原生系统分别构建，普通源码推送只运行代码测试。发布 `v*-beta.*` 标签后，仅在三个构建均通过时生成预发布 Release。没有签名凭据时仅做 macOS 运行所需的 ad-hoc 签名，不宣称获得发布者验证。
 
 验证使用包内 Python，移除开发机工具路径，真实执行计算、中文绘图、Pandoc 转换、三种模板 PDF 编译与渲染，另启动独立 Redis / API / 静态前端。报告记录在构建目录 `reports/` 并作为 CI 附件保留。此检查不调用付费模型，也不验证用户的赛题结论。

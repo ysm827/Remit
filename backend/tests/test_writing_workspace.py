@@ -209,7 +209,8 @@ def test_writer_failure_does_not_modify_modeling_checkpoint(writing_client):
     assert not redis_manager.archive.exists("paper-test")
 
 
-def test_writer_resume_reuses_validated_sections(writing_client):
+@pytest.mark.parametrize("edit_during_generation", [False, True])
+def test_writer_resume_reuses_validated_sections(writing_client, edit_during_generation):
     from app.schemas.A2A import WriterResponse
 
     client, task_root = writing_client
@@ -233,8 +234,11 @@ def test_writer_resume_reuses_validated_sections(writing_client):
 
     def convert(markdown, path, *_args):
         path.write_text(markdown, encoding="utf-8")
+        if edit_during_generation:
+            (root / "main.tex").write_text("new manual edits", encoding="utf-8")
 
     with (
+        patch.object(writing_router, "compile_source", AsyncMock(return_value={"status": "completed"})) as compiler,
         patch(
             "app.models.user_output.UserOutput._section_order",
             return_value=["eda", "ques1"],
@@ -262,6 +266,13 @@ def test_writer_resume_reuses_validated_sections(writing_client):
     assert second["status"] == "completed"
     assert second["generation_id"] == first["generation_id"]
     assert writer.await_count == 3
+    if edit_during_generation:
+        assert workspace.read_json(root / "workspace.json")["main"] == "main.tex"
+        assert (root / "main.tex").read_text(encoding="utf-8") == "new manual edits"
+        compiler.assert_not_awaited()
+    else:
+        assert workspace.read_json(root / "workspace.json")["main"] == second["file"]
+        compiler.assert_awaited_once()
     assert "保存过的真实章节" in (root / second["file"]).read_text(encoding="utf-8")
 
 

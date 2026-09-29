@@ -67,6 +67,22 @@ describe("论文编辑器保存与编译", () => {
 		wrapper.unmount();
 	});
 
+	it("生成的主文件在轮询后打开，无需用户重新进入", async () => {
+        const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
+        await flushPromises();
+        api.getPaperWorkspace.mockResolvedValue({data: {
+            main: "draft-new.tex", ready: true, revision: "new", pdf_available: false,
+            files: [{name: "draft-new.tex", editable: true}], inputs: {},
+            generation: {status: "completed", file: "draft-new.tex"}, compile: {},
+        }});
+        api.getPaperSource.mockResolvedValue({data: {content: "generated paper", version: "new"}});
+        await vi.advanceTimersByTimeAsync(4000);
+        await flushPromises();
+        expect(api.getPaperSource).toHaveBeenLastCalledWith("test", "draft-new.tex");
+        expect(wrapper.get("textarea").element.value).toBe("generated paper");
+        wrapper.unmount();
+    });
+
 	it("保存冲突保留正在编辑的内容，并阻止编译", async () => {
 		const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
 		await flushPromises();

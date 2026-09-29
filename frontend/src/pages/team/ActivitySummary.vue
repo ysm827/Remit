@@ -55,8 +55,10 @@ const currentDetail = computed(() => {
  if (last && action && last.seq > action.seq && !routineCodeMessage) return progressText(last);
  return action ? progressText(action) : latest.value;
 });
-const headline = computed(() => stage.value ? short(stage.value.label, 90) : short(latest.value, 110));
-const stageStatus = computed(() => stage.value?.status || props.state?.status || '');
+const waitingForPaper = computed(() => props.state?.status === 'completed' &&
+ (!props.state.writing?.status || ['idle', 'ready'].includes(props.state.writing.status)));
+const headline = computed(() => stage.value ? short(stage.value.label, 90) : waitingForPaper.value ? '建模已完成，待生成论文初稿' : short(latest.value, 110));
+const stageStatus = computed(() => stage.value?.status || (waitingForPaper.value ? 'ready' : props.state?.status) || '');
 const completed = computed(() => (props.state?.steps || []).filter(s => s.status === 'completed').slice(-2));
 const warnings = computed(() => (props.state?.steps || []).filter(s => ['warning', 'skipped'].includes(s.status)));
 const warningIssues = computed(() => [...new Set(warnings.value.flatMap(s => s.issues || []))]);

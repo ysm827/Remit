@@ -130,7 +130,11 @@ function message(cause: unknown): string {
 			: "操作失败，请重试";
 }
 async function refresh() {
+	const previousMain = project.value?.main;
 	project.value = (await getPaperWorkspace(props.task_id)).data;
+	if (previousMain && project.value.main !== previousMain && selected.value === previousMain && !dirty.value && !saving.value) {
+		await loadFile(project.value.main);
+	}
 }
 async function loadFile(name: string) {
 	if (name === selected.value) return;

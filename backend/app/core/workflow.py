@@ -473,7 +473,7 @@ class RemitWorkFlow(WorkFlow):
             await redis_manager.publish_message(
                 self.task_id,
                 SystemMessage(
-                    content="建模与计算已完成，成果已同步至主页面的论文写作区。",
+                    content="建模与计算已完成，写作素材已交接。论文正文尚未生成，可在论文区启动墨墨撰写初稿。",
                     type="success",
                 ),
             )

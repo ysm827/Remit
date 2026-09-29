@@ -10,11 +10,13 @@
 
 模型可能生成错误代码，接口也可能超时；需要检查实际计算结果并完成用户验收。软件测试通过不代表某道赛题已求解正确，也不保证比赛格式全部合规。
 
-## 快速启动：Docker
+## 桌面安装
 
 桌面安装包正在通过原生 Windows / macOS 构建验证。正式可下载的预览包会出现在
 [Releases](https://github.com/zhou2030109-glitch/Remit-Agent/releases)，包括 Windows x64、Mac Apple 芯片与 Intel 版本。
 安装包内置计算与论文工具，首次打开仍需填写自己的模型服务信息。详细范围见 [桌面分发说明](docs/desktop-distribution.md)。
+
+## 快速启动：Docker
 
 安装 Git 和支持 Linux 容器的 Docker Compose，在终端运行：
 

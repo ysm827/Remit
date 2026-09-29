@@ -7,7 +7,7 @@ from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from app.core.llm.llm_factory import LLMFactory
 from app.core.prompts.persona import remit_voice
@@ -332,7 +332,14 @@ async def make_plan(task_id: str, body: ChatRequest, root: Path) -> Plan:
     raw = (response.content or "").strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
-    return Plan.model_validate_json(raw)
+    try:
+        return Plan.model_validate_json(raw)
+    except ValidationError:
+        # Some providers answer conversational questions directly, despite the
+        # planner schema. Text is safe to display; it must never authorize work.
+        if raw and not raw.startswith(("{", "[")):
+            return Plan(action="reply", reply=raw[:12000])
+        return Plan(action="reply", reply="团团这次没能读懂操作安排，现有结果和进度已保留。请再说一次你想继续的步骤，或使用对应操作按钮。")
 
 
 async def apply_adjustment(

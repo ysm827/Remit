@@ -252,11 +252,11 @@ def snapshot(root: Path) -> dict:
                 "id": "paper:generate",
                 "label": writing.get("section") or "论文手撰写初稿",
                 "role": "writer",
-                "status": writing.get("status", "ready" if inputs else "blocked"),
+                "status": ("ready" if inputs else "blocked") if writing.get("status", "idle") == "idle" else writing["status"],
             },
             {
                 "id": "paper:compile",
-                "label": "LaTeX 编译与 PDF",
+                "label": "论文 PDF 编译" if writing.get("file") else "当前源码预览（尚未生成论文）",
                 "role": "writer",
                 "status": compilation.get("status", "pending"),
             },

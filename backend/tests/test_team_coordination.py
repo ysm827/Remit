@@ -378,7 +378,7 @@ def test_invalid_planner_output_is_recorded_without_dispatch(project, monkeypatc
 
 
 @pytest.mark.parametrize("role,name", [("all", "团团"), ("modeler", "灵灵"), ("coder", "点点"), ("writer", "墨墨")])
-@pytest.mark.parametrize("conversation_only,status", [(False, "running"), (True, "completed")])
+@pytest.mark.parametrize("conversation_only,status", [(False, "running"), (True, "completed"), (False, "completed"), (False, "awaiting_approval")])
 def test_progress_question_returns_model_answer_without_workflow_actions(project, monkeypatch, conversation_only, status, role, name):
     from app.routers import common_router
     root, checkpoint = project
