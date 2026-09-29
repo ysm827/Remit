@@ -2,6 +2,8 @@
 
 保留 Remit 原有图标与简约工作台，安装后打开本机浏览器使用。
 
+本版修复建模完成后“继续”误入建模恢复的问题，论文中断时可续写已保存的章节；生成初稿后自动打开并准备 PDF 预览，保留已有手工编辑。
+
 - Windows：下载 `Windows-x64-Setup.exe`，按向导安装。
 - Apple 芯片 Mac：下载 `macOS-arm64.dmg`，将 Remit 拖入 Applications。
 - Intel Mac：下载 `macOS-x64.dmg`，将 Remit 拖入 Applications。

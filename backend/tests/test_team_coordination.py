@@ -58,6 +58,58 @@ def project(tmp_path, monkeypatch):
     router._workers.clear()
 
 
+@pytest.mark.parametrize("status", ["interrupted", "failed", "cancelled", "idle"])
+def test_continue_after_modeling_resumes_writer_without_model_call(project, monkeypatch, status):
+    root, checkpoint = project
+    checkpoint.mark_status("completed")
+    writing_router._set_generation(paper.ensure_workspace(root), status)
+    sync, generate, resume = AsyncMock(), AsyncMock(), AsyncMock()
+    monkeypatch.setattr(writing_router, "sync", sync)
+    monkeypatch.setattr(writing_router, "generate", generate)
+    monkeypatch.setattr(modeling_router, "resume_task", resume)
+    body = router.ChatRequest(request_id="continue-paper", content="继续")
+
+    async def run():
+        plan = await router.make_plan("team-test", body, root)
+        assert plan.action == "write"
+        await router.execute_plan("team-test", body, plan, root, BackgroundTasks())
+
+    asyncio.run(run())
+    generate.assert_awaited_once_with("team-test")
+    resume.assert_not_awaited()
+
+
+@pytest.mark.parametrize("status", ["interrupted", "completed", "running"])
+def test_resume_button_routes_to_writer_without_duplicate_generation(project, monkeypatch, status):
+    root, checkpoint = project
+    checkpoint.mark_status("completed")
+    writing_router._set_generation(paper.ensure_workspace(root), status)
+    sync, generate, resume = AsyncMock(), AsyncMock(), AsyncMock()
+    monkeypatch.setattr(writing_router, "sync", sync)
+    monkeypatch.setattr(writing_router, "generate", generate)
+    monkeypatch.setattr(modeling_router, "resume_task", resume)
+    if status == "running":
+        monkeypatch.setitem(writing_router._generations, "team-test", object())
+    body = router.ChatRequest(request_id="continue-button", content="继续", action="resume")
+    asyncio.run(router.execute_plan("team-test", body, router.Plan(action="resume"), root, BackgroundTasks()))
+    assert generate.await_count == (1 if status == "interrupted" else 0)
+    resume.assert_not_awaited()
+
+
+def test_paper_resume_cannot_bypass_pending_approval(project, monkeypatch):
+    root, checkpoint = project
+    state = checkpoint.load()
+    checkpoint.complete_node(state, "review_results")
+    checkpoint.request_approval(state, "review_results", summary="等待验收")
+    generate = AsyncMock()
+    monkeypatch.setattr(writing_router, "generate", generate)
+    body = router.ChatRequest(request_id="continue-gate", content="继续")
+    with pytest.raises(HTTPException):
+        asyncio.run(router.execute_plan("team-test", body, router.Plan(action="resume"), root, BackgroundTasks()))
+    generate.assert_not_awaited()
+    assert checkpoint.load()["pending_approval"]
+
+
 def test_shared_table_reflects_checkpoints_and_independent_writer(project):
     root, checkpoint = project
     state = checkpoint.load()

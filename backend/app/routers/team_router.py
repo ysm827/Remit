@@ -24,6 +24,7 @@ _locks: dict[str, asyncio.Lock] = {}
 _io_locks: dict[str, asyncio.Lock] = {}
 _interruptions: dict[str, int] = {}
 _STOP_COMMANDS = {"停止建模": "stop", "暂停建模": "stop", "停止论文手": "stop_writing"}
+_CONTINUE_COMMANDS = {"继续", "继续执行", "恢复", "继续写作", "继续论文", "继续写论文"}
 
 Action = Literal[
     "reply",
@@ -221,6 +222,14 @@ async def make_plan(task_id: str, body: ChatRequest, root: Path) -> Plan:
             action=_STOP_COMMANDS[body.content.strip()], instruction=body.content
         )
     state = await asyncio.to_thread(team.snapshot, root)
+    if (
+        not body.conversation_only
+        and not body.timing
+        and body.content.strip().rstrip("。！!") in _CONTINUE_COMMANDS
+        and state.get("status") == "completed"
+        and not state.get("pending_approval")
+    ):
+        return Plan(action="write", role="writer", instruction=body.content)
     from app.routers.common_router import _build_task_copilot_context
 
     evidence = await _build_task_copilot_context(task_id)
@@ -416,6 +425,11 @@ async def execute_plan(
 
         return await propose(task_id, instruction, body.paper_context)
     state = checkpoint.load()
+    # A completed modeling workflow has no unfinished modeling node to resume.
+    # Preserve explicit node targets and all approval gates.
+    continuing_paper = action == "resume" and plan.node_id in {None, "paper:generate"}
+    if continuing_paper and state.get("status") == "completed" and not state.get("pending_approval"):
+        action = "write"
     if action == "reply":
         return {"message": plan.reply or "我在呢。告诉 Remit 你想先解决哪一小步吧。"}
     if action == "instruct":
@@ -449,7 +463,7 @@ async def execute_plan(
             "result": result["status"],
         }
     if action == "write":
-        if state.get("status") != "completed":
+        if state.get("status") != "completed" or state.get("pending_approval"):
             raise HTTPException(
                 409, "建模成果尚未完成验收，请先处理共享状态中的待办步骤。"
             )
@@ -460,6 +474,10 @@ async def execute_plan(
             return {
                 "message": "论文手正在写作，修改要求已加入共享状态，下一轮调用会读取。"
             }
+        generation = team.read_json(root / "paper" / "workspace.json").get("generation", {})
+        is_continue = continuing_paper or body.content.strip().rstrip("。！!") in _CONTINUE_COMMANDS
+        if is_continue and generation.get("status") == "completed":
+            return {"message": "墨墨的初稿已生成，可以到论文区查看。需要修改哪一部分，直接告诉我就好。", "link": f"/writing/{task_id}"}
         await writing_router.sync(task_id)
         await asyncio.to_thread(
             team.directive, root, "writer", instruction, body.request_id
