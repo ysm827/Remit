@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+from app.utils.tex_process import run_xelatex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -276,16 +277,13 @@ def compile_build(build: Path, main: str, revision: str) -> dict[str, Any]:
         main,
     ]
     env = os.environ.copy()
-    if env.get("REMIT_BUNDLED_TEX") == "1":
-        # XeTeX's automatic absolute driver command is not quoted on macOS.
-        # Our launcher puts the bundled driver first on PATH, including after relocation.
-        command.insert(1, "-output-driver=xdvipdfmx -q -E")
     env.update(openout_any="p", openin_any="p", MIKTEX_ENABLE_INSTALLER="0")
     logs: list[str] = []
     try:
         for run in range(2):
-            process = subprocess.run(
+            process = run_xelatex(
                 command,
+                pdf_path=build / "preview.pdf",
                 cwd=build,
                 env=env,
                 capture_output=True,

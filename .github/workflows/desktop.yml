@@ -71,6 +71,12 @@ jobs:
           pattern: installer-*
           merge-multiple: true
           path: installers
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: checks-*
+          path: reports
+      - name: Bundle verification reports
+        run: tar czf installers/Remit-verification-reports.tar.gz -C reports .
       - name: Publish tested unsigned preview
         env:
           GH_TOKEN: ${{ github.token }}

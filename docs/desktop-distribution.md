@@ -5,7 +5,7 @@
 从 [GitHub Releases](https://github.com/zhou2030109-glitch/Remit-Agent/releases) 选择与电脑相符的安装包；没有附件的版本还不能下载。
 
 - Windows x64：运行 Setup.exe。安装器会准备 Microsoft C++ 运行库，需要管理员确认。保留默认英文安装目录，避免 TeX Live 的非 ASCII 安装路径限制；项目目录和用户名可以包含中文。
-- macOS 14+：Apple 芯片选 arm64，Intel 选 x64。打开 DMG，将 Remit 拖入 Applications，再打开 Remit。
+- macOS 15+：Apple 芯片选 arm64，Intel 选 x64。打开 DMG，将 Remit 拖入 Applications，再打开 Remit。
 - 工作台在默认浏览器打开，原有 Remit 图标显示在托盘或菜单栏，可以从菜单打开项目文件夹或退出。退出前应保存进度。
 - 当前预览包没有发布者签名或 Apple 公证，操作系统可能要求额外确认。不要关闭系统安全防护。
 

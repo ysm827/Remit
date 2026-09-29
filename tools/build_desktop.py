@@ -80,6 +80,12 @@ def source_files(stage):
         shutil.copy2(REPO / "tools" / name, stage / "tools" / name)
     shutil.copytree(REPO / "frontend/dist", stage / "frontend/dist", dirs_exist_ok=True)
     (stage / "VERSION").write_text(VERSION, encoding="utf-8")
+    (stage / "BUILD-INFO.json").write_text(json.dumps({
+        "version": VERSION,
+        "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip(),
+        "platform": sys.platform, "architecture": platform.machine(),
+        "python": LOCK["python"], "publisher_signed": False,
+    }, indent=2), encoding="utf-8")
     (stage / "backend/.env.dev").write_text(
         "DEBUG=false\nLOG_LEVEL=INFO\nCODE_EXECUTION_BACKEND=python\n"
         "MATLAB_FALLBACK_TO_PYTHON=true\nLATEX_ENGINE=xelatex\n", encoding="utf-8")
@@ -260,7 +266,7 @@ int main(int argc, char **argv) {
                       "CFBundleDisplayName": "Remit", "CFBundleExecutable": "Remit",
                       "CFBundleIconFile": "Remit.icns", "CFBundlePackageType": "APPL",
                       "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "1",
-                      "LSMinimumSystemVersion": "14.0", "NSHighResolutionCapable": True,
+                      "LSMinimumSystemVersion": "15.0", "NSHighResolutionCapable": True,
                       "LSUIElement": True}, dest)
     # Ad-hoc signatures allow native execution on Apple silicon, but give no publisher identity.
     run(["codesign", "--force", "--deep", "--sign", "-", app])

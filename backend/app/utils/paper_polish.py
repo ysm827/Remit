@@ -5,10 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import re
 import shutil
 import subprocess
+from app.utils.tex_process import run_xelatex
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -170,12 +170,11 @@ def _compile_latex(tex_path: Path, build_dir: Path) -> str:
         tex_path.name,
     ]
     logs: list[str] = []
-    if os.environ.get("REMIT_BUNDLED_TEX") == "1":
-        command.insert(1, "-output-driver=xdvipdfmx -q -E")
     for compile_pass in range(1, 3):
         try:
-            completed = subprocess.run(
+            completed = run_xelatex(
                 command,
+                pdf_path=build_dir / (tex_path.stem + ".pdf"),
                 cwd=tex_path.parent,
                 capture_output=True,
                 text=True,
