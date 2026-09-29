@@ -4,6 +4,8 @@
 
 本版修复建模完成后“继续”误入建模恢复的问题，论文中断时可续写已保存的章节；生成初稿后自动打开并准备 PDF 预览，保留已有手工编辑。
 
+论文章节校验发现缺项时，会把具体反馈交回论文手修订一次；再次失败则保存诊断并停止，不发布未通过的章节。论文正文与聊天回复采用不同的表达要求。
+
 - Windows：下载 `Windows-x64-Setup.exe`，按向导安装。
 - Apple 芯片 Mac：下载 `macOS-arm64.dmg`，将 Remit 拖入 Applications。
 - Intel Mac：下载 `macOS-x64.dmg`，将 Remit 拖入 Applications。

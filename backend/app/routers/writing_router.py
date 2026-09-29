@@ -439,6 +439,34 @@ async def _generate(
             build_citation_brief(evidence.get("citation_ledger") or {}),
         )
         sections = evidence.get("solution_results") or {}
+
+        async def write_validated(agent, key, prompt, *, images=None, validation=None):
+            validation = validation or {}
+            for attempt in range(2):
+                response = await agent.run(prompt, available_images=images, sub_title=key)
+                # Keep rejected prose for diagnosis, never publish it as a passed section.
+                workspace.write_json(
+                    scratch / ".attempts" / f"{key}.json",
+                    {"attempt": attempt + 1, "response": response.model_dump()},
+                )
+                try:
+                    validate_writer_section(key, response.response_content, **validation)
+                except DeliverableValidationError as exc:
+                    if attempt:
+                        raise
+                    async with _lock(task_id):
+                        _set_generation(root, "running", section=key,
+                                        message="章节校验发现缺项，墨墨正在修订（1/1）")
+                    prompt = (
+                        "请修订刚才的完整章节，校验反馈如下：\n"
+                        + str(exc)
+                        + "\n请逐项对照原始证据核对所有数值及分类口径，保留有依据的内容与图表。"
+                        "不要编造数据，不要以聊天答复代替正文，只返回修订后的完整章节。"
+                    )
+                else:
+                    return response
+            raise RuntimeError("章节修订未返回结果")
+
         core_changed = False
         for key in output.seq:
             if key not in sections:
@@ -475,15 +503,9 @@ async def _generate(
                 + str(config.get(key, ""))
             )
             prompt += flows._citation_block() + "\n" + str(evidence.get("evidence_notice") or "")
-            response = await agent.run(
-                prompt,
-                available_images=entry.get("paper_ready_images", []),
-                sub_title=key,
-            )
-            validate_writer_section(
-                key,
-                response.response_content,
-                **validation,
+            response = await write_validated(
+                agent, key, prompt,
+                images=entry.get("paper_ready_images", []), validation=validation,
             )
             output.set_res(key, response)
             output.save_result()
@@ -508,8 +530,7 @@ async def _generate(
                 comp_template=template,
                 context_window=settings.WRITER_CONTEXT_WINDOW,
             )
-            response = await agent.run(prompt, sub_title=key)
-            validate_writer_section(key, response.response_content)
+            response = await write_validated(agent, key, prompt)
             output.set_res(key, response)
             output.save_result()
         markdown = polish_markdown(output.get_result_to_save(), snapshot / "assets")

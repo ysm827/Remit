@@ -276,6 +276,43 @@ def test_writer_resume_reuses_validated_sections(writing_client, edit_during_gen
     assert "保存过的真实章节" in (root / second["file"]).read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("repair_succeeds", [True, False])
+def test_writer_repairs_rejected_section_once_without_publishing_invalid_prose(writing_client, repair_succeeds):
+    from app.schemas.A2A import WriterResponse
+
+    client, task_root = writing_client
+    client.get("/api/writing/paper-test")
+    root = workspace.paper_root(task_root)
+    state = WorkflowCheckpoint(task_root).load()
+    state["solution_results"] = {"eda": {
+        "writer_prompt": "撰写数据分析章节", "artifacts": [],
+        "quality_report": {"selected_model": "指定方法"},
+    }}
+    inputs = workspace.sync_results(task_root, state)
+    rejected = "已读取数据并核对字段和单位。" * 30
+    repaired = rejected + ("采用指定方法。" if repair_succeeds else "")
+    writer = AsyncMock(side_effect=[WriterResponse(response_content=rejected), WriterResponse(response_content=repaired)])
+    with (
+        patch("app.core.llm.llm_factory.LLMFactory.get_writer_llm", return_value=object()),
+        patch("app.models.user_output.UserOutput._section_order", return_value=["eda"]),
+        patch("app.core.agents.writer_agent.WriterAgent.run", writer),
+        patch("app.core.flows.Flows.get_write_flows", return_value={}),
+        patch("app.utils.paper_polish.polish_markdown", side_effect=lambda text, *_: text),
+        patch("app.utils.paper_polish._convert_markdown_to_latex", side_effect=lambda text, path, *_: path.write_text(text, encoding="utf-8")),
+        patch("app.services.competitions.adapt_generated_source", side_effect=lambda _, text: text),
+        patch.object(writing_router, "compile_source", AsyncMock()),
+    ):
+        asyncio.run(writing_router._generate("paper-test", root, inputs["revision"]))
+    generation = workspace.read_json(root / "workspace.json")["generation"]
+    assert writer.await_count == 2
+    assert "未说明质量报告中的入选模型" in writer.call_args_list[1].args[0]
+    assert generation["status"] == ("completed" if repair_succeeds else "failed")
+    assert bool(list(root.glob("draft-*.tex"))) == repair_succeeds
+    attempt = workspace.read_json(next((root / ".drafts").glob("*/.attempts/eda.json")))
+    assert attempt["attempt"] == 2
+    assert attempt["response"]["response_content"] == repaired
+
+
 def test_generation_resume_is_limited_to_failed_same_input(tmp_path):
     root = workspace.ensure_workspace(tmp_path)
     for status, revision, identifier, reuse in [
