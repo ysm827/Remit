@@ -22,7 +22,7 @@ import zipfile
 REPO = Path(__file__).resolve().parents[1]
 LOCK = json.loads((REPO / "tools/desktop-dependencies.json").read_text())
 WINDOWS = sys.platform == "win32"
-VERSION = "0.2.0-beta.3"
+VERSION = "0.2.0-beta.4"
 
 
 def run(args, *, cwd=REPO, env=None):
@@ -265,7 +265,7 @@ int main(int argc, char **argv) {
         plistlib.dump({"CFBundleIdentifier": "org.remit.workbench", "CFBundleName": "Remit",
                       "CFBundleDisplayName": "Remit", "CFBundleExecutable": "Remit",
                       "CFBundleIconFile": "Remit.icns", "CFBundlePackageType": "APPL",
-                      "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "3",
+                      "CFBundleShortVersionString": "0.2.0", "CFBundleVersion": "4",
                       "LSMinimumSystemVersion": "15.0", "NSHighResolutionCapable": True,
                       "LSUIElement": True}, dest)
     # Ad-hoc signatures allow native execution on Apple silicon, but give no publisher identity.

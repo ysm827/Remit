@@ -6,6 +6,8 @@
 
 论文章节校验发现缺项时，会把具体反馈交回论文手修订一次；再次失败则保存诊断并停止，不发布未通过的章节。论文正文与聊天回复采用不同的表达要求。
 
+修复科学计数法被拆成两个数字导致的误报；恢复时会重新校验已保存的章节草稿，通过后直接复用。
+
 - Windows：下载 `Windows-x64-Setup.exe`，按向导安装。
 - Apple 芯片 Mac：下载 `macOS-arm64.dmg`，将 Remit 拖入 Applications。
 - Intel Mac：下载 `macOS-x64.dmg`，将 Remit 拖入 Applications。
