@@ -15,11 +15,11 @@ Remit 2.0 继续使用 `zhou2030109-glitch/Remit` 仓库。商标、群聊二维
 建议在新目录克隆，保留原程序和数据目录以便回退：
 
 ```sh
-git clone --branch v2.0.0 https://github.com/zhou2030109-glitch/Remit.git Remit-2.0
+git clone --branch v2.0.1 https://github.com/zhou2030109-glitch/Remit.git Remit-2.0
 cd Remit-2.0
 ```
 
-按 README 安装源码依赖，或从 `v2.0.0` Release 下载与电脑架构相符的安装包。没有 `.exe` / `.dmg` 附件时，安装包尚未交付，不要把旧预览安装包当成 2.0。
+按 README 安装源码依赖，或从 `v2.0.1` Release 下载与电脑架构相符的安装包。没有 `.exe` / `.dmg` 附件时，安装包尚未交付，不要把旧预览安装包当成 2.0。
 
 复制配置前对照新版 `.env.example` 检查字段；模型密钥仍保存在本机。先新建小项目验证连接、计算和论文导出，再使用实际赛题。
 

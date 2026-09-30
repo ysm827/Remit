@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
 
   remit:
-    image: ${REMIT_IMAGE:-remit:2.0.0}
+    image: ${REMIT_IMAGE:-remit:2.0.1}
     build:
       context: .
       dockerfile: Dockerfile

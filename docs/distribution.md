@@ -8,7 +8,7 @@
 发布环境使用独立的 `remit-release` 项目名，避免复用开发环境的数据卷。
 
 ```bash
-docker build --build-arg SOURCE_REVISION=$(git rev-parse HEAD) -t remit:2.0.0 .
+docker build --build-arg SOURCE_REVISION=$(git rev-parse HEAD) -t remit:2.0.1 .
 docker compose -f docker-compose.release.yml up -d --no-build
 ```
 
@@ -24,13 +24,13 @@ docker compose -f docker-compose.release.yml up -d --no-build
 
 ```bash
 docker pull redis:7.4-alpine
-docker save remit:2.0.0 redis:7.4-alpine | gzip > remit-2.0.0-linux-amd64.tar.gz
+docker save remit:2.0.1 redis:7.4-alpine | gzip > remit-2.0.1-linux-amd64.tar.gz
 ```
 
 接收方需要支持 Linux 容器的 Docker，先导入归档，再使用随包 Compose 文件：
 
 ```bash
-docker load -i remit-2.0.0-linux-amd64.tar.gz
+docker load -i remit-2.0.1-linux-amd64.tar.gz
 docker compose -f docker-compose.release.yml up -d --no-build --pull never
 ```
 

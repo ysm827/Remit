@@ -238,7 +238,7 @@ else {
     "Python 源码随安装包分发"
 }
 Write-Utf8NoBom -Path (Join-Path $Stage "VERSION.txt") -Lines @(
-    "Remit 打包版本 2.0.0",
+    "Remit 打包版本 2.0.1",
     "构建时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
     "来源提交: $gitHash",
     "内置 $PythonVersion + Redis + 前端静态文件",

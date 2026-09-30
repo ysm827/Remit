@@ -3,6 +3,12 @@
 All notable user-visible changes should be recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for releases.
 
+## [2.0.1] - 2026-09-30
+
+- Fix local Python figure export after font bootstrap; the real-kernel regression exports PNG and PDF and preserves math labels.
+- Rebuild the Windows and macOS installers after the cross-platform runtime check caught this failure.
+- Preserve the original 2.0.0 release and all archived versions.
+
 ## [2.0.0] - 2026-09-30
 
 - Upgrade the original Remit repository to the current Remit-Agent source snapshot

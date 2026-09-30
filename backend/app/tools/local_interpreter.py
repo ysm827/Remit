@@ -134,7 +134,7 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
             "_SUPER = {'¹': '$^1$', '²': '$^2$', '³': '$^3$', '⁴': '$^4$', '⁻': '$^-$', 'µ': r'$\\mu$'}\n"
             "_orig_savefig = _mf.Figure.savefig\n"
             "def _savefig_cjk_safe(self, *args, **kwargs):\n"
-            "    for _t in self.findall(matplotlib.text.Text):\n"
+            "    for _t in self.findobj(match=matplotlib.text.Text):\n"
             "        _s = _t.get_text()\n"
             "        _n = ''.join(_SUPER.get(_c, _c) for _c in _s)\n"
             "        if _n != _s and '$' not in _s:\n"

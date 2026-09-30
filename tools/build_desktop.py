@@ -22,7 +22,7 @@ import zipfile
 REPO = Path(__file__).resolve().parents[1]
 LOCK = json.loads((REPO / "tools/desktop-dependencies.json").read_text())
 WINDOWS = sys.platform == "win32"
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 
 
 def run(args, *, cwd=REPO, env=None):

@@ -9,10 +9,10 @@ A local mathematical modeling workbench with coordinator, modeler, coder and wri
 This release brings the current team conversation, resumable execution, paper workspace,
 evidence-based figure selection and typography defaults into the original Remit repository.
 The logo, community QR code, Star History branch and previous commit history are retained.
-See [release notes](docs/releases/2.0.0.md) and [upgrade/rollback instructions](docs/upgrading-to-v2.md).
+See [release notes](docs/releases/2.0.1.md) and [upgrade/rollback instructions](docs/upgrading-to-v2.md).
 The exact pre-upgrade source is preserved on [legacy/pre-2.0](https://github.com/zhou2030109-glitch/Remit/tree/legacy/pre-2.0).
 
-Native unsigned Windows/macOS installers are uploaded to the [2.0 release](https://github.com/zhou2030109-glitch/Remit/releases/tag/v2.0.0)
+Native unsigned Windows/macOS installers are uploaded to the [2.0 release](https://github.com/zhou2030109-glitch/Remit/releases/tag/v2.0.1)
 only after the package checks pass. Source availability does not imply an installer has finished building.
 
 ## Run with Docker

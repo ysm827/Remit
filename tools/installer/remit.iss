@@ -2,7 +2,7 @@
 ; 用法: ISCC.exe remit.iss /DStageDir=<staging根目录> /DOutDir=<输出目录>
 
 #define MyAppName "Remit 数学建模工作台"
-#define MyAppVersion "2.0.0"
+#define MyAppVersion "2.0.1"
 #define MyAppPublisher "Remit contributors"
 
 [Setup]

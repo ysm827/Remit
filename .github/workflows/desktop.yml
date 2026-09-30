@@ -77,6 +77,6 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --title "Remit $RELEASE_TAG" --notes-file docs/releases/2.0.0.md
+            gh release create "$RELEASE_TAG" --title "Remit $RELEASE_TAG" --notes-file docs/releases/2.0.1.md
           fi
           gh release upload "$RELEASE_TAG" installers/* --clobber

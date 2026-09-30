@@ -33,7 +33,7 @@
 
 ## 2.0 升级
 
-当前主分支为 **Remit 2.0.0**，整合新版团队对话、计算恢复、论文工作区与图文排版规则。
+当前主分支为 **Remit 2.0.1**，整合新版团队对话、计算恢复、论文工作区与图文排版规则。
 团团、灵灵、点点、墨墨分别负责协调、建模、代码和论文；原有 Remit 标志、社区与 Star History 保留。
 
 - 对话集中呈现当前阶段、关键结果与异常，执行明细按需展开。
@@ -42,7 +42,7 @@
 - 论文按证据选图，统一变量与向量字体、居中三线表、图幅与图号，并检查摘要和分页。
 - Windows / macOS 原生安装包构建流程随源码提供，包含运行与论文工具。
 
-[查看 2.0 变更](docs/releases/2.0.0.md) · [升级与回退](docs/upgrading-to-v2.md) ·
+[查看 2.0 变更](docs/releases/2.0.1.md) · [升级与回退](docs/upgrading-to-v2.md) ·
 [浏览升级前源码](https://github.com/zhou2030109-glitch/Remit/tree/legacy/pre-2.0)
 
 ## 当前状态
@@ -54,7 +54,7 @@
 ## 桌面安装
 
 2.0 源码已发布，Windows x64、Mac Apple 芯片与 Intel 安装包由原生构建流程生成。
-[Releases](https://github.com/zhou2030109-glitch/Remit/releases/tag/v2.0.0) 中只有出现对应的安装附件后才可下载；
+[Releases](https://github.com/zhou2030109-glitch/Remit/releases/tag/v2.0.1) 中只有出现对应的安装附件后才可下载；
 构建和安装验证未通过时不会上传该批安装包。旧预览包不等于 2.0。
 安装包内置计算与论文工具，首次打开仍需填写自己的模型服务信息。详细范围见 [桌面分发说明](docs/desktop-distribution.md)。
 
