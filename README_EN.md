@@ -6,9 +6,9 @@ A local mathematical modeling workbench with coordinator, modeler, coder and wri
 
 ## Product preview
 
-[![Remit modeling workbench](./assets/remit-workbench-overview.png)](./assets/remit-workbench-overview.png)
+[![Remit modeling workbench](./assets/remit-2-workbench.png)](./assets/remit-2-workbench.png)
 
-<p align="center"><sub>Preserved workbench preview; the current 2.0 interface may differ. Click to view full size.</sub></p>
+<p align="center"><sub>Remit 2.0 · Read, model, compute and write with your modeling team. Click to view full size.</sub></p>
 
 ## Agent architecture
 

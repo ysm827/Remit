@@ -36,10 +36,10 @@
 ## 产品展示
 
 <p align="center">
-  <a href="./assets/remit-workbench-overview.png"><img src="./assets/remit-workbench-overview.png" alt="Remit 数学建模工作台：项目、团队协作与结果展示" width="100%" /></a>
+  <a href="./assets/remit-2-workbench.png"><img src="./assets/remit-2-workbench.png" alt="Remit 2.0：数模小助手与四位 Agent 成员" width="100%" /></a>
 </p>
 
-<p align="center"><sub>保留的工作台展示图；2.0 的具体界面以当前版本为准。点击可查看大图。</sub></p>
+<p align="center"><sub>Remit 2.0 · 一起读题、建模、计算，把成果写清楚。点击可查看大图。</sub></p>
 
 ## 协作架构
 
