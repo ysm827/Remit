@@ -39,8 +39,8 @@ jobs:
       - run: npm install -g pnpm@10.6.3
       - run: pnpm install --frozen-lockfile
         working-directory: frontend
-      - run: sudo apt-get update && sudo apt-get install -y redis-server
-      - run: uv run --project backend pytest tests -q
+      - run: sudo apt-get update && sudo apt-get install -y redis-server xvfb
+      - run: xvfb-run -a uv run --project backend pytest tests -q
   backend-and-launchers-status:
     name: backend-and-launchers
     needs: backend
