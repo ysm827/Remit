@@ -366,7 +366,8 @@ def _markdown_fragment_to_latex(markdown: str, resource_path: Path) -> str:
             extra_args=[
                 f"--resource-path={resource_path}",
                 "--wrap=none",
-                "--syntax-highlighting=none",
+                # Also supported by Pandoc 3.6 bundled with pypandoc-binary 1.15.
+                "--no-highlight",
             ],
         )
     except Exception as exc:

@@ -18,6 +18,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       SOURCE_REPO: zhou2030109-glitch/Remit-Agent
       PREVIEW_TAG: ${{ matrix.tag }}
+      ARCHIVE_TAG: archive/preview-${{ matrix.tag }}
     steps:
       - uses: actions/checkout@v4
       - name: Preserve source tag and original installation assets
@@ -25,21 +26,20 @@ jobs:
         run: |
           set -euo pipefail
           # A completed archive can be verified after the old repository is removed.
-          if gh release view "$PREVIEW_TAG" --json body --jq .body | grep -q '<!-- remit-preview-archive-complete -->'; then
+          if gh release view "$ARCHIVE_TAG" --json body --jq .body | grep -q '<!-- remit-preview-archive-complete -->'; then
             echo "Already preserved: $PREVIEW_TAG"
             exit 0
           fi
-          git fetch "https://github.com/$SOURCE_REPO.git" "refs/tags/$PREVIEW_TAG:refs/tags/$PREVIEW_TAG"
-          # GITHUB_TOKEN pushes do not trigger a new historical installer build.
-          git push origin "refs/tags/$PREVIEW_TAG"
+          # Archive tags are pushed by the maintainer before this workflow runs.
+          # They preserve exact historical commits without replaying old builds.
           mkdir -p artifacts
           gh release download "$PREVIEW_TAG" --repo "$SOURCE_REPO" --dir artifacts
           (cd artifacts && sha256sum --check *.sha256)
           gh release view "$PREVIEW_TAG" --repo "$SOURCE_REPO" --json body --jq .body > archive-notes.md
           printf '\n\n历史预览版，保留原始安装包及校验报告；不是 Remit 2.0。迁移自原 Remit-Agent 仓库。\n' >> archive-notes.md
-          if ! gh release view "$PREVIEW_TAG" >/dev/null 2>&1; then
-            gh release create "$PREVIEW_TAG" --verify-tag --prerelease --title "Remit $PREVIEW_TAG · 历史预览版" --notes-file archive-notes.md
+          if ! gh release view "$ARCHIVE_TAG" >/dev/null 2>&1; then
+            gh release create "$ARCHIVE_TAG" --verify-tag --prerelease --title "Remit $PREVIEW_TAG · 历史预览版" --notes-file archive-notes.md
           fi
-          gh release upload "$PREVIEW_TAG" artifacts/* --clobber
+          gh release upload "$ARCHIVE_TAG" artifacts/* --clobber
           printf '\n<!-- remit-preview-archive-complete -->\n' >> archive-notes.md
-          gh release edit "$PREVIEW_TAG" --prerelease --notes-file archive-notes.md
+          gh release edit "$ARCHIVE_TAG" --prerelease --notes-file archive-notes.md

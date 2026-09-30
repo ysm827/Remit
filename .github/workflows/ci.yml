@@ -33,3 +33,21 @@ jobs:
       - run: python tools/check_public_tree.py
       - run: uv run pytest tests -q
         working-directory: backend
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm install -g pnpm@10.6.3
+      - run: pnpm install --frozen-lockfile
+        working-directory: frontend
+      - run: sudo apt-get update && sudo apt-get install -y redis-server
+      - run: uv run --project backend pytest tests -q
+  backend-and-launchers-status:
+    name: backend-and-launchers
+    needs: backend
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Preserve the original required check
+        env:
+          BACKEND_RESULT: ${{ needs.backend.result }}
+        run: test "$BACKEND_RESULT" = success
