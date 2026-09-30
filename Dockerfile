@@ -31,7 +31,7 @@ RUN mkdir -p /app/config project/work_dir project/repair_backups logs
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.title="Remit" \
     org.opencontainers.image.version="0.1.0" \
-    org.opencontainers.image.source="https://github.com/zhou2030109-glitch/Remit" \
+    org.opencontainers.image.source="https://github.com/zhou2030109-glitch/Remit-Agent" \
     org.opencontainers.image.revision=$SOURCE_REVISION
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=4 \

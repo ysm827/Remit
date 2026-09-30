@@ -1,89 +1,35 @@
-# Development and release workflow
+# 开发与发布
 
-This document is the maintainer-facing contract for local development, CI, and
-releases. It contains no project credentials or deployment-specific values.
+工具链：Python 3.12、uv 0.12.10、Node.js 24、pnpm 10.6.3。安装步骤见根目录 README，依赖使用锁文件。
 
-## Reproducible toolchain
+## 验证
 
-The repository pins the versions used by CI and release builds:
-
-- Python: `backend/.python-version` (3.12)
-- uv: 0.12.10
-- Node.js: `frontend/.node-version` (24)
-- pnpm: 10.6.3, declared by `frontend/package.json#packageManager`
-
-`uv sync --frozen` and `pnpm install --frozen-lockfile` must be used for
-local setup and CI. Do not rely on an untracked global interpreter or package
-manager version.
-
-## Local verification
-
-Run the same checks as CI from a clean checkout:
-
-```bash
+```sh
 cd backend
-uv sync --frozen
-uv run ruff check app tests
-uv run ruff format --check app tests
+uv sync --locked
 uv run pytest tests -q
 uv pip check
-
 cd ../frontend
 pnpm install --frozen-lockfile
-pnpm run check
-pnpm run typecheck
-pnpm run test
-pnpm run build
-
-cd ..
-backend/.venv/bin/python -m pytest tests -q
+pnpm test
+pnpm build
 ```
 
-On Windows, replace the final interpreter path with
-`backend\.venv\Scripts\python.exe`.
+根目录启动器测试：Windows 使用 `backend/.venv/Scripts/python.exe -m pytest tests -q`；macOS/Linux 使用 `backend/.venv/bin/python -m pytest tests -q`。部分测试有平台限制。
 
-## Windows desktop shell
+## macOS/Linux 源码运行
 
-`tools/desktop_app.py` runs the same three services behind a WebView2 window with
-a tray icon. On Windows, start it through the hidden launcher and create the
-desktop shortcut that uses it with:
+先安装 Redis（macOS 可用 Homebrew，Linux 可用系统包管理器），按 README 安装后端和前端依赖并复制示例环境文件。在根目录执行：
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools\create_desktop_shortcut.ps1
+```sh
+bash tools/start_services.sh --check
+bash tools/start_services.sh
 ```
 
-Do not point a shortcut straight at `backend\.venv\Scripts\pythonw.exe`. uv builds
-that venv trampoline as a console-subsystem executable, so launching it allocates
-a console; when Windows Terminal is the default terminal application, Windows
-hands that console to Windows Terminal, which ignores the hidden flag and leaves
-an empty terminal window on the desktop. `tools\start_desktop.vbs` runs under
-`wscript.exe` (a GUI-subsystem host) and starts the shell with a hidden window
-style, which keeps that console invisible.
+打开 http://localhost:15173 。停止服务执行 `bash tools/stop_services.sh`。本机 PDF 编译另需 XeLaTeX 和中文字体。
 
-## Continuous integration
+## CI 与发布
 
-The CI workflow runs:
+当前 CI 在 Linux 执行后端测试、前端测试与生产构建。Windows 启动检查和本机验证范围见 release-validation.md。未配置自动镜像发布或安装包上传；需要分发时按 distribution.md 构建。
 
-- backend lint, formatting, dependency consistency, and tests on Windows,
-  macOS, and Linux;
-- repository launcher and configuration contract tests;
-- Python and frontend production dependency audits plus a high-confidence
-  Bandit scan;
-- frontend formatting, lint, tests, and production build on Linux;
-- a single `CI status` check so branch protection does not need to track every
-  matrix entry or individual job.
-
-The production Docker image is built on every pull request and main push. The
-release workflow publishes the image only for version tags or an explicitly
-approved manual run.
-
-## Release workflow
-
-The release workflow is triggered by a `v*` tag or manually. It validates that
-the tag, `backend/pyproject.toml`, and `frontend/package.json` versions agree,
-builds the production image, and publishes it to GitHub Container Registry. A
-manual run can build without publishing.
-
-The release image is defined by the root `Dockerfile` and is consumed by
-`docker-compose.release.yml`. Keep the image tag and both package versions in
-sync before creating a release tag.
+不要提交 `.env.dev`、`.env.user`、运行目录、私人论文库、日志或真实赛题数据。保留第三方许可与来源锁文件。

@@ -23,6 +23,7 @@ from app.utils.common_utils import (
     ensure_safe_task_id,
 )
 from app.core.llm.llm_factory import LLMFactory
+from app.core.llm.errors import TransientLLMError
 from app.core.problem_vision import (
     VisionResult,
     build_vision_supplement,
@@ -89,6 +90,8 @@ def _is_transient_task_failure(error: BaseException) -> bool:
         return True
     current: BaseException | None = error
     while current is not None:
+        if isinstance(current, TransientLLMError):
+            return True
         if getattr(current, "status_code", None) in _TRANSIENT_STATUS_CODES:
             return True
         if type(current).__name__ in {
@@ -171,16 +174,43 @@ async def _run_problem_vision(content: bytes) -> tuple[VisionResult, str]:
     return result, build_vision_supplement(result)
 
 
+@router.post("/parse-problem-document", response_model=ProblemPdfParseResponse)
 @router.post("/parse-problem-pdf", response_model=ProblemPdfParseResponse)
 async def parse_problem_pdf(file: UploadFile = File(...)) -> ProblemPdfParseResponse:
     """解析赛题 PDF：提取结构化文本，并用多模态模型补全图像信息。"""
     filename = (file.filename or "").strip()
-    if not filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="请上传 PDF 格式的赛题文件")
+    if Path(filename).suffix.lower() not in {".pdf", ".docx", ".doc"}:
+        raise HTTPException(
+            status_code=400, detail="请上传 PDF、DOCX 或 DOC 格式的赛题文件"
+        )
 
     content = await file.read(MAX_PROBLEM_PDF_BYTES + 1)
     if len(content) > MAX_PROBLEM_PDF_BYTES:
-        raise HTTPException(status_code=413, detail="PDF 不能超过 25MB")
+        raise HTTPException(status_code=413, detail="赛题文件不能超过 25MB")
+
+    if Path(filename).suffix.lower() in {".docx", ".doc"}:
+        from app.utils.document_parser import parse_word_bytes
+
+        try:
+            parsed = await asyncio.to_thread(
+                parse_word_bytes, content, Path(filename).suffix.lower()
+            )
+        except PdfParseError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return ProblemPdfParseResponse(
+            filename=filename,
+            text=parsed.text,
+            page_count=0,
+            char_count=parsed.char_count,
+            figure_count=0,
+            vision_status="skipped",
+            vision_error=(
+                "Word 中的插图尚未识别，请核对原文；可另存为 PDF 进行识图。"
+                if "[导入提示：Word 包含插图" in parsed.text
+                else ""
+            ),
+            figures=[],
+        )
 
     # 扫描版 PDF 提不出文字，但识图能整页转录，因此先放行再判断
     try:
@@ -247,7 +277,7 @@ async def get_api_config_status():
         "model_scout": _agent_config_status("MODEL_SCOUT"),
         "model_critic": _agent_config_status("MODEL_CRITIC"),
     }
-    required_keys = ["coordinator", "modeler", "coder", "writer"]
+    required_keys = ["coordinator", "modeler", "coder"]
     if settings.MODEL_COUNCIL_ENABLED:
         required_keys.extend(["model_scout", "model_critic"])
     return ApiConfigStatusResponse(
@@ -497,11 +527,18 @@ async def run_modeling_task_async(
         _auto_resume_counts.pop(task_id, None)
         approval = pause.approval
         quality_status = str(dict(approval.get("quality_report", {})).get("status", ""))
-        approval_content = (
-            f"“{approval['node_label']}”已生成，但证据核验尚未完整，等待你的审核"
-            if quality_status in {"warning", "failed"}
-            else f"“{approval['node_label']}”已生成可核对产物，等待你的审核"
-        )
+        if approval.get("allow_incomplete"):
+            approval_content = (
+                f"“{approval['node_label']}”尚未完成，已暂停，等待你决定如何修复"
+            )
+        elif quality_status in {"warning", "failed", "manual_review"}:
+            approval_content = (
+                f"“{approval['node_label']}”的结果仍需核验，等待你的审核"
+            )
+        else:
+            approval_content = (
+                f"“{approval['node_label']}”已生成可核对产物，等待你的审核"
+            )
         await redis_manager.publish_message(
             task_id,
             ApprovalMessage(
@@ -566,7 +603,7 @@ async def run_modeling_task_async(
                         f"（第 {attempt}/{_AUTO_RESUME_LIMIT} 次）"
                         if will_retry
                         else (
-                            "；该错误不是网络瞬断，已停止自动重放，请调整方案后续跑"
+                            "；已停止自动重试，请查看错误原因后续跑"
                             if not transient
                             else "；自动续跑次数已用完，请人工在页面上续跑或退回"
                         )

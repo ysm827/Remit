@@ -11,6 +11,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, HTTPException
 
 from app.config.setting import settings
+from app.utils.file_types import input_filenames, is_data_file
 from app.utils.common_utils import ensure_safe_task_id, get_current_files, get_work_dir
 
 router = APIRouter()
@@ -69,11 +70,17 @@ async def get_download_all_url(task_id: str) -> dict:
 async def get_files(task_id: str) -> list[dict]:
     root = _resolve_task_directory(task_id)
     return [
-        {"filename": name, "file_type": name.split(".")[-1]}
+        {
+            "filename": name,
+            "file_type": name.split(".")[-1],
+            "is_dataset": is_data_file(name) or name in input_filenames(root),
+            "download_url": f"{settings.SERVER_HOST}/static/{root.name}/{quote(name, safe='/')}",
+        }
         for name in get_current_files(str(root), "all")
         if (root / name).is_file()
         and (root / name).resolve().is_relative_to(root)
         and name not in _LEGACY_FINAL_OUTPUTS
+        and not any(part.startswith(".") for part in Path(name).parts)
     ]
 
 

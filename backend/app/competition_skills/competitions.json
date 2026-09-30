@@ -1,0 +1,743 @@
+[
+  {
+    "id": "cumcm",
+    "name": "国赛 · CUMCM",
+    "language": "zh",
+    "year": 2026,
+    "template": "CHINA",
+    "skill_files": [
+      "vendor/math-modeling-skill/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "逐问建立目标、假设、模型、代码、证据链；以基线、灵敏度和结果可复现性验证。",
+    "sources": [
+      {
+        "url": "https://www.mcm.edu.cn/html_cn/node/4cd596519c9eb9fbd866398f6df0caa3.html",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "format_verified",
+    "rules": {
+      "language": "zh",
+      "page_limit": 30,
+      "page_scope": "body",
+      "abstract_pages": 1,
+      "anonymous": true,
+      "toc": false,
+      "max_pdf_mb": 20,
+      "margin_cm": 2.5,
+      "header": "none",
+      "footer": "center"
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "gmcm",
+    "name": "华为杯 · 研究生数模",
+    "language": "zh",
+    "year": 2026,
+    "template": "CHINA",
+    "skill_files": [
+      "vendor/math-modeling-skill/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "重点解释专业背景、机理推导、数据处理依据和创新增益；每问明确可计算输出，区分数值验证与推导。",
+    "sources": [
+      {
+        "url": "https://cpipc.acge.org.cn/sysFile/downFile.do?fileId=97a93e3a9e074738aea95eea986508f2",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "format_verified",
+    "rules": {
+      "language": "zh",
+      "page_limit": null,
+      "abstract_pages": 2,
+      "anonymous": true,
+      "toc": null,
+      "max_pdf_mb": null,
+      "header": "none",
+      "footer": "center",
+      "font_body": "宋体小四",
+      "line_spacing": "single"
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "mcm-icm",
+    "name": "美赛 · MCM / ICM",
+    "language": "en",
+    "year": 2026,
+    "template": "AMERICAN",
+    "skill_files": [
+      "vendor/math-modeling-skill/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "根据实际题目识别 A–F 题型；先核对信件、备忘录等额外交付，英文摘要给出定量发现、推荐与局限。",
+    "sources": [
+      {
+        "url": "https://contest.comap.com/undergraduate/contests/mcm/contests/2026/problems/2026_ICM_Problem_D.pdf",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "partial_verified",
+    "rules": {
+      "language": "en",
+      "page_limit": 25,
+      "page_scope": "all_except_ai_report",
+      "anonymous": true,
+      "toc": true,
+      "max_pdf_mb": null,
+      "font_pt": 12,
+      "header": "team_and_page"
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "huashu",
+    "name": "华数杯 · 大学生赛",
+    "language": "zh",
+    "year": 2026,
+    "template": "CHINA",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "按赛题逐问建模并验证；独立核对华数杯模板，不直接套用国赛承诺书与页数规则。",
+    "sources": [
+      {
+        "url": "https://m.saikr.com/vse/chinamcm26",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "zh",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "huashu-international",
+    "name": "华数杯 · 国际赛",
+    "language": "en",
+    "year": 2026,
+    "template": "AMERICAN",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "先核对本届语言、摘要页和附加任务；用证据解释推荐方案，区分国内华数杯与国际赛。",
+    "sources": [
+      {
+        "url": "https://m.saikr.com/mcmicm2026",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "en",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "mathorcup",
+    "name": "MathorCup · 数学应用",
+    "language": "zh",
+    "year": 2026,
+    "template": "CHINA",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "先明确实际业务目标、约束与可执行决策；比较基线、成本收益及对关键参数的敏感性。",
+    "sources": [
+      {
+        "url": "https://mathorcup.org/",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "zh",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "mathorcup-data",
+    "name": "MathorCup · 大数据",
+    "language": "zh",
+    "year": 2026,
+    "template": "CHINA",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "优先检查标签、训练验证划分、泄漏、评价指标、结果文件格式；可复现地记录特征和调参。",
+    "sources": [
+      {
+        "url": "https://www.cmathc.org.cn/mcm/",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "zh",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "51mcm",
+    "name": "五一数学建模",
+    "language": "zh",
+    "year": 2026,
+    "template": "CHINA",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "先跑通可解释基线，面向实际场景验证方案；保留源程序，按当届要求生成队号命名 PDF。",
+    "sources": [
+      {
+        "url": "https://51mcm.cumt.edu.cn/_upload/article/files/1e/a8/ed8d5e654819a39546373d70ca0b/efe60eb1-e79b-4e08-aa57-f123f54af0bf.pdf",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "zh",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论",
+      "论文按团队编号命名为 PDF；复核当届系统提交与备查要求"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "csee",
+    "name": "电工杯",
+    "language": "zh",
+    "year": 2026,
+    "template": "CHINA",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "重点检查量纲、物理约束、电气参数范围、能量与功率平衡；设置正常和极端工况验证。",
+    "sources": [
+      {
+        "url": "https://shumo.neepu.edu.cn/info/1004/2051.htm",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "zh",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "apmcm",
+    "name": "亚太赛 · APMCM",
+    "language": "en",
+    "year": 2026,
+    "template": "AMERICAN",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "明确所选中文或英文赛项；结合实际数据进行模型对比、误差解释和稳健性验证，语言以本届赛项要求为准。",
+    "sources": [
+      {
+        "url": "https://apmcm.org/",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "en",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "shenzhen",
+    "name": "深圳杯",
+    "language": "zh",
+    "year": 2026,
+    "template": "CHINA",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "支持历年题研究；围绕实际需求建立可落地模型，强调外部验证、可复现数据与适用边界。2026 暂停举办，不能把历史规则当本届通知。",
+    "sources": [
+      {
+        "url": "https://www.cmathc.org.cn/mcm/tz/488.html",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "zh",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft",
+    "event_note": "2026 年暂停举办；此预设用于历年题研究"
+  },
+  {
+    "id": "shuwei-spring",
+    "name": "数维杯 · 春季赛",
+    "language": "zh",
+    "year": 2026,
+    "template": "CHINA",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "先核对届次、组别和题型；采用基线加改进模型，报告误差、灵敏度与应用局限。",
+    "sources": [
+      {
+        "url": "https://www.nmmcm.org.cn/Contest/",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "zh",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "shuwei-autumn",
+    "name": "数维杯 · 秋季赛",
+    "language": "en",
+    "year": 2026,
+    "template": "AMERICAN",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "按英文论文组织完整问题求解；独立核对秋季赛规则，不混用春季赛版式和语言要求。",
+    "sources": [
+      {
+        "url": "https://www.nmmcm.org.cn/Competition/",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "en",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "zhongqing",
+    "name": "中青杯",
+    "language": "zh",
+    "year": 2026,
+    "template": "CHINA",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "逐问定义交付与评价指标；检查模型计算、图表和论文章节对应关系。",
+    "sources": [
+      {
+        "url": "https://zqb.52jingsai.com/ueditor/php/upload/file/20260202/1770010387613805.pdf",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "zh",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "renzheng",
+    "name": "认证杯 · 网络挑战赛",
+    "language": "zh",
+    "year": 2026,
+    "template": "CHINA",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "区分建模基础与模型改进应用阶段；第二阶段保留前一阶段模型版本、反馈和改进证据。",
+    "sources": [
+      {
+        "url": "https://www.tzmcm.cn/tz.html",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "zh",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "huazhong",
+    "name": "华中杯",
+    "language": "zh",
+    "year": 2026,
+    "template": "CHINA",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "结合工程、经济或社会场景建模，先建立可验证基线，再比较改进方案；核对当届规则与模板。",
+    "sources": [
+      {
+        "url": "https://www.cmathc.org.cn/mcm_8/",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "zh",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "teddy",
+    "name": "泰迪杯 · 数据挖掘",
+    "language": "zh",
+    "year": 2026,
+    "template": "CHINA",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "检查数据字典、缺失与异常、划分泄漏、指标计算、推理流程和结果表格式；解释模型误差。",
+    "sources": [
+      {
+        "url": "https://www.tipdm.org/dssj14/2527.jhtml",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "zh",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "himcm",
+    "name": "HiMCM / MidMCM",
+    "language": "en",
+    "year": 2026,
+    "template": "AMERICAN",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "区分高中和初中赛组，数学深度应适合读者；清晰解释假设、单位与计算，不能套用 MCM 页数规则。",
+    "sources": [
+      {
+        "url": "https://comap.org/contests/himcm-midmcm",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "en",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "immc",
+    "name": "IMMC / IM²C",
+    "language": "en",
+    "year": 2026,
+    "template": "AMERICAN",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "按赛区和组别规则确定语言与交付；解释假设和数学推理，强调模型如何回答真实问题。",
+    "sources": [
+      {
+        "url": "https://immchallenge.org/",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "en",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "m3",
+    "name": "M3 Challenge",
+    "language": "en",
+    "year": 2026,
+    "template": "AMERICAN",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "在限定时间内优先完成有用基线，只做能够改变决策的实验，为验证与短文写作留出时间。",
+    "sources": [
+      {
+        "url": "https://m3challenge.siam.org/",
+        "label": "赛事资料入口",
+        "checked_at": "2026-09-27"
+      }
+    ],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "en",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  },
+  {
+    "id": "custom",
+    "name": "其他赛事 / 自定义",
+    "language": "zh",
+    "year": 2026,
+    "template": "CHINA",
+    "skill_files": [
+      "vendor/mathodology/.claude/skills/mathodology-agent-pipeline/SKILL.md",
+      "vendor/mathodology/.claude/skills/mathodology-award-gates/SKILL.md"
+    ],
+    "focus": "从上传的当届规则中明确题型、语言、模板与交付；未知要求保持待核对，不套用其他赛事限制。",
+    "sources": [],
+    "rules_status": "needs_verification",
+    "rules": {
+      "language": "zh",
+      "page_limit": null,
+      "page_scope": null,
+      "anonymous": null,
+      "toc": null,
+      "max_pdf_mb": null
+    },
+    "review_items": [
+      "核对本届、组别及赛区的论文模板与完整提交要求",
+      "核对语言、匿名信息、页数与文件大小",
+      "核对题目额外要求的信件、表格、程序或附件",
+      "根据实际使用记录填写 AI 工具说明；人工复核关键结论"
+    ],
+    "template_status": "working_draft"
+  }
+]

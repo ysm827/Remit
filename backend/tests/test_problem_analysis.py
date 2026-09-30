@@ -589,6 +589,39 @@ class ProblemAnalysisTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(raised.exception.approval["node_id"], "analysis")
             coordinator.refine_analysis.assert_not_awaited()
 
+    async def test_critical_review_resume_reuses_completed_analysis(self) -> None:
+        refined = CoordinatorToModeler(
+            original_problem="问题1：优化运输。",
+            questions={"ques1": "优化运输"},
+            ques_count=1,
+            analysis_summary="已经完成的分析",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = WorkflowCheckpoint(tmp)
+            state = checkpoint.initialize(Problem(task_id="analysis-resume"))
+            state["workflow_features"].append("critical_review")
+            state["analysis_response"] = refined.model_dump(mode="json")
+            state["completed_nodes"] = [
+                "coordinator",
+                "research",
+                "analysis",
+                "modeler",
+            ]
+            state["approved_nodes"] = ["modeler"]
+            checkpoint.save(state)
+            workflow = RemitWorkFlow()
+            workflow.task_id = "analysis-resume"
+            workflow.work_dir = tmp
+            workflow.checkpoint = checkpoint
+            coordinator = MagicMock()
+            coordinator.refine_analysis = AsyncMock(
+                side_effect=AssertionError("不可重复付费分析")
+            )
+            result = await workflow._analysis_node(state, refined, coordinator)
+            self.assertEqual(result.analysis_summary, "已经完成的分析")
+            coordinator.refine_analysis.assert_not_awaited()
+            self.assertIsNone(state.get("pending_approval"))
+
     async def test_initial_understanding_continues_to_research_without_approval(
         self,
     ) -> None:

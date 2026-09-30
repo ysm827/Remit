@@ -1,5 +1,6 @@
 """文件 API 与批量上传的目录、名称、资源限制回归。"""
 
+import json
 import asyncio
 import re
 from io import BytesIO
@@ -130,6 +131,78 @@ def test_upload_never_overwrites_existing_file(tmp_path):
     assert (tmp_path / "data.csv").read_bytes() == b"original"
 
 
+def test_folder_upload_preserves_paths_and_same_basenames(tmp_path):
+    paths = ["数据/train/data.csv", "数据/test/data.csv", "数据/empty.bin"]
+    result = asyncio.run(
+        persist_uploads(
+            [
+                upload("data.csv", b"x\n1"),
+                upload("data.csv", b"x\n2"),
+                upload("empty.bin", b""),
+            ],
+            tmp_path,
+            paths,
+        )
+    )
+    assert result == paths
+    assert (tmp_path / paths[0]).read_bytes() != (tmp_path / paths[1]).read_bytes()
+    assert (tmp_path / paths[2]).is_file()
+    assert (
+        json.loads((tmp_path / ".remit-inputs.json").read_text(encoding="utf-8"))
+        == paths
+    )
+    from app.core.data_scout import build_data_profile
+    from app.utils.common_utils import get_current_files
+
+    assert set(paths) <= set(get_current_files(str(tmp_path), "data"))
+    assert set(paths) == set(build_data_profile(tmp_path)["discovered_files"])
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "../escape.csv",
+        "/absolute.csv",
+        "a/../escape.csv",
+        "a//b.csv",
+        "a/./b.csv",
+        "a/CON.csv",
+        "a/.env",
+        "paper/main.tex",
+        "a\\b.csv",
+        "C:/a.csv",
+    ],
+)
+def test_folder_upload_rejects_unsafe_paths_before_writing(tmp_path, path):
+    with pytest.raises(ValueError):
+        asyncio.run(
+            persist_uploads(
+                [upload("safe.csv"), upload("bad.csv")], tmp_path, ["a/good.csv", path]
+            )
+        )
+    assert not list(tmp_path.iterdir())
+
+
+def test_folder_collision_and_size_failure_leave_originals(tmp_path, monkeypatch):
+    asyncio.run(
+        persist_uploads([upload("data.csv", b"original")], tmp_path, ["a/data.csv"])
+    )
+    with pytest.raises(ValueError):
+        asyncio.run(persist_uploads([upload("data.csv")], tmp_path, ["A/DATA.csv"]))
+    monkeypatch.setattr(settings, "UPLOAD_MAX_FILE_BYTES", 3)
+    with pytest.raises(UploadLimitError):
+        asyncio.run(
+            persist_uploads([upload("data.csv", b"long")], tmp_path, ["b/data.csv"])
+        )
+    assert (tmp_path / "a/data.csv").read_bytes() == b"original"
+    assert not (tmp_path / "b").exists()
+
+
+def test_folder_paths_require_matching_file_count(tmp_path):
+    with pytest.raises(ValueError):
+        asyncio.run(persist_uploads([upload("data.csv")], tmp_path, []))
+
+
 @pytest.mark.parametrize(
     "single,total,bodies", [(4, 20, [b"ok", b"large"]), (10, 6, [b"1234", b"5678"])]
 )
@@ -162,4 +235,9 @@ def test_upload_reads_in_bounded_chunks_and_skips_empty_file(tmp_path):
     )
     assert result == ["data.csv"]
     assert (tmp_path / "data.csv").read_bytes() == body
-    assert [path.name for path in tmp_path.iterdir()] == ["data.csv"]
+    assert [
+        path.name for path in tmp_path.iterdir() if not path.name.startswith(".")
+    ] == ["data.csv"]
+    assert json.loads(
+        (tmp_path / ".remit-inputs.json").read_text(encoding="utf-8")
+    ) == ["data.csv"]

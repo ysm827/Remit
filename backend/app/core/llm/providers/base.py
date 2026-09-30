@@ -26,6 +26,7 @@ class ProviderRequest:
     top_p: float | None
     on_delta: DeltaCallback | None
     reasoning_effort: str | None
+    parallel_tool_calls: bool | None = None
 
 
 class BaseProvider(ABC):
@@ -43,6 +44,7 @@ class BaseProvider(ABC):
         top_p: float | None = None,
         on_delta: DeltaCallback | None = None,
         reasoning_effort: str | None = None,
+        parallel_tool_calls: bool | None = None,
     ) -> StandardResponse:
         """Freeze the public call contract and dispatch a request object."""
         request = ProviderRequest(
@@ -56,6 +58,7 @@ class BaseProvider(ABC):
             top_p=top_p,
             on_delta=on_delta,
             reasoning_effort=reasoning_effort,
+            parallel_tool_calls=parallel_tool_calls,
         )
         return await self.send(request)
 

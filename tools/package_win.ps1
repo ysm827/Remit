@@ -7,7 +7,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$RepoRoot = "",
     [string]$BuildRoot = (Join-Path ([Environment]::GetFolderPath("LocalApplicationData")) "Remit\build"),
     [string]$BasePython = "",
     [switch]$SkipFrontendBuild,
@@ -17,6 +17,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
+    $RepoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+}
 $RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
 $BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
 $VenvDir = Join-Path $RepoRoot "backend\.venv"
@@ -200,19 +203,27 @@ New-Item -ItemType Directory -Force -Path $redisDst | Out-Null
 foreach ($redisFile in @("redis-server.exe", "redis-cli.exe", "msys-2.0.dll", "msys-crypto-3.dll", "msys-gcc_s-seh-1.dll", "msys-ssl-3.dll", "msys-stdc++-6.dll")) {
     Copy-Item -LiteralPath (Join-Path $RepoRoot "tools\redis\$redisFile") -Destination $redisDst -Force
 }
-Copy-Item -LiteralPath (Join-Path $RepoRoot "tools\remit_prod_app.py") -Destination (Join-Path $Stage "tools\remit_prod_app.py") -Force
-& (Join-Path $BasePython "python.exe") -m compileall -q -b (Join-Path $Stage "tools\remit_prod_app.py")
-if ($LASTEXITCODE -ne 0) { throw "启动器字节码编译失败" }
-if ($BytecodeOnly) {
-    Remove-Item -LiteralPath (Join-Path $Stage "tools\remit_prod_app.py") -Force
-}
-if (-not (Test-Path -LiteralPath (Join-Path $Stage "tools\remit_prod_app.pyc"))) {
-    throw "启动器字节码未生成"
+foreach ($entryPoint in @("remit_prod_app", "verify_portable_runtime")) {
+    $entrySource = Join-Path $Stage "tools\$entryPoint.py"
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "tools\$entryPoint.py") -Destination $entrySource -Force
+    & (Join-Path $BasePython "python.exe") -m compileall -q -b $entrySource
+    if ($LASTEXITCODE -ne 0) { throw "$entryPoint 字节码编译失败" }
+    if ($BytecodeOnly) {
+        Remove-Item -LiteralPath $entrySource -Force
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $Stage "tools\$entryPoint.pyc"))) {
+        throw "$entryPoint 字节码未生成"
+    }
 }
 Copy-Item -LiteralPath (Join-Path $RepoRoot "tools\启动Remit.bat") -Destination (Join-Path $Stage "启动Remit.bat") -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot "tools\停止Remit.bat") -Destination (Join-Path $Stage "停止Remit.bat") -Force
 foreach ($noticeFile in @("LICENSE", "NOTICE.md", "THIRD_PARTY_NOTICES.md")) {
     Copy-Item -LiteralPath (Join-Path $RepoRoot $noticeFile) -Destination (Join-Path $Stage $noticeFile) -Force
+}
+$packageDocs = Join-Path $Stage "docs"
+New-Item -ItemType Directory -Force -Path $packageDocs | Out-Null
+foreach ($doc in @("distribution.md", "paper-library.md")) {
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "docs\$doc") -Destination $packageDocs -Force
 }
 Invoke-Robocopy (Join-Path $RepoRoot "tools\redis\LICENCES") (Join-Path $Stage "tools\redis\LICENCES")
 New-Item -ItemType Directory -Force -Path (Join-Path $Stage "logs") | Out-Null
@@ -227,7 +238,7 @@ else {
     "Python 源码随安装包分发"
 }
 Write-Utf8NoBom -Path (Join-Path $Stage "VERSION.txt") -Lines @(
-    "Remit 打包版本 0.1.0",
+    "Remit 打包版本 2.0.0",
     "构建时间: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')",
     "来源提交: $gitHash",
     "内置 $PythonVersion + Redis + 前端静态文件",
@@ -275,6 +286,10 @@ Write-Utf8NoBom -Path (Join-Path $Stage "使用说明.txt") -Lines @(
     "  当前源码已完成针对 MathModelAgent 的独立实现整改。",
     "  早期版本来源、扫描边界和许可提示请阅读安装目录中的 NOTICE.md。",
     "  当前 Remit 自有源码使用 MIT License；第三方文件保留各自许可。",
+    "",
+    "七、计算环境自检（不调用模型）",
+    "  在安装目录运行：runtime\python\python.exe tools\verify_portable_runtime.pyc --install-root . --report logs\runtime-check.json",
+    "  检查包内 Python、Jupyter、计算库及 CSV/PNG 导出；不代表外部模型、MATLAB 或 LaTeX 已验证。",
     ""
 )
 

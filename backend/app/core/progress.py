@@ -27,6 +27,7 @@ _PLAIN_STAGES = {
     "write:modelAssumption": ("写论文：模型假设", "列出建模用到的简化假设"),
     "write:symbol": ("写论文：符号说明", "整理论文里用到的数学符号"),
     "write:judge": ("写论文：模型评价", "总结模型的优缺点和改进方向"),
+    "sync_writing": ("同步论文素材", "将已验证的模型、代码结果和图表同步到论文写作区"),
     "finalize": ("最终检查", "合并全文，做最后的质量把关"),
 }
 
@@ -88,6 +89,7 @@ def build_progress_message(
         features = set(state.get("workflow_features") or [])
         fixed_count = (
             _FIXED_NODE_COUNT
+            - (6 if "separate_writing" in features else 0)
             - ("research" not in features)
             - ("analysis" not in features)
             - ("pilot" not in features)

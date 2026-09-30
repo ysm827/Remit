@@ -89,9 +89,13 @@ export function parseProblemPdf(file: File) {
 	formData.append("file", file);
 
 	// 识图会额外调用多模态模型，比纯文本解析慢得多，超时必须放宽
-	return request.post<ProblemPdfParseResult>("/parse-problem-pdf", formData, {
-		timeout: 300000,
-	});
+	return request.post<ProblemPdfParseResult>(
+		"/parse-problem-document",
+		formData,
+		{
+			timeout: 300000,
+		},
+	);
 }
 
 /**

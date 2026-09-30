@@ -155,6 +155,54 @@ class ManualReviewContextTests(unittest.TestCase):
 class ModelRevisionAgentTests(unittest.IsolatedAsyncioTestCase):
     """验证建模手不会再次选择已经失败的模型。"""
 
+    async def test_truncated_review_is_not_accepted_even_with_valid_json(self):
+        from app.core.llm.types import StandardResponse
+
+        agent = ModelerAgent("task", MagicMock())
+        payload = _accepted_review().model_dump_json()
+        agent._chat = AsyncMock(
+            side_effect=[
+                StandardResponse(content=payload, finish_reason="length"),
+                StandardResponse(content=payload, finish_reason="stop"),
+            ]
+        )
+        result = await agent.review_execution_result(
+            question_key="ques1",
+            question_text="核验实际结果",
+            current_plan="方案",
+            evidence={},
+            rejected_models=[],
+            remaining_runs=0,
+        )
+        self.assertEqual(result.verdict, "accept")
+        self.assertEqual(
+            [c.kwargs["max_tokens"] for c in agent._chat.await_args_list], [8192, 16384]
+        )
+
+    async def test_truncated_reviews_exhaust_existing_budget_without_recomputation(
+        self,
+    ):
+        from app.core.llm.types import StandardResponse
+
+        agent = ModelerAgent("task", MagicMock())
+        agent._chat = AsyncMock(
+            return_value=StandardResponse(content="{", finish_reason="length")
+        )
+        result = await agent.review_execution_result(
+            question_key="ques1",
+            question_text="核验实际结果",
+            current_plan="方案",
+            evidence={},
+            rejected_models=[],
+            remaining_runs=2,
+        )
+        self.assertEqual(result.verdict, "manual_review")
+        self.assertIsNone(result.revision_plan)
+        self.assertEqual(
+            [c.kwargs["max_tokens"] for c in agent._chat.await_args_list],
+            [8192, 16384, 32768],
+        )
+
     async def test_modeler_rejects_failed_model_then_selects_new_candidate(
         self,
     ) -> None:
@@ -440,7 +488,8 @@ class WorkflowModelRevisionTests(unittest.IsolatedAsyncioTestCase):
 
             coder_agent.run.assert_not_awaited()
             modeler_agent.review_execution_result.assert_not_awaited()
-            writer_agent.run.assert_awaited_once()
+            writer_agent.run.assert_not_awaited()
+            self.assertIn("writer_prompt", state["solution_results"]["ques1"])
             self.assertEqual(
                 state["solution_results"]["ques1"]["modeler_review"]["verdict"],
                 "accept",

@@ -5,6 +5,14 @@ class NonRetryableLLMError(RuntimeError):
     """重复发送相同请求不会改善的上游错误。"""
 
 
+class TransientLLMError(RuntimeError):
+    """供应商响应或传输异常，可在有限次数内重新请求。"""
+
+
+class ResponseStreamInterruptedError(TransientLLMError):
+    """响应流结束但没有终态；部分文本不能作为完整结果执行。"""
+
+
 class ProviderRefusalError(NonRetryableLLMError):
     """模型因安全策略拒绝处理当前请求。"""
 

@@ -37,6 +37,10 @@ class AnthropicProvider(BaseProvider):
             payload["tools"] = [self._convert_tool(t) for t in request.tools]
             if request.tool_choice:
                 payload["tool_choice"] = self._convert_tool_choice(request.tool_choice)
+            if request.parallel_tool_calls is not None:
+                choice = payload.setdefault("tool_choice", {"type": "auto"})
+                if choice.get("type") != "none":
+                    choice["disable_parallel_tool_use"] = not request.parallel_tool_calls
 
         response = await client.messages.create(**payload)
 

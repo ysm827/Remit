@@ -323,3 +323,4 @@ class WriterResponse(BaseModel):
 
     response_content: Any
     footnotes: list[tuple[str, str]] = Field(default_factory=list)
+    omitted_images: dict[str, str] = Field(default_factory=dict, description="未采用的候选图片文件名及具体理由；正文须保留相关关键结论与负结果")

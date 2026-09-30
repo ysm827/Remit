@@ -5,7 +5,7 @@ import re
 from typing import Any
 
 from app.utils.log_util import logger
-from app.utils.file_types import DATA_FILE_SUFFIXES
+from app.utils.file_types import DATA_FILE_SUFFIXES, input_filenames
 
 _DATA_SUFFIXES = DATA_FILE_SUFFIXES | {".tsv"}
 _MAX_FILES = 24
@@ -279,6 +279,7 @@ def _profile_bookshelf_placement(path: Path) -> dict[str, Any]:
 def _profile_one_file(path: Path) -> dict[str, Any]:
     import pandas as pd
 
+    sheet_summary = []
     if path.suffix.lower() == ".blocks":
         return _profile_bookshelf_blocks(path)
     if path.suffix.lower() == ".nets":
@@ -287,11 +288,34 @@ def _profile_one_file(path: Path) -> dict[str, Any]:
         return _profile_bookshelf_placement(path)
     if path.suffix.lower() == ".txt":
         return _profile_text_file(path)
-    if path.suffix.lower() in {".csv", ".tsv"}:
-        sep = "\t" if path.suffix.lower() == ".tsv" else ","
-        frame = pd.read_csv(path, sep=sep, encoding="utf-8-sig", low_memory=False)
+    if path.suffix.lower() in {".csv", ".tsv", ".tab"}:
+        sep = "\t" if path.suffix.lower() in {".tsv", ".tab"} else ","
+        try:
+            frame = pd.read_csv(path, sep=sep, encoding="utf-8-sig", low_memory=False)
+        except UnicodeDecodeError:
+            frame = pd.read_csv(path, sep=sep, encoding="gb18030", low_memory=False)
+    elif path.suffix.lower() in {".xls", ".xlsx", ".xlsm", ".ods"}:
+        with pd.ExcelFile(path) as workbook:
+            frame = workbook.parse(workbook.sheet_names[0])
+            for name in workbook.sheet_names[:20]:
+                sample = workbook.parse(name, nrows=5)
+                sheet_summary.append(
+                    {
+                        "name": name,
+                        "columns": [str(value) for value in sample.columns[:30]],
+                        "sample_rows": sample.astype(str)
+                        .iloc[:3, :30]
+                        .to_dict("records"),
+                    }
+                )
+    elif path.suffix.lower() == ".parquet":
+        frame = pd.read_parquet(path)
+    elif path.suffix.lower() == ".feather":
+        frame = pd.read_feather(path)
     else:
-        frame = pd.read_excel(path)
+        from app.core.attachment_profile import profile_attachment
+
+        return profile_attachment(path)
 
     columns: list[dict[str, Any]] = []
     for name in list(frame.columns)[:_MAX_COLUMNS]:
@@ -332,6 +356,7 @@ def _profile_one_file(path: Path) -> dict[str, Any]:
     high_missing = [item["name"] for item in columns if item["missing_rate"] >= 0.2]
     return {
         "file": path.name,
+        "sheets": sheet_summary,
         "rows": int(frame.shape[0]),
         "columns_count": int(frame.shape[1]),
         "columns": columns,
@@ -470,16 +495,37 @@ def build_data_profile(work_dir: str | Path) -> dict[str, Any]:
     if not root.is_dir():
         return profile
 
+    import json
+
+    inputs = input_filenames(root)
+    explicit_inputs = (root / ".remit-inputs.json").is_file()
+    if not explicit_inputs and (root / "workflow_state.json").is_file():
+        try:
+            state = json.loads(
+                (root / "workflow_state.json").read_text(encoding="utf-8")
+            )
+            inputs = set(state.get("protected_input_files", []))
+            explicit_inputs = bool(inputs)
+        except (OSError, ValueError):
+            pass
+
     candidates = sorted(
         (
             path
-            for path in root.iterdir()
-            if path.is_file() and path.suffix.lower() in _DATA_SUFFIXES
+            for path in (
+                [root / name for name in inputs] if explicit_inputs else root.iterdir()
+            )
+            if path.is_file()
+            and not path.name.startswith(".")
+            and path.resolve().is_relative_to(root.resolve())
+            and (explicit_inputs or path.suffix.lower() in _DATA_SUFFIXES)
         ),
         key=lambda path: path.stat().st_size,
         reverse=True,
     )
-    profile["discovered_files"] = [path.name for path in candidates]
+    profile["discovered_files"] = [
+        path.relative_to(root).as_posix() for path in candidates
+    ]
     for path in candidates[:_MAX_FILES]:
         size_limit = (
             _MAX_EXCEL_BYTES
@@ -490,7 +536,13 @@ def build_data_profile(work_dir: str | Path) -> dict[str, Any]:
             profile["notes"].append(f"{path.name} 过大，跳过画像")
             continue
         try:
-            profile["files"].append(_profile_one_file(path))
+            item = _profile_one_file(path)
+            item["file"] = path.relative_to(root).as_posix()
+            profile["files"].append(item)
+            if item.get("status") == "metadata_only":
+                profile["notes"].append(
+                    f"{path.name} 已保留原始附件，仅取得元数据；编程手须选择读取器。"
+                )
         except Exception as exc:
             logger.warning(f"数据画像失败 {path.name}: {exc}")
             profile["notes"].append(f"{path.name} 画像失败: {exc}")
@@ -499,7 +551,7 @@ def build_data_profile(work_dir: str | Path) -> dict[str, Any]:
             f"共 {len(candidates)} 个数据文件，仅画像最大的 {_MAX_FILES} 个"
         )
     if profile["files"]:
-        profile["status"] = "completed"
+        profile["status"] = "partial" if profile["notes"] else "completed"
     elif candidates:
         profile["status"] = "failed"
     return profile
@@ -535,6 +587,10 @@ def summarize_data_profile(profile: dict[str, Any]) -> str:
                 f"X=[{bounds.get('min_x')}, {bounds.get('max_x')}]，"
                 f"Y=[{bounds.get('min_y')}, {bounds.get('max_y')}]"
             ]
+        elif item.get("status"):
+            import json
+
+            parts = [json.dumps(item, ensure_ascii=False)[:3500]]
         else:
             parts = [f"{item['file']}: {item['rows']} 行 × {item['columns_count']} 列"]
         if item.get("time_range"):

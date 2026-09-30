@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 from app.core.workflow import RemitWorkFlow
 from app.core.agents.coder_agent import CoderAgentUnavailableError
+from app.core.llm.errors import NonRetryableLLMError, ResponseStreamInterruptedError
 from app.routers.modeling_router import (
     _active_tasks,
     _exception_message,
@@ -28,6 +29,14 @@ class TaskCancellationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(
             _is_transient_task_failure(CoderAgentUnavailableError("provider offline"))
+        )
+        self.assertTrue(
+            _is_transient_task_failure(
+                ResponseStreamInterruptedError("missing terminal")
+            )
+        )
+        self.assertFalse(
+            _is_transient_task_failure(NonRetryableLLMError("invalid credentials"))
         )
 
     async def asyncTearDown(self) -> None:

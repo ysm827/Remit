@@ -4,6 +4,8 @@
 workflow / problem_analysis 的解析与校验逻辑。
 """
 
+from app.core.prompts.persona import remit_voice
+
 FORMAT_QUESTIONS_PROMPT = """
 用户会贴来一段数学建模赛题。请一次性完成两件事：
 1. 原题忠实转录：title、background、ques1、ques2... 必须逐字来自原文，
@@ -42,7 +44,7 @@ question_analyses 必须覆盖 ques1..quesN 全部小问，九个字段一个都
 """
 
 
-COORDINATOR_PROMPT = f"""
+COORDINATOR_PROMPT = remit_voice("coordinator") + f"""
     先判断用户输入是否是一道数学建模题。
     如果是：先忠实转录原题，再逐题形成初步结构化理解：
     {FORMAT_QUESTIONS_PROMPT}

@@ -1,6 +1,6 @@
 <div align="center">
   <img src="./assets/remit-icon.png" alt="Remit 标志" width="140" />
-  <h1>Remit — 数模 Agent · 数学建模 AI 助手</h1>
+  <h1>Remit 2.0 — 数模 Agent · 数学建模 AI 助手</h1>
   <p><strong>本地优先、可检查、可恢复的数学建模工作台</strong></p>
   <p>让 Agent 像一支数模队伍一样协作，让人始终握着题意、选型和交付的决定权。</p>
   <p>
@@ -11,11 +11,10 @@
     <a href="./README_EN.md"><img alt="English" src="https://img.shields.io/badge/English-README-64748B" /></a>
   </p>
   <p>
-    <a href="#项目亮点">项目亮点</a> ·
-    <a href="#工作流程">工作流程</a> ·
-    <a href="#快速开始">快速开始</a> ·
-    <a href="#模型配置">模型配置</a> ·
-    <a href="./docs/workflow.md">完整介绍</a> ·
+    <a href="#20-升级">2.0 升级</a> ·
+    <a href="#快速启动docker">快速开始</a> ·
+    <a href="./docs/upgrading-to-v2.md">旧版与升级</a> ·
+    <a href="./docs/paper-quality.md">论文质量规则</a> ·
     <a href="#star-history-">Star History</a> ·
     <a href="#加入交流群">社区交流</a>
   </p>
@@ -28,197 +27,113 @@
 
 ---
 
-Remit 是一个本地优先的开源数学建模 AI 助手（数模 Agent），将题意分析、数据检查、
-文献检索、候选模型比较、代码执行、结果验证和论文写作串成可检查、可恢复的多智能体工作流。
-你可以在关键节点审核、退回修改，并在中断后从检查点继续任务。分析、证据、代码、图表和
-论文产物都保存在同一个项目工作区，方便检查与复用。
+本地数学建模工作台：通过团队对话，让协调手、建模手、代码手和论文手协作完成题目分析、计算与论文写作。
 
-<p align="center">
-  <img src="./assets/remit-workbench-overview.png" alt="Remit 数学建模工作台主页" width="1100" />
-</p>
-<p align="center"><sub>Remit 工作台主页：项目进度、待人工确认、运行状态和 Agent 协作链集中在同一页。</sub></p>
+[English](README_EN.md) · [安装与分发](docs/distribution.md) · [配置说明](docs/configuration.md) · [赛事适配](docs/competition-adapters.md)
 
-主页用来回答四个最直接的问题：现在做到哪一步了、哪些结果正在等人确认、执行环境是否
-正常、四个核心 Agent 正在怎样协作。进入项目后，题目、数据、文献、模型、代码、结果和
-论文分别有独立视图，不需要在一条很长的聊天记录里寻找产物。
+## 2.0 升级
 
-> Remit 目前处于 `0.1.x` 阶段，接口与工作流仍可能调整。完整工作流需要模型接口，
-> 部分步骤会真实执行模型生成的代码，请只在可信环境中使用并保留人工检查。
+当前主分支为 **Remit 2.0.0**，整合新版团队对话、计算恢复、论文工作区与图文排版规则。
+团团、灵灵、点点、墨墨分别负责协调、建模、代码和论文；原有 Remit 标志、社区与 Star History 保留。
 
-## 项目亮点
+- 对话集中呈现当前阶段、关键结果与异常，执行明细按需展开。
+- 按小问开展探索实验，保存可复用检查点；区分运行、重试、待审核与失败。
+- 建模结果交接到独立论文工作区，支持章节续写、LaTeX 编辑与 PDF 预览。
+- 论文按证据选图，统一变量与向量字体、居中三线表、图幅与图号，并检查摘要和分页。
+- Windows / macOS 原生安装包构建流程随源码提供，包含运行与论文工具。
 
-- **四个核心角色分工**：Coordinator 忠实读题，Modeler 设计与复核模型，Coder 真实运行
-  代码，Writer 只使用通过检查的结果写论文；
-- **从数据和文献回头校正题意**：先扫描附件、检索开放文献并提取方法卡，再修正逐题理解，
-  避免从错误前提出发一路跑到底；
-- **候选模型必须下场比较**：每问先安排包含 baseline 的 Pilot，在相同数据划分和指标下
-  真实试跑，再从跑通的候选中定案；
-- **证据链贯穿交付**：方法推荐、文献采用、代码输出、图表、论文数字和质量报告能够相互
-  对照，不把“模型说过”当成计算证据；
-- **人工节点真正可退回**：题意、选型、Pilot、各小问和终稿都能暂停审批，带着累计意见
-  返回具体节点，而不是整项任务重来；
-- **本地优先且可恢复**：每个任务拥有独立目录、检查点和审批历史；MATLAB 优先、Python
-  备用，也可以选择 E2B 沙箱；
-- **模型接入可组合**：兼容 OpenAI Chat/Responses、Anthropic 和 Gemini，各角色可独立选择
-  供应商、模型、上下文和推理强度。
+[查看 2.0 变更](docs/releases/2.0.0.md) · [升级与回退](docs/upgrading-to-v2.md) ·
+[浏览升级前源码](https://github.com/zhou2030109-glitch/Remit/tree/legacy/pre-2.0)
 
-## 工作流程
+## 当前状态
 
-<p align="center">
-  <a href="./assets/remit-workflow-overview.svg">
-    <img src="./assets/remit-workflow-overview.svg" alt="Remit 从赛题上传到人工验收的横向工作流程" width="1100" />
-  </a>
-</p>
+这是持续开发中的源码版本。支持计划确认、附件与文件夹导入、分步执行、断点恢复、成果审核、LaTeX 编辑与 PDF 导出。探索实验按小问执行并保留已校验的中间结果。
 
-每个阶段都会把产物写入当前任务目录。审核通过后继续，发现问题时可以退回相应节点；
-中断后则从检查点恢复。想了解题面校正、三级方法检索、模型评审组、Pilot 和终稿门禁的
-完整细节，请阅读 [Remit 项目介绍](docs/workflow.md)；模块边界见
-[架构文档](docs/architecture.md)。
+模型可能生成错误代码，接口也可能超时；需要检查实际计算结果并完成用户验收。软件测试通过不代表某道赛题已求解正确，也不保证比赛格式全部合规。
 
-## 运行要求
+## 桌面安装
 
-- Windows 10/11（桌面启动器）、macOS 12+/Linux（脚本启动）或支持 Docker Compose 的系统；
-- Python 3.12（见 `backend/.python-version`）与 [uv](https://docs.astral.sh/uv/)；
-- Node.js 24（见 `frontend/.node-version`）与 pnpm 10.6.3；
-- 完整工作流需要 Redis。Windows 源码模式可使用仓库内置的 Redis 运行文件；
-  macOS 通过 `brew install redis` 安装，Linux 使用发行版的软件包管理器；
-  启动脚本会在 16379 端口拉起一个 Remit 专属实例，且不会接管外部 Redis。
+2.0 源码已发布，Windows x64、Mac Apple 芯片与 Intel 安装包由原生构建流程生成。
+[Releases](https://github.com/zhou2030109-glitch/Remit/releases/tag/v2.0.0) 中只有出现对应的安装附件后才可下载；
+构建和安装验证未通过时不会上传该批安装包。旧预览包不等于 2.0。
+安装包内置计算与论文工具，首次打开仍需填写自己的模型服务信息。详细范围见 [桌面分发说明](docs/desktop-distribution.md)。
 
-模型调用会产生第三方 API 费用。部分工作流会执行模型生成的代码，请仅在可信本机环境
-运行并检查输入数据。
+## 快速启动：Docker
 
-## 快速开始
+安装 Git 和支持 Linux 容器的 Docker Compose，在终端运行：
 
-### Windows 源码模式
+```sh
+git clone https://github.com/zhou2030109-glitch/Remit.git
+cd Remit
+docker compose -f docker-compose.release.yml up -d --build
+```
+
+打开 <http://localhost:18000>，在界面里的模型连接设置中填写自己的 API 地址、密钥、模型名和协议。首次构建包含科学计算库、中文字体和 LaTeX，下载量较大。模型服务费用由自己的供应商收取。
+
+容器默认使用 Python 计算。配置与任务保存在命名数据卷中，`docker compose -f docker-compose.release.yml down` 停止服务并保留数据；`down -v` 会删除这些数据。
+
+## Windows 源码启动
+
+需要 Python 3.12、uv、Node.js 24、pnpm 10。仓库包含 Windows 启动器所需的 Redis 运行文件及许可证。
 
 ```powershell
 git clone https://github.com/zhou2030109-glitch/Remit.git
 cd Remit
-
 cd backend
-uv sync --frozen
-
+uv sync --locked
+Copy-Item .env.example .env.dev
 cd ../frontend
 pnpm install --frozen-lockfile
-
+Copy-Item .env.example .env.development
 cd ..
-./win_start.bat
+.\win_start.bat
 ```
 
-访问 <http://127.0.0.1:15173>。后端 API 文档位于
-<http://127.0.0.1:18000/docs>。运行 `win_stop.bat` 停止服务。
-首次启动会自动生成 `backend/.env.dev`；模型密钥可在界面中填写，也可稍后编辑该文件。
+打开 <http://localhost:15173>。用 `win_stop.bat` 停止本项目服务。`win_start.bat --check` 检查启动依赖。
 
-### macOS / Linux 源码模式
+- 模型密钥在界面保存到本机配置，仓库不提供密钥。
+- MATLAB 可选，需要自行安装并具备可用许可证；默认优先 MATLAB，不可用时按配置回退 Python。可在 `backend/.env.dev` 设置 `CODE_EXECUTION_BACKEND=python`。
+- 本机导出论文 PDF 需安装 XeLaTeX（TeX Live 或 MiKTeX）与中文字体；Docker 方案已包含这些组件。
+- macOS/Linux 源码部署另需安装 Redis，参考 [开发说明](docs/development.md)。
 
-```bash
-git clone https://github.com/zhou2030109-glitch/Remit.git
-cd Remit
+## 第一次使用
 
-cd backend
-uv sync --frozen
+1. 配置四个角色的模型连接，检查连接状态。
+2. 新建项目，选择赛事并导入题面和数据。可先使用 `backend/app/example/urban_cooling/` 中的合成小例子。
+3. 与协调手确认题意和计划，再启动计算。方案、关键结果与论文均需检查。
+4. 在“文件与结果”查看可追溯产物，在“论文”编辑、编译并导出。
 
-cd ../frontend
-pnpm install --frozen-lockfile
+赛事适配包含国赛、华为杯、美赛、华数杯等配置和开源基础技能；当届规则以主办方文件为准。详见 [赛事适配范围](docs/competition-adapters.md)。
 
-cd ..
-bash tools/start_services.sh
-```
-
-访问 <http://127.0.0.1:15173>。后端 API 文档位于
-<http://127.0.0.1:18000/docs>。运行 `bash tools/stop_services.sh` 停止服务。
-macOS 也可双击 `mac_start.command` / `mac_stop.command`。首次运行前请安装 Redis
-（macOS：`brew install redis`；Linux：使用发行版的软件包管理器）和 `lsof`。
-启动脚本会自动生成缺失的 `backend/.env.dev`；
-`tools/start_services.sh --check` 可以随时校验启动依赖。
-
-### Docker Compose
-
-```bash
-docker compose up --build
-```
-
-前端默认端口为 `15173`，后端为 `18000`，Redis 为 `16379`。首次启动无需预先创建 `backend/.env.dev`；模型密钥可在界面中填写，也可按需创建该文件。
-
-需要可直接运行的生产镜像或离线安装包时，见[发布包构建与使用](docs/distribution.md)。
-
-## 模型配置
-
-编辑本地的 `backend/.env.dev`。四个核心角色采用相同字段结构：
-
-```dotenv
-COORDINATOR_API_TYPE=openai-responses
-COORDINATOR_API_KEY=your-key
-COORDINATOR_MODEL=your-model
-COORDINATOR_BASE_URL=https://your-provider.example/
-COORDINATOR_MAX_TOKENS=8192
-```
-
-把 `COORDINATOR` 替换为 `MODELER`、`CODER`、`WRITER` 即可分别配置。完整字段见
-[配置文档](docs/configuration.md)。不要提交任何 `.env` 文件或真实密钥。
-
-## 合成示例
-
-仓库只附带项目自写的社区降温合成数据，不包含第三方比赛题面或附件。可通过
-`POST /example` 并传入 `{"example_id": "urban-cooling"}` 创建演示任务，也可以直接在
-界面上传自己的题目和数据。
-
-## 开发与验证
-
-```bash
-cd backend
-uv run ruff check app tests
-uv run ruff format --check app tests
-uv run pytest tests -q
-
-cd ../frontend
-pnpm run check
-pnpm run typecheck
-pnpm run test
-pnpm run build
-
-cd ..
-# 仓库级启动器与配置契约测试（Windows 使用 .venv\Scripts\python.exe）
-backend/.venv/bin/python -m pytest tests -q
-```
-
-开发环境、CI 与发布流程见[开发与发布](docs/development.md)。
-
-Windows 安装包可通过以下命令生成，默认产物位于当前用户本地应用数据目录下的
-`Remit/build/output/RemitSetup.exe`：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/package_win.ps1
-```
-
-## 项目结构
+## 仓库内容
 
 ```text
-backend/      FastAPI、工作流、Agent、模型接入与执行器
-frontend/     Vue 3 + TypeScript 工作台
-tools/        Windows 启动、打包工具与 Redis 运行文件
-assets/       Remit 品牌资源
-docs/         架构、配置与来源审计文档
-tests/        仓库级启动器和配置契约测试
+backend/app/     后端、角色、执行器和赛事技能
+frontend/src/    对话、成果阅读与论文编辑界面
+backend/tests/  后端回归测试
+frontend/tests/ 前端行为测试
+tests/          启动器与安装契约测试
+tools/          启动、打包与可选资料库工具
+docs/           使用与开发文档
 ```
 
-任务数据写入 `backend/project/work_dir/<task-id>/`，日志写入 `logs/`，两者均不应提交。
+不包含本机密钥、真实赛题附件、对话与运行记录、个人论文库、截图、虚拟环境或构建产物。可选论文库默认为空；通用写作技能与有许可的开源技能仍可使用。
 
-## 安全边界
+## 测试
 
-Remit 面向可信的单用户本机环境，不具备公网多租户服务所需的认证、授权和执行隔离。
-公开部署前必须补充安全边界。漏洞请按 [安全策略](SECURITY.md) 私下报告。
+```sh
+cd backend
+uv run pytest tests -q
+cd ../frontend
+pnpm test
+pnpm build
+```
 
-## 参与和许可证
+更多验证范围见 [发布验证](docs/release-validation.md)。本地执行模型生成的代码会使用本机权限；请在可信本机使用，处理不可信代码时选择隔离环境。该版本不提供多用户身份认证，不应直接暴露为公共网站。
 
-欢迎提交 Issue 与 Pull Request。开始前请阅读 [贡献指南](CONTRIBUTING.md) 和
-[社区行为准则](CODE_OF_CONDUCT.md)。Remit 自有源码与合成示例采用
-[MIT License](LICENSE)；依赖和捆绑运行文件保留各自许可证，详见
-[第三方声明](THIRD_PARTY_NOTICES.md)。
+## 许可与来源
 
-当前源码经过针对 MathModelAgent 的来源审计和独立实现整改；早期公开版本的来源事实不
-因分支历史重建而改变。技术范围、残余分类和限制见 [NOTICE.md](NOTICE.md) 与
-[来源审计](docs/originality-audit.md)。这些材料用于透明披露，不构成法律结论。
+Remit 自有代码使用 [MIT](LICENSE)。第三方依赖、Windows Redis 运行库和导入技能保留各自许可。项目历史来源及适用范围请同时阅读 [NOTICE](NOTICE.md)、[第三方声明](THIRD_PARTY_NOTICES.md) 和 [来源审计](docs/originality-audit.md)。
 
 ## Star History ⭐
 

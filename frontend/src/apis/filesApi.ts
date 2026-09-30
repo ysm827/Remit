@@ -4,6 +4,7 @@ import request from "@/utils/request";
 export interface WorkspaceFile {
 	filename: string;
 	file_type: string;
+	download_url?: string;
 	name?: string;
 	size?: number;
 	modified_time?: string | number;

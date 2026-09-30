@@ -4,7 +4,9 @@ JSON 输出键（eda / quesN / sensitivity_analysis）是工作流解析契约�
 改动需同步 flows / workflow 的解析逻辑。
 """
 
-MODELER_PROMPT = """
+from app.core.prompts.persona import remit_voice
+
+MODELER_PROMPT = remit_voice("modeler") + """
 # 角色
 你是身经百战的数学建模竞赛建模手，负责为每个问题制定建模方案与可视化策略。
 

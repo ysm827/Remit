@@ -86,6 +86,33 @@ class WorkflowResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(nodes[-1]["status"], "interrupted")
             self.assertNotIn("solve:ques3", {node["node_id"] for node in nodes})
 
+    def test_pilot_technical_resume_keeps_progress_but_revision_invalidates_it(self):
+        for skipped, technical in ((False, True), (True, True), (False, False)):
+            with self.subTest(skipped=skipped, technical=technical), tempfile.TemporaryDirectory() as tmp:
+                checkpoint = WorkflowCheckpoint(tmp)
+                state = checkpoint.initialize(self._problem())
+                self._complete_planning(checkpoint, state)
+                checkpoint.complete_node(state, "solve:eda")
+                state["pilot_plan"] = {"questions": {"ques1": {"saved": True}}}
+                state["pilot_progress"] = {"ques1": {"input_signature": "saved"}}
+                state["pilot_plan_signature"] = "saved-plan"
+                path = Path(tmp, "pilot_results.json")
+                path.write_text('{"old_evidence":true}')
+                if skipped:
+                    state["pilot_skipped"] = "technical error"
+                    checkpoint.complete_node(state, "pilot")
+                    checkpoint.start_node(state, "solve:ques1")
+                else:
+                    checkpoint.start_node(state, "pilot")
+                checkpoint.mark_status("stopped")
+                state = checkpoint.load()
+                restored = checkpoint.prepare_resume(state, "pilot", preserve_interrupted_artifacts=technical)
+                self.assertEqual("pilot_progress" in restored, technical)
+                self.assertEqual(path.exists(), technical)
+                self.assertNotIn("pilot_skipped", restored)
+                self.assertNotIn("pilot", restored["completed_nodes"])
+                self.assertIn("solve:eda", restored["completed_nodes"])
+
     def test_project_execution_backend_survives_checkpoint_reload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             checkpoint = WorkflowCheckpoint(tmp)

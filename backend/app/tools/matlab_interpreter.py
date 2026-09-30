@@ -105,9 +105,15 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
         if not self.executable:
             raise MatlabUnavailableError("未找到 MATLAB 可执行文件")
         executable = Path(self.executable).resolve()
-        if executable.parent.name.lower() != "bin":
+        parent = executable.parent
+        if parent.name.lower() in {"win64", "glnxa64", "maci64", "maca64"}:
+            parent = parent.parent
+        if parent.name.lower() != "bin":
             raise MatlabUnavailableError(f"无法从路径识别 MATLAB 根目录: {executable}")
-        return executable.parent.parent
+        root = parent.parent
+        if not (root / "extern" / "engines" / "python").is_dir():
+            raise MatlabUnavailableError(f"MATLAB 安装缺少 Python Engine: {root}")
+        return root
 
     async def initialize(self) -> None:
         """加载 MATLAB Engine 并真实启动一个可复用的 MATLAB 会话。"""
@@ -255,8 +261,9 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
         if self.engine is None:
             raise MatlabUnavailableError("MATLAB Engine 未创建")
         self.engine.cd(str(self.work_path), nargout=0)
+        self.engine.addpath(str(Path(__file__).with_name("matlab_helpers")), nargout=0)
         self.engine.eval(
-            "set(groot, 'defaultFigureVisible', 'off');",
+            "set(groot, 'defaultFigureVisible', 'off'); remit_plot_defaults;",
             nargout=0,
         )
         return str(self.engine.version())
@@ -346,8 +353,12 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
                 for part in (cleaned_stdout, cleaned_stderr, exception_text)
                 if part
             )
-            combined = self._truncate_text(combined, 12000)
             error_occurred = bool(exception_text or cleaned_stderr)
+            if error_occurred:
+                context = self._source_error_context(user_path, combined)
+                if context:
+                    combined = context + "\n" + combined
+            combined = self._truncate_text(combined, 12000)
             error_message = combined if error_occurred else ""
             content_to_display: list[OutputItem] = []
 
@@ -399,6 +410,34 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
             await asyncio.wait_for(asyncio.to_thread(engine.quit), timeout=grace)
         except Exception as exc:
             logger.warning(f"MATLAB 超时会话未能在宽限期内退出: {exc}")
+
+    @staticmethod
+    def _source_error_context(script_path: Path, error: str) -> str:
+        """Attach the actual failing source lines, not guessed encoding diagnoses."""
+        location = re.search(
+            re.escape(script_path.stem)
+            + r"(?:\.m)?[^\n]*?(?:行\s*[:：]\s*|第\s*|line\s*:?\s+)(\d+)",
+            error,
+            re.IGNORECASE,
+        )
+        if not location:
+            return ""
+        try:
+            lines = script_path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError):
+            return ""
+        number = int(location.group(1))
+        if not 1 <= number <= len(lines):
+            return ""
+        excerpt = "\n".join(
+            f"{i + 1}: {lines[i][:300]}"
+            for i in range(max(0, number - 3), min(len(lines), number + 2))
+        )
+        return (
+            f"【实际报错源码：{script_path.name}，第{number}行】\n{excerpt}\n"
+            "依据报错行做最小修复，不要猜测文件编码。若含 T.中文列名，改用 T.('中文列名')；"
+            "字符串中的中文和单位符号应保留。"
+        )
 
     def _build_user_script(self, code: str) -> str:
         """确保 run 临时切换到审计目录时，用户产物仍写入任务根目录。"""

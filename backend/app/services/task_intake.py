@@ -1,5 +1,6 @@
 """Create task inputs without coupling file-system work to FastAPI routes."""
 
+import json
 import re
 from pathlib import Path
 from shutil import copy2, copyfileobj
@@ -45,30 +46,60 @@ class UploadLimitError(ValueError):
     """附件超出服务端资源限制。"""
 
 
-def _upload_names(files: list[UploadFile], destination: Path) -> list[str]:
+def _upload_names(
+    files: list[UploadFile], destination: Path, relative_paths: list[str] | None = None
+) -> list[str]:
     """写入前验证整批名称，避免同名覆盖和不同平台路径解析差异。"""
     if len(files) > settings.UPLOAD_MAX_FILES:
         raise UploadLimitError(f"附件数量不能超过 {settings.UPLOAD_MAX_FILES}")
-    existing = {path.name.casefold() for path in destination.iterdir()}
+    if relative_paths is not None and len(relative_paths) != len(files):
+        raise ValueError("附件路径数量与文件数量不一致")
+    existing = {
+        path.relative_to(destination).as_posix().casefold(): path.is_dir()
+        for path in destination.rglob("*")
+    }
+    root = destination.resolve()
     names: list[str] = []
-    for upload in files:
-        name = upload.filename or ""
+    for index, upload in enumerate(files):
+        name = (
+            relative_paths[index]
+            if relative_paths is not None
+            else upload.filename or ""
+        )
         folded = name.casefold()
+        parts = name.split("/")
         if (
             not name
-            or name.startswith(".")
-            or name.endswith((".", " "))
-            or any(char in name for char in '/\\:<>"|?*')
+            or (relative_paths is None and "/" in name)
+            or len(parts) > 20
+            or len(name.encode("utf-8")) > 1024
+            or any(char in name for char in '\\:<>"|?*')
             or any(ord(char) < 32 for char in name)
-            or _DEVICE_NAME.match(name)
-            or len(name.encode("utf-8")) > 240
-            or folded in _RESERVED_NAMES
-            or folded.endswith("_quality_report.json")
+            or any(
+                not part
+                or part.startswith(".")
+                or part.endswith((".", " "))
+                or _DEVICE_NAME.match(part)
+                or len(part.encode("utf-8")) > 240
+                for part in parts
+            )
+            or parts[0].casefold() in _RESERVED_NAMES | {"paper"}
+            or parts[-1].casefold().endswith("_quality_report.json")
+            or not (destination / name).resolve().is_relative_to(root)
+            or any(
+                (destination.joinpath(*parts[:i])).is_symlink()
+                for i in range(1, len(parts) + 1)
+            )
         ):
             raise ValueError(f"不安全或保留的上传文件名：{name!r}")
         if folded in existing:
             raise ValueError(f"附件名称重复或已存在：{name}")
-        existing.add(folded)
+        for i in range(1, len(parts)):
+            parent = "/".join(parts[:i]).casefold()
+            if parent in existing and not existing[parent]:
+                raise ValueError(f"附件目录与文件冲突：{name}")
+            existing[parent] = True
+        existing[folded] = False
         names.append(name)
     return names
 
@@ -76,9 +107,18 @@ def _upload_names(files: list[UploadFile], destination: Path) -> list[str]:
 def _commit_uploads(staging: Path, destination: Path, names: list[str]) -> None:
     """全部校验通过才提交；独占创建避免覆盖已有文件，失败时回滚本批。"""
     created: list[Path] = []
+    directories: list[Path] = []
     try:
         for name in names:
             target = destination / name
+            missing = []
+            parent = target.parent
+            while parent != destination and not parent.exists():
+                missing.append(parent)
+                parent = parent.parent
+            for directory in reversed(missing):
+                directory.mkdir()
+                directories.append(directory)
             with target.open("xb") as output:
                 created.append(target)
                 with (staging / name).open("rb") as source:
@@ -86,18 +126,23 @@ def _commit_uploads(staging: Path, destination: Path, names: list[str]) -> None:
     except BaseException:
         for target in created:
             target.unlink(missing_ok=True)
+        for directory in reversed(directories):
+            directory.rmdir()
         raise
 
 
-async def persist_uploads(files: list[UploadFile], destination: Path) -> list[str]:
+async def persist_uploads(
+    files: list[UploadFile], destination: Path, relative_paths: list[str] | None = None
+) -> list[str]:
     """按块暂存附件，在大小和整批名称均有效后一次提交。"""
-    names = _upload_names(files, destination)
+    names = _upload_names(files, destination, relative_paths)
     total = 0
     saved: list[str] = []
     with TemporaryDirectory(prefix=".upload-", dir=destination) as temporary:
         staging = Path(temporary)
         for upload, name in zip(files, names, strict=True):
             size = 0
+            (staging / name).parent.mkdir(parents=True, exist_ok=True)
             with (staging / name).open("wb") as output:
                 while chunk := await upload.read(_UPLOAD_CHUNK_BYTES):
                     size += len(chunk)
@@ -106,10 +151,36 @@ async def persist_uploads(files: list[UploadFile], destination: Path) -> list[st
                         size > settings.UPLOAD_MAX_FILE_BYTES
                         or total > settings.UPLOAD_MAX_TOTAL_BYTES
                     ):
-                        raise UploadLimitError("附件超过单文件或总大小限制")
+                        raise UploadLimitError(
+                            f"附件超过大小限制：单文件最多 {settings.UPLOAD_MAX_FILE_BYTES / 1024 / 1024:g} MB，"
+                            f"本次合计最多 {settings.UPLOAD_MAX_TOTAL_BYTES / 1024 / 1024:g} MB"
+                        )
                     await run_blocking(output.write, chunk)
-            if size:
+            if size or relative_paths is not None:
                 saved.append(name)
         # 提交线程不应因请求取消而在临时目录清理之后继续读取。
         await run_blocking(_commit_uploads, staging, destination, saved)
+    manifest = destination / ".remit-inputs.json"
+    previous = (
+        json.loads(manifest.read_text(encoding="utf-8")) if manifest.is_file() else []
+    )
+    manifest_temp = manifest.with_suffix(".json.tmp")
+    manifest_temp.write_text(
+        json.dumps(list(dict.fromkeys([*previous, *saved])), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    manifest_temp.replace(manifest)
     return saved
+
+
+def parse_upload_paths(value: str | None) -> list[str] | None:
+    """解析独立路径清单；multipart 文件名仍保持 basename 以兼容浏览器。"""
+    if value is None:
+        return None
+    try:
+        paths = json.loads(value)
+    except (ValueError, TypeError) as exc:
+        raise ValueError("附件路径清单不是有效 JSON") from exc
+    if not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
+        raise ValueError("附件路径清单必须为字符串数组")
+    return paths

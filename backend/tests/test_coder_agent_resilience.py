@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import tempfile
+from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,6 +15,7 @@ from app.core.agents.coder_agent import (
     CoderAgentRunError,
     CoderAgentUnavailableError,
 )
+from app.core.llm.errors import NonRetryableLLMError
 from app.core.llm.types import StandardResponse, ToolCall
 
 
@@ -55,6 +58,167 @@ def _make_agent(
 
 
 class CoderAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_delivery_check_stops_calls_only_after_new_valid_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = _make_agent()
+            agent.work_dir = tmp
+            agent._inject_user_notes = AsyncMock()
+            path = Path(tmp, "pilot_ques1_results.json")
+            path.write_text('{"valid": true}')
+            agent._chat = AsyncMock(side_effect=[
+                _tool_response("inspect", "inspect"),
+                _tool_response("partial", "partial"),
+                _tool_response("finish", "finish"),
+            ])
+
+            async def execute(code):
+                if code == "partial":
+                    path.write_text('{"valid": false}')
+                if code == "finish":
+                    path.write_text('{"valid": true, "new": true}')
+                return ("executed", False, "")
+
+            agent.code_interpreter.execute_code.side_effect = execute
+            with (
+                patch("app.core.agents.coder_agent.redis_manager.publish_message", new_callable=AsyncMock),
+                patch("app.core.agents.coder_agent.publish_activity", new_callable=AsyncMock),
+            ):
+                result = await agent.run("pilot", "pilot:ques1", required_files=(path.name,),
+                    completion_check=lambda: json.loads(path.read_text())["valid"])
+            self.assertEqual(agent._chat.await_count, 3)
+            self.assertEqual(agent.current_code_executions, 3)
+            self.assertIn("实际指标仍由后续审查和用户验收", result.code_response)
+
+    async def test_multi_call_reply_is_rejected_without_executing_and_requests_serial(self):
+        agent = _make_agent()
+        valid = _tool_response("single", "disp(1)")
+        multiple = StandardResponse(tool_calls=[*valid.tool_calls, *_tool_response("second", "disp(2)").tool_calls])
+        agent._chat = AsyncMock(side_effect=[multiple, valid])
+        with patch("app.core.agents.coder_agent.publish_activity", new_callable=AsyncMock) as activity:
+            result = await agent._call_model([{"type": "function"}])
+        self.assertIs(result, valid)
+        self.assertTrue(all(call.kwargs["parallel_tool_calls"] is False for call in agent._chat.call_args_list))
+        agent.code_interpreter.execute_code.assert_not_awaited()
+        self.assertIn("逐步执行", activity.call_args.args[1])
+
+    async def test_same_node_quality_repair_keeps_observed_schema_and_fixed_code(self):
+        agent = _make_agent(max_code_executions=2)
+        captured = []
+        responses = iter([
+            _tool_response("bad", "bad_missing_check()"),
+            _tool_response("fixed", "disp(raw)"),
+            StandardResponse(content="缺少最终质量报告"),
+            StandardResponse(content="针对报告继续处理"),
+            StandardResponse(content="新问题"),
+        ])
+
+        async def chat(**kwargs):
+            captured.append(json.dumps(kwargs["history"], ensure_ascii=False))
+            return next(responses)
+
+        agent._chat = chat
+        agent._inject_user_notes = AsyncMock()
+        agent.code_interpreter.execute_code.side_effect = [
+            ("", True, "操作数必须可转换为标量逻辑值"),
+            ("真实列名：经度、纬度；18行", False, ""),
+        ]
+        with patch("app.core.agents.coder_agent.redis_manager.publish_message", new=AsyncMock()):
+            await agent.run("读取数据", "eda")
+            await agent.run("补全质量报告", "eda")
+            await agent.run("求解第一问", "ques1")
+        repair = captured[3]
+        self.assertIn("标量逻辑值", repair)
+        self.assertIn("真实列名：经度、纬度；18行", repair)
+        self.assertIn("disp(raw)", repair)
+        self.assertIn("同一节点的质量返修", repair)
+        self.assertIn("执行预算为 2 次", repair)
+        self.assertNotIn("你已用完本轮", repair)
+        self.assertNotIn("真实列名：经度、纬度；18行", captured[4])
+        self.assertEqual(agent.code_interpreter.execute_code.await_count, 2)
+
+    def test_execution_summary_uses_error_evidence(self):
+        summarize = CoderAgent._execution_failure_summary
+        self.assertIn("列名数量", summarize("VariableNames 属性必须包含一个名称"))
+        self.assertIn("空单元格", summarize("错误使用 fprintf 不支持 <missing> 字符串元素"))
+        self.assertIn("数组", summarize("操作数必须可转换为标量逻辑值"))
+        self.assertEqual(summarize("unknown failure"), "代码执行出错")
+        source_context = (
+            "【实际报错源码】\n87: table(x,'VariableNames',{'名称'});\n"
+            "89: T.中文=1;\n错误: 文件: call_0011.m 行: 89\n文本字符无效。"
+        )
+        self.assertIn("语法检查失败", summarize(source_context))
+
+    async def test_output_budget_learned_from_truncation_is_reused(self):
+        agent = _make_agent()
+        agent.model.max_tokens = 8192
+        agent._chat = AsyncMock(
+            side_effect=[
+                StandardResponse(content=None, finish_reason="max_output_tokens"),
+                StandardResponse(content="first complete response"),
+                StandardResponse(content="second complete response"),
+            ]
+        )
+        with patch(
+            "app.core.agents.coder_agent.redis_manager.publish_message", new=AsyncMock()
+        ):
+            await agent._call_model([])
+            await agent._call_model([])
+        assert [c.kwargs["max_tokens"] for c in agent._chat.await_args_list] == [
+            8192,
+            16384,
+            16384,
+        ]
+        assert agent.model.max_tokens == 8192
+
+    async def test_narration_without_deliverables_keeps_execution_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = _make_agent()
+            agent.work_dir = tmp
+            agent._chat = AsyncMock(
+                side_effect=[
+                    _tool_response("inspect", "inspect()"),
+                    StandardResponse(content="接下来保存数据"),
+                    _tool_response("save", "save()"),
+                    StandardResponse(content="已保存"),
+                ]
+            )
+
+            async def execute(code):
+                if code == "save()":
+                    Path(tmp, "quality.json").write_text('{"status":"manual_review"}')
+                return ("真实表列名和DEM属性", False, "")
+
+            agent.code_interpreter.execute_code.side_effect = execute
+            with patch(
+                "app.core.agents.coder_agent.redis_manager.publish_message",
+                new=AsyncMock(),
+            ):
+                result = await agent.run(
+                    "clean", "eda", required_files=("quality.json",)
+                )
+            self.assertEqual(result.code_response, "已保存")
+            self.assertEqual(agent.current_code_executions, 2)
+            self.assertIn(
+                "真实表列名和DEM属性",
+                json.dumps(agent.chat_history, ensure_ascii=False),
+            )
+
+    async def test_missing_artifact_narration_retries_are_bounded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = _make_agent()
+            agent.work_dir = tmp
+            agent._chat = AsyncMock(return_value=StandardResponse(content="尚未完成"))
+            with patch(
+                "app.core.agents.coder_agent.redis_manager.publish_message",
+                new=AsyncMock(),
+            ):
+                result = await agent.run(
+                    "clean", "eda", required_files=("missing.json",)
+                )
+            self.assertEqual(agent._chat.await_count, 3)
+            self.assertEqual(result.code_response, "尚未完成")
+            agent.code_interpreter.execute_code.assert_not_awaited()
+
     async def test_invalid_tool_arguments_have_bounded_retries(self) -> None:
         for arguments in (
             "{}",
@@ -134,6 +298,17 @@ class CoderAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(RuntimeError, "not initialized"):
             agent._require_interpreter()
+
+    async def test_configuration_error_preserves_nonretryable_class(self):
+        agent = _make_agent()
+        agent._chat = AsyncMock(side_effect=NonRetryableLLMError("missing workspaceid"))
+        agent._prime_history = AsyncMock()
+        agent._inject_user_notes = AsyncMock()
+        with patch("app.core.agents.coder_agent.publish_activity", new=AsyncMock()):
+            with self.assertRaisesRegex(NonRetryableLLMError, "workspaceid"):
+                await agent.run("finish ques1", "ques1")
+        agent._chat.assert_awaited_once()
+        agent.code_interpreter.execute_code.assert_not_awaited()
 
     async def test_transport_failure_is_not_returned_as_completed_code(self) -> None:
         agent = _make_agent(max_retries=2)

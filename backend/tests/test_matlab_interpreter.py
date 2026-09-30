@@ -32,6 +32,31 @@ class MatlabInterpreterTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("MATLAB syntax only", description)
         self.assertIn("Do not send Python code", description)
 
+    def test_error_context_uses_actual_matlab_source_location(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "call_0002.m"
+            script.write_text(
+                "T = table(1);\nT.可计算 = true;\ndisp('经度（°）');\n",
+                encoding="utf-8",
+            )
+            for error in (
+                f"错误: 文件: {script} 行: 2 列: 3\n文本字符无效。\n出错 run (第 112 行)",
+                "出错 call_0002 (第 2 行)\n文本字符无效。",
+                f"Error: File: {script} Line: 2 Column: 3\nInvalid text character.",
+            ):
+                with self.subTest(error=error):
+                    context = MatlabCodeInterpreter._source_error_context(script, error)
+                    self.assertIn("第2行", context)
+                    self.assertIn("2: T.可计算 = true;", context)
+                    self.assertIn("T.('中文列名')", context)
+                    self.assertIn("经度（°）", context)
+            self.assertEqual(
+                MatlabCodeInterpreter._source_error_context(
+                    script, "出错 run (第 112 行)"
+                ),
+                "",
+            )
+
     def test_macos_engine_architecture_matches_python_process(self) -> None:
         with (
             patch("app.tools.matlab_interpreter.os.name", "posix"),
@@ -231,11 +256,25 @@ class MatlabInterpreterTests(unittest.IsolatedAsyncioTestCase):
                         "x = x + 1; writematrix(x, 'matlab_result.csv'); "
                         "fprintf('SECOND_VALUE=%d\\n', x);"
                     )
+                    bad_output, bad_error, _ = await interpreter.execute_code(
+                        "T = table(1); T.可计算 = true;"
+                    )
+                    fixed_output, fixed_error, _ = await interpreter.execute_code(
+                        "T = table(1); T.('可计算') = true; "
+                        "disp('经度（°）与体积（m³）'); "
+                        "fprintf('CHINESE_COLUMN_OK=%d\\n', T.('可计算'));"
+                    )
 
                 self.assertFalse(first_error, first_output)
                 self.assertFalse(second_error, second_output)
                 self.assertIn("FIRST_VALUE=41", first_output)
                 self.assertIn("SECOND_VALUE=42", second_output)
+                self.assertTrue(bad_error, bad_output)
+                self.assertIn("实际报错源码", bad_output)
+                self.assertIn("T.可计算", bad_output)
+                self.assertFalse(fixed_error, fixed_output)
+                self.assertIn("CHINESE_COLUMN_OK=1", fixed_output)
+                self.assertIn("经度（°）与体积（m³）", fixed_output)
                 self.assertEqual(
                     (Path(tmp) / "matlab_result.csv")
                     .read_text(encoding="utf-8")

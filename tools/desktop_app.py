@@ -167,6 +167,7 @@ class DesktopApp:
         self.window.events.closing += self._on_window_closing
         self.window.events.closed += self._on_window_closed
         self.window.events.loaded += self._install_external_link_guard
+        self.window.events.loaded += self._enable_context_menu
         try:
             webview.start(
                 self._on_webview_started,
@@ -184,6 +185,29 @@ class DesktopApp:
     def _on_webview_started(self) -> None:
         self._start_tray()
         threading.Thread(target=self._bootstrap_services, daemon=True).start()
+
+    def _enable_context_menu(self) -> None:
+        """Enable native editing menus without enabling the debug interface."""
+        if self.window is None or self.shutdown_event.is_set():
+            return
+        try:
+            from System import Action  # type: ignore[import-not-found]
+
+            native = self.window.native
+
+            def configure() -> None:
+                settings = native.browser.webview.CoreWebView2.Settings
+                settings.AreDefaultContextMenusEnabled = True
+                logging.info(
+                    "Native context menu enabled=%s; devtools enabled=%s",
+                    settings.AreDefaultContextMenusEnabled,
+                    settings.AreDevToolsEnabled,
+                )
+
+            # WebView2 properties must be changed on its UI thread.
+            native.Invoke(Action(configure))
+        except Exception:
+            logging.warning("Could not enable desktop context menu", exc_info=True)
 
     def _install_external_link_guard(self) -> None:
         """Keep every external anchor out of the application WebView.

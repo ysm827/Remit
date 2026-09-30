@@ -33,6 +33,7 @@ node_modules/
 backend/*_tmp.py
 # 运行时产物与本地依赖
 backend/project/repair_backups/
+backend/project/paper_library/
 backend/venv/
 backend/.venv/
 tmp/
@@ -41,3 +42,21 @@ build/
 coverage/
 # 微软版权字体：仅保留在本地，不随仓库分发（打包时由本地复制）
 backend/fonts/simhei.ttf
+
+# Local-only development and user material
+/.agents/
+/.claude/
+/.cursor/
+/.firecrawl/
+docs/monitoring/
+docs/screenshots/
+*.sqlite3*
+*.db
+*.pid
+*.pid.json
+*.log
+*.tsbuildinfo
+backend/project/*
+!backend/project/work_dir/
+backend/project/work_dir/*
+!backend/project/work_dir/.gitkeep

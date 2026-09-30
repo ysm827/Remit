@@ -7,13 +7,17 @@
 
 import asyncio
 import json
+import re
+from pathlib import Path
 from typing import Any
+from collections.abc import Callable
 
 from app.config.setting import settings
 from app.core.activity import publish_activity
-from app.core.agents.agent import Agent
+from app.core.agents.agent import Agent, _message_tokens
 from app.core.functions import get_coder_tools
 from app.core.llm.llm import LLM
+from app.core.llm.errors import NonRetryableLLMError
 from app.core.prompts.shared import get_reflection_prompt
 from app.core.prompts.coder import get_coder_prompt
 from app.core.structured_output import (
@@ -77,7 +81,10 @@ class CoderAgent(Agent):
         self.current_chat_turns = 0
         self.current_code_executions = 0
         self.is_first_run = True
+        self._active_subtask: str | None = None
+        self._run_budget_notes: list[dict] = []
         self.code_interpreter = code_interpreter
+        self._response_token_budget = configured_output_budget(model)
 
     # ---- 主循环 ----
 
@@ -86,6 +93,8 @@ class CoderAgent(Agent):
         prompt: str,
         subtask_title: str,
         max_code_executions: int | None = None,
+        required_files: tuple[str, ...] = (),
+        completion_check: Callable[[], bool] | None = None,
     ) -> CoderToWriter:
         """推进一个编码子任务直到模型宣告完成。
 
@@ -104,17 +113,33 @@ class CoderAgent(Agent):
         """
         logger.info(f"{self.__class__.__name__}:开始:执行子任务: {subtask_title}")
         interpreter = self._require_interpreter()
-        # 每个小问使用独立模型上下文；运行状态由 notebook/checkpoint 承接，
-        # 避免前一问的大段代码把后续提示膨胀到上下文极限。
-        self.chat_history = []
-        self.current_token_count = 0
-        self.is_first_run = True
+        # 新小问隔离上下文，但同一节点的质量返修必须保留已读取的数据、
+        # 成功代码和错误反馈，否则会从头侦察并重复触发刚修过的类型错误。
+        continuing = self._active_subtask == subtask_title
+        expired = {id(note) for note in self._run_budget_notes}
+        self.chat_history = [m for m in self.chat_history if id(m) not in expired]
+        self.current_token_count = sum(_message_tokens(m) for m in self.chat_history)
+        self._run_budget_notes.clear()
+        if not continuing:
+            self.chat_history = []
+            self.current_token_count = 0
+            self.is_first_run = True
+        self._active_subtask = subtask_title
         # 预算按单次调用计，跨小问 / 修复尝试不共享。
         self.current_chat_turns = 0
         self.current_code_executions = 0
         execution_limit = self.max_code_executions
         if max_code_executions is not None:
             execution_limit = max(1, min(max_code_executions, execution_limit))
+
+        def file_version(name: str) -> tuple[int, int] | None:
+            try:
+                stat = (Path(self.work_dir) / name).stat()
+                return (stat.st_mtime_ns, stat.st_size) if stat.st_size else None
+            except OSError:
+                return None
+
+        initial_files = {name: file_version(name) for name in required_files}
         interpreter.add_section(subtask_title)
         interpreter.notebook_serializer.add_markdown_segmentation_to_notebook(
             "以下代码与输出属于该工作流节点，可按此标题在 notebook 中定位。",
@@ -126,10 +151,25 @@ class CoderAgent(Agent):
         tools = get_coder_tools(interpreter.language, anthropic=False)
 
         await self._prime_history(prompt)
+        if continuing:
+            await self.append_chat_history(
+                {
+                    "role": "user",
+                    "content": (
+                        "这是同一节点的质量返修，前轮工具调用、实际输出和报错已保留。"
+                        f"本轮重新开放 execute_code，执行预算为 {execution_limit} 次。"
+                        "上一轮预算耗尽及仅总结的指令已经结束；当前按本轮预算继续修复。"
+                        "先对照本轮检查意见复用已验证的读取代码和真实中间结果，"
+                        "只修缺失交付或具体失败点；不要重新打印全部文件和工作表。"
+                        "成功执行不等于成果通过验收，保留尚未解决的问题。"
+                    ),
+                }
+            )
 
         retry_count = 0
         last_error = ""
         last_source = ""
+        idle_replies = 0
 
         while True:
             if self.current_code_executions >= execution_limit:
@@ -147,7 +187,7 @@ class CoderAgent(Agent):
 
             try:
                 response = await self._call_model(tools)
-            except CoderAgentRunError:
+            except (CoderAgentRunError, NonRetryableLLMError):
                 raise
             except Exception as exc:
                 # LLM.chat 已拥有网络重试和备用模型切换权；这里再次重试会把
@@ -160,11 +200,37 @@ class CoderAgent(Agent):
                 raise CoderAgentUnavailableError(message) from exc
 
             if not response.tool_calls:
-                # 没有工具调用 = 模型宣告任务完成
-                logger.info("没有工具调用，任务完成")
+                missing = [
+                    name
+                    for name in required_files
+                    if file_version(name) is None
+                    or file_version(name) == initial_files[name]
+                ]
+                if missing and idle_replies < 2:
+                    # 叙述下一步不是交付；保留工具输出，避免外层返修清空上下文。
+                    idle_replies += 1
+                    self._record_assistant_turn(response)
+                    await self._append_budget_note(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"本轮尚未生成或更新必需文件：{', '.join(missing)}。刚才只有文字，未执行下一步。"
+                                f"还有 {execution_limit - self.current_code_executions} 次执行预算，"
+                                "请调用 execute_code 完成当前任务并保存真实结果，复用已有读取和报错上下文。"
+                                "不得编造报告来结束任务；确实无法完成时如实保留未完成状态。"
+                            ),
+                        }
+                    )
+                    await publish_activity(
+                        self.task_id,
+                        "必需产物尚未生成，继续当前代码任务",
+                        category="repair",
+                    )
+                    continue
+                logger.info("模型结束本轮，交由质量门核验")
                 await publish_activity(
                     self.task_id,
-                    f"{subtask_title} 的代码工作完成，进入质量检查",
+                    f"{subtask_title} 本轮输出已结束，进入质量检查",
                     category="gate",
                 )
                 return CoderToWriter(
@@ -173,15 +239,30 @@ class CoderAgent(Agent):
                 )
 
             outcome = await self._handle_tool_call(response, interpreter)
+            idle_replies = 0
             if outcome == "ok":
                 retry_count, last_error, last_source = 0, "", ""
+                if (
+                    completion_check is not None and required_files
+                    and all(file_version(name) is not None and file_version(name) != initial_files[name]
+                            for name in required_files)
+                    and completion_check()
+                ):
+                    await publish_activity(
+                        self.task_id, f"{subtask_title} 的产物记录已齐全，进入结果核验",
+                        category="gate",
+                    )
+                    return CoderToWriter(
+                        code_response="规定产物已更新并通过结构校验，实际指标仍由后续审查和用户验收。",
+                        created_images=await interpreter.get_created_images(subtask_title),
+                    )
                 remaining_executions = execution_limit - self.current_code_executions
                 if 0 < remaining_executions <= 2:
                     # 不能等预算归零后才要求总结：质量报告等契约文件必须由
                     # execute_code 真正落盘。提前保留最后一到两次调用，让模型
                     # 把当前内核中的真实中间结果持久化并回读，而不是在最终文本
                     # 中“算完了”却因缺文件再次进入整轮重试。
-                    await self.append_chat_history(
+                    await self._append_budget_note(
                         {
                             "role": "user",
                             "content": (
@@ -202,7 +283,7 @@ class CoderAgent(Agent):
                 await self._notify("代码手反思纠正错误", "error")
                 await publish_activity(
                     self.task_id,
-                    f"代码报错，正在自动修复（{retry_count}/{self.max_retries or '∞'}）",
+                    f"{self._execution_failure_summary(outcome)}，正在自动修复（{retry_count}/{self.max_retries or '∞'}）",
                     category="repair",
                     detail=outcome[:160],
                 )
@@ -214,6 +295,30 @@ class CoderAgent(Agent):
                 )
 
     # ---- 步骤拆分 ----
+
+    async def _append_budget_note(self, note: dict) -> None:
+        """预算指令仅在当前 run 生效，返修不继承过期的禁用工具指令。"""
+        self._run_budget_notes.append(note)
+        await self.append_chat_history(note)
+
+    @staticmethod
+    def _execution_failure_summary(error: str) -> str:
+        """只解释已在执行器错误中出现的类型，不推断科学结论。"""
+        # 执行器在错误前附上源码，源码中的 VariableNames 等不是错误证据。
+        diagnostic = re.search(r"(?m)^(?:错误[:：]|错误使用|Error(?: using|:))", error)
+        if diagnostic:
+            error = error[diagnostic.start():]
+        else:
+            error = re.sub(r"(?m)^\d+:.*$", "", error)
+        if "VariableNames" in error and ("名称" in error or "variable" in error.lower()):
+            return "建表失败：数据列数与列名数量不匹配"
+        if "<missing>" in error and "fprintf" in error:
+            return "预览输出失败：空单元格尚未转换为可打印文本"
+        if "标量逻辑" in error or "scalar logical" in error.lower():
+            return "数据判断失败：把数组当成了单个真假值"
+        if "文本字符无效" in error or "Invalid text character" in error:
+            return "代码语法检查失败：包含不合法的字符写法"
+        return "代码执行出错"
 
     def _require_interpreter(self) -> BaseCodeInterpreter:
         if self.code_interpreter is None:
@@ -267,7 +372,7 @@ class CoderAgent(Agent):
 
     async def _call_model(self, tools: list[dict], tool_choice: str = "auto") -> Any:
         """只返回完整且可执行的响应，协议重试最多三次。"""
-        budget = configured_output_budget(self.model)
+        budget = max(configured_output_budget(self.model), self._response_token_budget)
         for attempt in range(3):
             response = await self._chat(
                 history=self.chat_history,
@@ -275,11 +380,13 @@ class CoderAgent(Agent):
                 tool_choice=tool_choice,
                 agent_name=self.__class__.__name__,
                 max_tokens=budget,
+                parallel_tool_calls=False,
             )
             error = ""
             if response_was_truncated(response, budget):
                 error = "模型输出达到上限被截断"
                 budget = expanded_output_budget(budget)
+                self._response_token_budget = budget
             elif response.tool_calls:
                 if len(response.tool_calls) != 1 or not tools:
                     error = "当前响应必须只包含一个允许的工具调用"
@@ -312,7 +419,13 @@ class CoderAgent(Agent):
                 }
             )
             await publish_activity(
-                self.task_id, "模型响应不完整，正在重新生成", category="repair"
+                self.task_id,
+                (
+                    "正在将代码执行请求调整为逐步执行"
+                    if error == "当前响应必须只包含一个允许的工具调用" and tools
+                    else f"{error}，正在重新生成"
+                ),
+                category="repair",
             )
 
     @staticmethod
@@ -345,7 +458,7 @@ class CoderAgent(Agent):
             f"代码执行已达到本轮上限 {execution_limit}，禁用工具并要求模型收口"
         )
         await self._inject_user_notes()
-        await self.append_chat_history(
+        await self._append_budget_note(
             {
                 "role": "user",
                 "content": (
@@ -427,7 +540,7 @@ class CoderAgent(Agent):
                 },
             ),
         )
-        await self.append_chat_history(self._assistant_history_entry(response))
+        await self.append_assistant_response(response)
 
         await publish_activity(
             self.task_id,

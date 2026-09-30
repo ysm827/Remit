@@ -35,6 +35,7 @@ const pageCount = ref(0);
 const charCount = ref(0);
 const figureCount = ref(0);
 const visionFailed = ref(false);
+const documentWarning = ref("");
 const textPreview = ref("");
 const dragDepth = ref(0);
 let requestId = 0;
@@ -42,15 +43,15 @@ let requestId = 0;
 const isDragging = computed(() => dragDepth.value > 0);
 const isParsing = computed(() => parseStatus.value === "parsing");
 const liveMessage = computed(() => {
-	if (parseStatus.value === "parsing") return "正在解析 PDF 并识别插图";
+	if (parseStatus.value === "parsing") return "正在提取赛题内容";
 	if (parseStatus.value === "success") {
 		const figures = figureCount.value
 			? `，识别 ${figureCount.value} 张插图`
 			: "";
-		return `PDF 解析完成，共 ${pageCount.value} 页，${charCount.value} 个字符${figures}`;
+		return `文档解析完成，${charCount.value} 个字符${figures}`;
 	}
 	if (parseStatus.value === "error") return errorMessage.value;
-	return "等待上传赛题 PDF";
+	return "等待上传赛题 PDF / Word";
 });
 
 const formatFileSize = (bytes: number) => {
@@ -67,6 +68,7 @@ const resetResult = () => {
 	charCount.value = 0;
 	figureCount.value = 0;
 	visionFailed.value = false;
+	documentWarning.value = "";
 	textPreview.value = "";
 	errorMessage.value = "";
 };
@@ -84,12 +86,12 @@ const parseFile = async (file: File) => {
 	resetResult();
 	emit("cleared");
 
-	if (!file.name.toLowerCase().endsWith(".pdf")) {
-		setError("这里只接受 PDF 格式的赛题文件");
+	if (!/\.(pdf|docx|doc)$/i.test(file.name)) {
+		setError("请选择 PDF、DOCX 或 DOC 格式的赛题文件");
 		return;
 	}
 	if (file.size > MAX_PDF_BYTES) {
-		setError("PDF 不能超过 25MB", file);
+		setError("赛题文件不能超过 25MB", file);
 		return;
 	}
 
@@ -104,6 +106,7 @@ const parseFile = async (file: File) => {
 		charCount.value = response.data.char_count;
 		figureCount.value = response.data.figure_count;
 		visionFailed.value = response.data.vision_status === "failed";
+		documentWarning.value = response.data.vision_error || "";
 		textPreview.value = response.data.text.replace(/\s+/g, " ").slice(0, 180);
 		parseStatus.value = "success";
 		emit("parsed", {
@@ -118,7 +121,7 @@ const parseFile = async (file: File) => {
 		const responseData = isAxiosError(error)
 			? (error.response?.data as { detail?: string } | undefined)
 			: undefined;
-		setError(responseData?.detail || "PDF 解析失败，请检查文件后重试", file);
+		setError(responseData?.detail || "文档解析失败，请检查文件后重试", file);
 	}
 };
 
@@ -174,7 +177,7 @@ const clearFile = () => {
       ref="fileInput"
       type="file"
       class="sr-only"
-      accept="application/pdf,.pdf"
+      accept=".pdf,.docx,.doc"
       @change="handleFileInput"
     >
 
@@ -182,7 +185,7 @@ const clearFile = () => {
       type="button"
       class="flex min-h-[176px] w-full min-w-0 flex-col items-center justify-center rounded-lg px-4 py-7 text-center outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 sm:px-6"
       :aria-busy="isParsing"
-      aria-label="选择或拖入赛题 PDF"
+      aria-label="选择或拖入赛题 PDF / Word"
       @click="openFilePicker"
     >
       <span
@@ -209,17 +212,18 @@ const clearFile = () => {
         <span class="text-base font-medium">题目解析完成</span>
         <span class="mt-1 text-sm text-muted-foreground">
           <template v-if="figureCount">已把 {{ figureCount }} 张插图的内容转成文字并并入题面</template>
+          <template v-else-if="documentWarning">{{ documentWarning }}</template>
           <template v-else-if="visionFailed">插图识别未成功，已按纯文本导入</template>
           <template v-else>点击可替换，或直接开始分析</template>
         </span>
       </template>
       <template v-else-if="parseStatus === 'error'">
-        <span class="text-base font-medium text-destructive">无法解析这个 PDF</span>
+        <span class="text-base font-medium text-destructive">无法解析这个文档</span>
         <span class="mt-1 max-w-md text-sm text-muted-foreground">{{ errorMessage }}</span>
       </template>
       <template v-else>
-        <span class="text-base font-medium">将赛题 PDF 拖到这里</span>
-        <span class="mt-1 max-w-full text-sm text-muted-foreground">或点击选择文件 · 单个 PDF，最大 25MB</span>
+        <span class="text-base font-medium">将赛题 PDF / Word 拖到这里</span>
+        <span class="mt-1 max-w-full text-sm text-muted-foreground">或点击选择文件 · PDF、DOCX 或 DOC，最大 25MB</span>
       </template>
     </button>
 
@@ -232,7 +236,7 @@ const clearFile = () => {
           <p class="truncate text-sm font-medium">{{ selectedFile.name }}</p>
           <p class="mt-0.5 text-xs text-muted-foreground">
             {{ formatFileSize(selectedFile.size) }}
-            <template v-if="parseStatus === 'success'"> · {{ pageCount }} 页 · {{ charCount }} 字符</template>
+            <template v-if="parseStatus === 'success'"><template v-if="pageCount"> · {{ pageCount }} 页</template> · {{ charCount }} 字符</template>
             <template v-if="parseStatus === 'success' && figureCount"> · {{ figureCount }} 张插图已识别</template>
           </p>
         </div>
@@ -241,7 +245,7 @@ const clearFile = () => {
           variant="ghost"
           size="icon"
           class="h-9 w-9 shrink-0"
-          aria-label="移除赛题 PDF"
+          aria-label="移除赛题 PDF / Word"
           @click.stop="clearFile"
         >
           <X class="h-4 w-4" />

@@ -141,6 +141,17 @@ class RedisManager:
 
     async def publish_message(self, task_id: str, message: Message) -> None:
         """先落盘再广播；activity 是高频瞬态播报，只广播不留档。"""
+        from app.services.message_scope import message_sink
+        from app.services.team_state import record_message
+
+        sink = message_sink.get()
+        await asyncio.to_thread(
+            record_message, task_id, message.model_dump(mode="json"),
+            scope="writing" if sink is not None else "modeling",
+        )
+        if sink is not None:
+            await sink(task_id, message)
+            return
         if message.msg_type != "activity":
             await self._save_message_to_file(task_id, message)
         try:
@@ -195,6 +206,10 @@ class RedisManager:
 
     async def drain_user_notes(self, task_id: str) -> list[str]:
         """原子地取走并清空待注入插话；Redis 故障时安静返回空。"""
+        from app.services.message_scope import message_sink
+
+        if message_sink.get() is not None:
+            return []
         try:
             client = await self.get_client()
             key = f"task:{task_id}:user_notes"

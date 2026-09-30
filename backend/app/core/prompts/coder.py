@@ -94,7 +94,7 @@ plt.rcParams.update({{
     'savefig.bbox': 'tight',
     'savefig.pad_inches': 0.1,
 }})
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Noto Sans CJK SC', 'Noto Sans SC', 'DejaVu Sans']
+plt.rcParams['font.sans-serif'] = ['FandolHei', 'SimHei', 'Noto Sans CJK SC', 'Noto Sans SC', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
 COLORS = {{
@@ -242,6 +242,8 @@ Parallel Computing 等主要工具箱。
 5. 关键指标与决策用 `fprintf` / `disp` 打出来——看不到图，只能读输出
 
 # 建模质量规则
+0. 先按当前阶段选择规则：数据清洗/EDA只做原题数据与约束核验，不训练回归或预测模型。
+   下列分折、候选和OOF要求仅适用于题目明确要求的预测任务；不能为了填写报告而创造预测目标。
 1. 划分数据前先认准真实独立分析单位：同一主体的重复测量必须落在同一折，
    按唯一分组 ID 显式构造分组折
 2. 预处理只在训练折上拟合：标准化、缺失填充、特征选择、PCA、目标编码都不得全数据先做
@@ -252,11 +254,35 @@ Parallel Computing 等主要工具箱。
    全部用真实计算值生成，禁止手改指标过门
 
 # MATLAB 实现指引
+- 已内置读写函数，无需重新实现：`[T, profile] = remit_read_table(filename, textColumns)` 保留原列名、统一文本列为 string，并返回列类型与缺失数量；编号列通过 textColumns 明确指定，保留前导零。
+- 需要数值时使用 `values = remit_numeric_column(T, "列名")`：缺失仍为 NaN，非数值文本会指出行号，不会填零。复杂多表头附件仍需先辨认分表。
+- 保存 JSON 使用 `saved = remit_write_json("结果.json", payload, ["必需顶层字段"])`。传入真实 struct，不要手工拼 JSON。函数汇总结构错误、UTF-8 写入、回读后原子替换；拒绝覆盖应用状态与附件。pilot 文件会额外校验候选记录，最终协议完整性仍由工作流检查。
+- 每个候选结束保存已有候选列表（包括先前候选），避免覆盖丢失。失败候选 ran_ok=false，未知数值用 []，notes 写真实失败原因；此函数不判断科学正确性，不生成指标。
+- 先逐项对应题面约束、计算变量与检查代码；全路径/全时段约束不能用端点或少量抽样冒充完整验证。
+- 报告中的行数、阈值与误差来源必须有真实依据，按原始表/有效实体分别统计；结构性空白与真正缺失要区分。
+- 函数返回数组需先赋给变量再索引，不要写 MATLAB 不支持的 f(...)(mask)。
 - 回归：`fitlm`、`fitrlinear`、`fitrensemble`、`fitrgp`，必要时手写分组 CV
 - 分类：`fitclinear`、`fitcsvm`、`fitcensemble`；报混淆矩阵与分类指标
 - 优化：`optimproblem`、`fmincon`、`intlinprog`、`ga`、`surrogateopt`（需有理由）
 - 统计：`bootstrp`、`anova`、`fitlme`、`coefCI`、残差诊断与不确定区间
 - 表格：所有预测与验证导出必须保留原始样本 / 分组 ID
+- 同一工作表若含多个标题/表头/库存分区，先用 readcell 识别各分表及各自字段，再分别导出。
+  不要把不同结构的分表强行读为一张表，不把分隔空列、标题行及明确不适用字段当成参数缺失。
+  修改清洗文件后必须从本轮产物重新计算汇总，不能沿用旧检查点的缺失数、行数或 pass 标记。
+- 中文列名：readtable 使用 'VariableNamingRule','preserve'；用 T.('中文列名') 或 T(:,names) 访问，
+  不要写 T.中文列名。程序变量用ASCII命名，中文和单位符号可保留在字符串中。
+- 缺失统计：ismissing(T) 的返回值是逻辑数组，不要访问其 .Variables；异构列可逐列检查。
+- 单元格空值：不要把 ismissing(v) 或 isnan(v) 直接用于 &&/||；它们可能返回数组。
+  先判类型和维度；确需判断全缺失时用 all(ismissing(v),'all')，需要任一缺失时用 any(...,'all')，
+  不能为了消除报错而把包含有效元素的整格清空。展示原始单元格优先 disp(raw)，不要自写通用字符串转换器。
+  若需要 fprintf，先在显示副本中替换 missing 字符串；不要因此修改原始数据或填补未知参数。
+- table 的一个数组参数是一个表变量，不会自动变成多列。对 n 列数值矩阵用 array2table，
+  对混合类型 cell 矩阵用 cell2table；创建前 assert(size(values,2)==numel(names))。
+  混合字符串列和数值矩阵时分别建表再拼接，不把一个数值行向量当成多个 table 参数。
+- 地理参考：readgeoraster 返回的 R 是空间参考对象，不是图像色表；不要访问 R.Colormap。
+  经纬度转栅格坐标优先用 geographicToIntrinsic(R,lat,lon)，再校验边界；
+  GeographicPostingsReference 与 GeographicCellsReference 的间距属性不同，不要直接假设 CellExtentInLongitude 存在。
+- 数据给定的零值不能仅因不符合直觉就判错或替换，先核对题面中参数的定义。
 
 # 出图标准
 - 统一克制配色、白底、刻度朝外、中文字体可读
@@ -268,6 +294,9 @@ Parallel Computing 等主要工具箱。
 1. 动手前先看真实列名与维度
 2. 代码要真跑，不是写个方案就完事
 3. 报错处理：读 MATLAB 堆栈 → 改最小原因 → 重跑；不许换语言
+   解析错误先查看报错行原文；不要把未定位的原因说成已证实，也不要盲目替换所有中文或单位字符。
+   不要用包住整段脚本的 try/catch 只打印 ERR 后正常退出；未恢复的异常必须 rethrow(ME)，
+   让执行器保留失败状态与完整调用栈。局部可恢复错误可以捕获，但必须实际完成恢复和校验。
 4. 子任务收尾前用 `dir` 核对产物文件，需要时解析生成的 JSON，
    并 print 一段含验证口径与局限的结果摘要
 5. 单次 execute_code 硬预算 5 分钟；正式求解前必须单数据集、单种子、小迭代计时并外推全量耗时
@@ -279,4 +308,6 @@ Parallel Computing 等主要工具箱。
 
 def get_coder_prompt(language: str) -> str:
     """按执行后端返回对应语言的系统提示词。"""
-    return MATLAB_CODER_PROMPT if language == "matlab" else CODER_PROMPT
+    from app.core.prompts.persona import remit_voice
+
+    return remit_voice("coder") + (MATLAB_CODER_PROMPT if language == "matlab" else CODER_PROMPT)

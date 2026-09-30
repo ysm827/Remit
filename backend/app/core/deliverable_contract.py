@@ -29,8 +29,6 @@ _REGRESSION_PATTERNS = (
 )
 _CLASSIFICATION_PATTERNS = (
     "分类",
-    "判定",
-    "识别",
     "异常检测",
     "诊断",
     "风险等级",
@@ -182,20 +180,39 @@ class QuestionDeliverableContract:
             if self.problem_type in _MANUAL_REVIEW_PROBLEM_TYPES
             else "只能在所有检查真实通过后写 `pass`"
         )
+        candidate_rule = (
+            f"至少 {self.minimum_candidate_models} 个真实运行的方法，其中至少一个 `role` 为 `baseline`"
+            if self.minimum_candidate_models
+            else "允许为空数组 []，本阶段不要求训练候选模型或新增预测任务"
+        )
+        comparison_rule = (
+            "复杂模型必须与简单基线在完全相同的数据划分和指标下比较。复杂模型不占优时，优先选择更简单模型；所有候选均不达标时必须报告门禁失败，不得包装成完成。"
+            if self.minimum_candidate_models
+            else "只验证本阶段原定的数据处理或敏感性分析，不得为了补齐质量报告临时创造监督学习目标或训练回归模型。"
+        )
+        validation_rule = (
+            "禁止使用训练集 R²、条件随机效应 R²、全数据预处理后的交叉验证或肉眼看图代替独立验证。"
+            if self.requires_prediction_values
+            else "每项检查必须有真实执行输出支撑；不适用的检查如实说明，不能用填充指标冒充完成。"
+        )
         common = f"""
-【冠军级硬门禁：未通过时禁止写论文、禁止进入下一问】
+【交付检查：未通过时禁止写论文、禁止进入下一问】
 1. 本阶段类型固定为 `{self.problem_type}`，必须在工作目录根目录生成 `{self.quality_filename}`。
 2. 质量报告必须包含：
    - `status`（{status_rule}）、`problem_type`、`selected_model`；
-   - `candidate_models`：至少 {self.minimum_candidate_models} 个真实运行的方法，其中至少一个 `role` 为 `baseline`；
+   - `candidate_models`：{candidate_rule}；
    - `independent_unit` 和 `data_leakage_checks`；
    - `robustness_checks`：至少 {self.minimum_robustness_checks} 项真实执行且通过的检查；
    - `limitations`：至少一条基于结果的局限；
    - `artifacts`：支撑结果的真实文件相对路径；
    - `paper_ready_images`：仅列入适合论文使用、支持核心结论的图片，不要把失败图和无效图交给写作手。
-3. 复杂模型必须与简单基线在完全相同的数据划分和指标下比较。复杂模型不占优时，优先选择更简单模型；所有候选均不达标时必须报告门禁失败，不得包装成“完成”。
-4. 禁止使用训练集 R²、条件随机效应 R²、全数据预处理后的交叉验证或肉眼看图代替独立验证。
-5. 所有 JSON 数值、候选模型和产物路径都会被程序复核；虚构文件、虚构检验或指标不一致会直接失败。
+3. {comparison_rule}
+4. {validation_rule}
+5. 程序检查报告结构、产物和部分可计算的一致性；这不替代对题意及执行源码的核验，禁止虚构文件或检验。
+6. 每项数值阈值都要说明来自题面、附件、用户已批准方案或本契约的哪一项。不得临时发明门槛制造失败或通过。
+   只有观测差异但没有规定阈值时，报告实测差异、对计算的影响和未决问题；不能自行设阈值再要求用户批准放宽。
+   代码错误、文件未保存、旧报告和表头读取错误属于技术返修，不能包装为科学冲突交用户裁决。
+7. 报告对数据来源与计算口径的描述必须与实际导出字段一致；每个 passed 应从真实检查推导，不能为了结束任务直接赋 true。
 """.strip()
 
         if self.problem_type == "eda":
@@ -271,6 +288,7 @@ class QuestionDeliverableContract:
         if self.problem_type == "optimization":
             return (
                 common
+                + "\n本题为优化任务：直接交付可行方案、目标值和约束验证；不得把物理可行性标签包装成分类任务，也不要求预测CSV或分类准确率。\n"
                 + """
 
 质量报告的 `type_specific` 必须包含：
@@ -362,6 +380,9 @@ def _detect_problem_type(text: str) -> str:
         return "simulation"
     if any(token in lower for token in _REGRESSION_PATTERNS):
         return "regression"
+    # Constraint checks use these verbs too; they cannot override an objective.
+    if any(token in lower for token in ("判定", "识别")):
+        return "classification"
     return "analysis"
 
 
@@ -375,8 +396,11 @@ def build_question_contract(
     scoped_numbers = _scoped_question_numbers(requirements)
     number = _question_number(question_key)
     applies = not scoped_numbers or number in scoped_numbers
-    combined = f"{question_text}\n{requirements if applies else ''}"
-    problem_type = _detect_problem_type(combined)
+    # Intake plans include context from other questions and attachment checks.
+    # Infer from this question first so that shared context cannot change its task.
+    problem_type = _detect_problem_type(question_text)
+    if problem_type == "analysis" and applies:
+        problem_type = _detect_problem_type(requirements)
     predictive = problem_type in _PREDICTIVE_PROBLEM_TYPES
     return QuestionDeliverableContract(
         question_key=question_key,
@@ -1415,6 +1439,55 @@ def _manual_review_reason(quality_report: dict[str, Any]) -> str:
     return "质量报告要求人工复核"
 
 
+def _stage_execution_preview(root: Path, stage: str) -> list[dict[str, Any]]:
+    """Give the reviewer executed code, not only the coder's self-reported metrics."""
+    path = root / "notebook.ipynb"
+    try:
+        if path.stat().st_size > 64 * 1024 * 1024:
+            return []
+        notebook = json.loads(path.read_text(encoding="utf-8"))
+        cells = notebook.get("cells", [])
+    except (OSError, ValueError, AttributeError):
+        return []
+    active = ""
+    previews = []
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        source = cell.get("source", "")
+        source = "".join(source) if isinstance(source, list) else str(source)
+        if cell.get("cell_type") == "markdown" and source.startswith("##### "):
+            active = source.split("\n", 1)[0][6:].removesuffix(":")
+        if active != stage or cell.get("cell_type") != "code":
+            continue
+        outputs = cell.get("outputs") or []
+        if not outputs:
+            continue
+        text_outputs = []
+        failed = False
+        for output in outputs:
+            if not isinstance(output, dict):
+                continue
+            failed |= output.get("output_type") == "error"
+            text = (
+                output.get("text")
+                or output.get("traceback")
+                or output.get("data", {}).get("text/plain", "")
+            )
+            text_outputs.append("".join(text) if isinstance(text, list) else str(text))
+        text = "\n".join(text_outputs)
+        previews.append(
+            {
+                "source": source[:16000],
+                "source_truncated": len(source) > 16000,
+                "output": text[-2500:],
+                "output_truncated": len(text) > 2500,
+                "execution_failed": failed,
+            }
+        )
+    return previews[-2:]
+
+
 def collect_model_quality_evidence(
     work_dir: str | Path,
     contract: QuestionDeliverableContract,
@@ -1430,6 +1503,9 @@ def collect_model_quality_evidence(
     """
     root = Path(work_dir)
     evidence: dict[str, Any] = {"problem_type": contract.problem_type}
+    executed = _stage_execution_preview(root, contract.question_key)
+    if executed:
+        evidence["executed_code_preview"] = executed
     quality_payload: dict[str, Any] | None = None
     targets = {
         "quality_report": root / contract.quality_filename,
@@ -1533,7 +1609,7 @@ _METRIC_KEYWORD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 # 负号仅在非数字前生效：避免把区间 "0.75-0.85" 的右端点解析成负数
-_NUMBER_PATTERN = re.compile(r"(?<![\d.])-?\d+(?:\.\d+)?")
+_NUMBER_PATTERN = re.compile(r"(?<![\d.])[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
 # 显著性水平、常见比例等惯用常数不参与溯源，避免误杀
 _GROUNDING_COMMON_CONSTANTS = {
     0.0,
@@ -1590,7 +1666,7 @@ def _is_grounded_number(
 ) -> bool:
     # 正文数字可能是真实值的原样或百分数写法；允许 1% 相对差或同精度舍入。
     # 容差必须随 /100 候选同尺度缩放，否则整数百分数编造会全部漏杀。
-    tolerance_floor = 0.5 * 10 ** (-decimals)
+    tolerance_floor = 0.5 * 10.0 ** max(-323, min(308, -decimals))
     for candidate, floor in (
         (text_number, tolerance_floor),
         (text_number / 100.0, tolerance_floor / 100.0),
@@ -1609,6 +1685,7 @@ def validate_writer_section(
     question_text: str = "",
     grounding_values: set[float] | None = None,
     expected_question_count: int = 0,
+    omitted_images: dict[str, str] | None = None,
 ) -> None:
     """Reject empty, failed or evidence-free writer sections."""
     if not isinstance(content, str):
@@ -1616,11 +1693,18 @@ def validate_writer_section(
 
     def check_length() -> None:
         compact = re.sub(r"\s+", "", content)
-        minimum = 600 if section_key.startswith("ques") else 250
+        minimum = 600 if section_key.startswith("ques") else (100 if section_key in {"modelAssumption", "symbol"} else 250)
         if len(compact) < minimum:
             raise DeliverableValidationError(
                 f"{section_key} 正文过短: {len(compact)} < {minimum}"
             )
+
+    def check_style() -> None:
+        from app.core.paper_style import style_issues
+
+        issues = style_issues(section_key, content)
+        if issues:
+            raise DeliverableValidationError("；".join(issues))
 
     def check_markers() -> None:
         found = [
@@ -1708,10 +1792,21 @@ def validate_writer_section(
             )
 
     def check_images() -> None:
+        omitted = omitted_images or {}
+        candidates = {str(image) for image in required_images or ()}
+        referenced = set(re.findall(r"!\[[^\]]*\]\(([^)]+)\)", content))
+        cited = {Path(image).name for image in referenced}
+        for name, reason in omitted.items():
+            if name not in candidates or not isinstance(reason, str) or len(reason.strip()) < 12:
+                raise DeliverableValidationError(f"{section_key} 图片取舍记录无效：{name}，请说明替代证据与保留位置")
+            if name in referenced:
+                raise DeliverableValidationError(f"{section_key} 同一图片既插入又标为未采用：{name}")
+        if candidates and omitted and not any(Path(image).name in cited for image in candidates):
+            raise DeliverableValidationError(f"{section_key} 不可仅以取舍说明省略全部证据图片")
         missing = [
             str(image)
             for image in required_images or ()
-            if Path(image).name not in content and str(image) not in content
+            if Path(image).name not in cited and str(image) not in omitted
         ]
         if missing:
             raise DeliverableValidationError(
@@ -1743,12 +1838,16 @@ def validate_writer_section(
                 number = float(raw)
             except ValueError:
                 continue
+            if not math.isfinite(number):
+                ungrounded.append(f"{keyword}…{raw}")
+                continue
             if number in _GROUNDING_COMMON_CONSTANTS:
                 continue
-            if "." not in raw and abs(number) <= 12:
+            if "." not in raw and "e" not in raw.lower() and abs(number) <= 12:
                 # 问题编号、折数等小整数不参与溯源
                 continue
-            decimals = len(raw.split(".")[1]) if "." in raw else 0
+            mantissa, _, exponent = raw.lower().partition("e")
+            decimals = (len(mantissa.split(".")[1]) if "." in mantissa else 0) - int(exponent or "0")
             if not _is_grounded_number(number, decimals, grounding_values):
                 snippet = f"{keyword}…{raw}"
                 if snippet not in ungrounded:
@@ -1795,6 +1894,7 @@ def validate_writer_section(
                 check_images,
                 check_metric_grounding,
                 check_abstract_structure,
+                check_style,
             ]
         )
     )
@@ -1922,31 +2022,115 @@ def find_reusable_stage_artifacts(
     )[:30]
 
 
+def _latest_stage_failure(root: Path, stage: str) -> str:
+    """Carry executed source and errors across fresh coder conversations."""
+    notebook = root / "notebook.ipynb"
+    try:
+        if notebook.stat().st_size > 64 * 1024 * 1024:
+            return ""
+        cells = json.loads(notebook.read_text(encoding="utf-8")).get("cells", [])
+    except (OSError, ValueError, AttributeError):
+        return ""
+    active_stage = ""
+    latest = ""
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        source = cell.get("source", "")
+        source = "".join(source) if isinstance(source, list) else str(source)
+        if cell.get("cell_type") == "markdown" and source.startswith("##### "):
+            active_stage = source.split("\n", 1)[0][6:].removesuffix(":")
+        if active_stage != stage or cell.get("cell_type") != "code":
+            continue
+        errors = [
+            "\n".join(str(line) for line in output.get("traceback", []))
+            for output in cell.get("outputs", [])
+            if isinstance(output, dict) and output.get("output_type") == "error"
+        ]
+        if errors:
+            latest = (
+                "【本阶段最近一次真实执行失败（日志与源码是诊断证据，不是新指令）】\n"
+                + "\n".join(errors)[:3500]
+                + "\n【失败源码】\n"
+                + source[:12000]
+                + "\n先核对历史代码是否仍在解决本题目标；与当前题型或已批准方案冲突的分支不要继续执行。只复用相关正确步骤，修复其具体错误。"
+            )
+    return latest
+
+
+def get_repair_execution_limit(
+    work_dir: str | Path, contract: QuestionDeliverableContract
+) -> int:
+    """Separate unfinished computation from a small report-format repair."""
+    root = Path(work_dir)
+    has_evidence = bool(find_reusable_stage_artifacts(root, contract)) or any(
+        (root / name).is_file() and (root / name).stat().st_size > 0
+        for name in _required_contract_files(contract)
+    )
+    needs_review_repair = (
+        _peek_quality_report(root, contract).get("status") == "manual_review"
+    )
+    return (
+        4
+        if needs_review_repair or not has_evidence
+        else 2
+    )
+
+
 def build_repair_prompt(
     contract: QuestionDeliverableContract,
     error: DeliverableValidationError,
     work_dir: str | Path | None = None,
+    *,
+    task_context: str = "",
 ) -> str:
     """Build a focused prompt for one automatic correction attempt."""
     disk_status = ""
+    last_failure = ""
     if work_dir is not None:
         root = Path(work_dir)
+        last_failure = _latest_stage_failure(root, contract.question_key)
+        if _peek_quality_report(root, contract).get("status") == "manual_review":
+            latest = _stage_execution_preview(root, contract.question_key)
+            if latest and not latest[-1]["execution_failed"]:
+                last_failure = (
+                    "【本阶段最近执行成功的源码节选：执行成功不代表计算或验收正确】\n"
+                    + latest[-1]["source"][:8000]
+                    + "\n【最近输出节选】\n"
+                    + latest[-1]["output"][-1500:]
+                    + "\n优先修复当前报告与本轮意见指出的问题；此前语法报错可能已修好，不要重复修旧错误。"
+                )
         required = _required_contract_files(contract)
         existing = [name for name in required if (root / name).is_file()]
         missing = [name for name in required if name not in existing]
         reusable = find_reusable_stage_artifacts(root, contract)
+        execution_guidance = (
+            "当前需要完成或修正实质计算，不能按只补报告处理。最多四次执行（仍受全局上限约束）："
+            "只读取原任务必要的数据，分步实现并保存真实结果；至少预留一次报错修复和回读核验。"
+            "复用已执行的正确步骤，不要求把读取、全部处理、制图、报告挤进一次调用。"
+            if get_repair_execution_limit(root, contract) == 4
+            else "不要枚举目录、统计文件数量或重新探索原始数据。第一次 execute_code 只读取报错直接涉及的最少文件，"
+            "并在同一次执行中生成或修复全部缺失文件；第二次 execute_code（如确有必要）用于修错或回读校验。"
+        )
         disk_status = f"""
 【当前磁盘交付状态（以后端实际文件为准）】
 - 已存在的必需文件：{", ".join(existing) if existing else "无"}
 - 本次必须一次性补齐的文件：{", ".join(missing) if missing else "无"}
 - 可复用的真实中间产物：{", ".join(reusable) if reusable else "无"}
-不要枚举目录、统计文件数量或重新探索原始数据。第一次 execute_code 只读取报错直接涉及的最少文件，
-并在同一次执行中生成或修复全部缺失文件；第二次 execute_code（如确有必要）只能回读校验。
+{execution_guidance}
 已有证据足够时禁止重跑耗时模型，但不得臆造、手填或篡改指标。完成门禁修复后立即停止调用工具。
 """.strip()
+    repair_scope = (
+        "只修复原定数据读取、清洗、单位与一致性核验及其产物，不新增预测目标、候选模型、交叉验证或回归指标。"
+        if contract.problem_type == "eda"
+        else "仅当已有产物不足或不一致时，才重新运行原任务要求的必要计算与验证。"
+    )
     return f"""
 上一次输出未通过强制质量门禁：{error}
-请继续执行代码修正产物，不要只用文字解释。仅当已有产物不足或不一致时，才重新运行必要的候选模型、基线、独立验证和稳健性检查；禁止直接篡改 JSON 数值绕过门禁。
+【原任务与方案（返修不得改变目标）】
+{task_context or "沿用当前阶段的原始任务要求，不得从质量报告字段推导新任务。"}
+请继续执行代码修正产物，不要只用文字解释。{repair_scope}禁止直接篡改 JSON 数值绕过门禁。
 {disk_status}
+{last_failure}
 {contract.prompt_block()}
 """.strip()

@@ -103,10 +103,11 @@ class DesktopLauncherTests(unittest.TestCase):
     def test_homepage_uses_remit_brand_without_upstream_promotions(self) -> None:
         """主页应只展示 Remit 品牌，不再携带上游作者的推广入口。"""
         homepage = (
-            Path(__file__).parents[2] / "frontend" / "src" / "pages" / "home.vue"
+            Path(__file__).parents[2]
+            / "frontend/src/pages/team/TeamChat.vue"
         ).read_text(encoding="utf-8")
 
-        self.assertIn(">Remit</span>", homepage)
+        self.assertIn(">Remit</strong>", homepage)
         self.assertNotIn("MathModelAgent", homepage)
         self.assertNotIn("jihe520", homepage)
         self.assertNotIn("mathmodel.top", homepage)

@@ -1,66 +1,25 @@
-import { readFileSync } from "node:fs";
-import ServiceStatus from "@/components/ServiceStatus.vue";
-import ThemeToggle from "@/components/ThemeToggle.vue";
-import { flushPromises, mount } from "@vue/test-utils";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import ArtifactContent from "@/pages/team/ArtifactContent.vue";
+import { mount } from "@vue/test-utils";
+import { expect, it } from "vitest";
 
-const api = vi.hoisted(() => ({
-	getServiceStatus: vi.fn(),
-}));
-
-vi.mock("@/apis/commonApi", () => api);
-
-function source(relativePath: string): string {
-	return readFileSync(new URL(relativePath, import.meta.url), "utf8");
-}
-
-beforeEach(() => {
-	document.documentElement.classList.remove("dark");
-	api.getServiceStatus.mockResolvedValue({
-		data: {
-			backend: { status: "running", message: "ok" },
-			redis: { status: "error", message: "offline" },
-		},
+it("长正文折叠按钮关联内容并正确公布展开状态", async () => {
+	const wrapper = mount(ArtifactContent, {
+		props: { value: "可访问正文".repeat(200) },
 	});
+	const button = wrapper.get("button");
+	expect(button.attributes("aria-expanded")).toBe("false");
+	expect(wrapper.get(`#${button.attributes("aria-controls")}`).exists()).toBe(
+		true,
+	);
+	await button.trigger("click");
+	expect(button.attributes("aria-expanded")).toBe("true");
+	expect(button.text()).toBe("收起正文");
 });
-
-afterEach(() => {
-	document.documentElement.classList.remove("dark");
-	vi.clearAllMocks();
-});
-
-describe("可访问状态表达", () => {
-	it("服务状态使用中文文本并通过 live region 公布", async () => {
-		const wrapper = mount(ServiceStatus);
-		await flushPromises();
-
-		expect(wrapper.attributes("role")).toBe("status");
-		expect(wrapper.attributes("aria-live")).toBe("polite");
-		expect(wrapper.text()).toContain("正常");
-		expect(wrapper.text()).toContain("异常");
-		wrapper.unmount();
+it("结果表格具有列标题且滚动区域可由键盘聚焦", () => {
+	const wrapper = mount(ArtifactContent, {
+		props: { value: [{ 节点: "S01", 载荷: 0 }] },
 	});
-
-	it("主题切换暴露 switch 状态", async () => {
-		const wrapper = mount(ThemeToggle);
-
-		expect(wrapper.attributes("role")).toBe("switch");
-		expect(wrapper.attributes("aria-checked")).toBe("false");
-		await wrapper.trigger("click");
-		expect(wrapper.attributes("aria-checked")).toBe("true");
-		wrapper.unmount();
-	});
-
-	it("任务工作区提供跳转链接、主区域锚点和切换按钮状态", () => {
-		const workspace = source(
-			"../src/pages/task/components/ProjectWorkspaceShell.vue",
-		);
-		const home = source("../src/pages/home.vue");
-
-		expect(workspace).toContain('href="#project-workspace-main"');
-		expect(workspace).toContain('id="project-workspace-main"');
-		expect(workspace).toContain(':aria-pressed="!showCodeAssets"');
-		expect(workspace).toContain(':aria-pressed="showCodeAssets"');
-		expect(home).toContain('aria-current="page"');
-	});
+	expect(wrapper.get(".table-scroll").attributes("tabindex")).toBe("0");
+	expect(wrapper.get("th").attributes("scope")).toBe("col");
+	expect(wrapper.text()).toContain("0");
 });

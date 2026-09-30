@@ -34,6 +34,15 @@ class LLMFactory:
             _agent_llm(settings, "WRITER", self.task_id),
         )
 
+    def get_modeling_llms(self) -> tuple[LLM, LLM, LLM]:
+        """建模流程只初始化协调、建模与编码角色。"""
+        return tuple(_agent_llm(settings, role, self.task_id)
+                     for role in ("COORDINATOR", "MODELER", "CODER"))
+
+    def get_writer_llm(self) -> LLM:
+        """论文工作区按需初始化独立写作角色。"""
+        return _agent_llm(settings, "WRITER", self.task_id)
+
     def get_vision_llm(self) -> LLM:
         """识图模型；VISION_* 未配置时复用协调者接入。
 

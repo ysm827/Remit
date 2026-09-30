@@ -59,7 +59,7 @@ class RemitPortIsolationTests(unittest.TestCase):
     def test_local_environment_points_to_dedicated_ports(self) -> None:
         backend_env = read_dotenv(PROJECT_ROOT / "backend" / ".env.example")
         frontend_env = read_dotenv(
-            PROJECT_ROOT / "frontend" / ".env.development"
+            PROJECT_ROOT / "frontend" / ".env.example"
         )
 
         self.assertEqual(backend_env["REDIS_URL"], "redis://localhost:16379/0")
@@ -80,27 +80,12 @@ class RemitPortIsolationTests(unittest.TestCase):
         request_client = (
             PROJECT_ROOT / "frontend" / "src" / "utils" / "request.ts"
         ).read_text(encoding="utf-8")
-        task_store = (
-            PROJECT_ROOT / "frontend" / "src" / "stores" / "task.ts"
-        ).read_text(encoding="utf-8")
 
         self.assertIn("window.location.origin", request_client)
-        self.assertIn("window.location.host", task_store)
         self.assertNotIn(
             '|| "http://127.0.0.1:18000"',
             request_client,
         )
-
-    def test_service_status_requires_repeated_failures_before_alerting(
-        self,
-    ) -> None:
-        """一次启动竞态不能直接误报为网络故障。"""
-        widget = (
-            PROJECT_ROOT / "frontend" / "src" / "components" / "ServiceStatus.vue"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("FAILURES_BEFORE_ALERT = 3", widget)
-        self.assertIn("consecutiveFailures", widget)
 
 
 if __name__ == "__main__":

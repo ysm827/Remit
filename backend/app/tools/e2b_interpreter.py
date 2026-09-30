@@ -23,8 +23,10 @@ from app.schemas.response import (
 from app.services.redis_manager import redis_manager
 from app.tools.base_interpreter import BaseCodeInterpreter
 from app.tools.notebook_serializer import NotebookSerializer
-from app.utils.file_types import is_sandbox_upload_file
+from app.utils.file_types import is_sandbox_upload_file, input_filenames
+from app.utils.common_utils import get_current_files
 from app.utils.log_util import logger
+from app.tools.plot_fonts import bootstrap as font_bootstrap
 
 _SANDBOX_HOME = "/home/user"
 # 沙箱里的 shell 启动文件没有同步价值
@@ -45,7 +47,7 @@ font_files = [
 for font_file in font_files:
     font_manager.fontManager.addfont(str(font_file))
 
-preferred = ['SimHei', 'Noto Sans CJK SC', 'Microsoft YaHei', 'sans-serif']
+preferred = ['FandolHei', 'SimHei', 'Noto Sans CJK SC', 'Microsoft YaHei', 'sans-serif']
 pyplot.rcParams.update({{
     'font.family': 'sans-serif',
     'font.sans-serif': preferred,
@@ -53,6 +55,7 @@ pyplot.rcParams.update({{
 }})
 print('Remit sandbox fonts:', len(font_files))
 """.strip()
+_FONT_BOOTSTRAP += "\n" + font_bootstrap(_SANDBOX_HOME)
 
 
 class E2BCodeInterpreter(BaseCodeInterpreter):
@@ -66,6 +69,7 @@ class E2BCodeInterpreter(BaseCodeInterpreter):
     ) -> None:
         super().__init__(task_id, work_dir, notebook_serializer)
         self.sbx: AsyncSandbox | None = None
+        self._uploaded_files: set[str] = set()
 
     # ---- 生命周期 ----
 
@@ -112,14 +116,22 @@ class E2BCodeInterpreter(BaseCodeInterpreter):
             raise RuntimeError("E2B sandbox is not initialized")
         if not os.path.isdir(self.work_dir):
             raise FileNotFoundError(f"工作目录不存在: {self.work_dir}")
-        for name in os.listdir(self.work_dir):
-            if not is_sandbox_upload_file(name):
+        inputs = input_filenames(self.work_dir)
+        for name in get_current_files(self.work_dir):
+            if name in self._uploaded_files:
+                continue
+            if not is_sandbox_upload_file(name) and name not in inputs:
                 continue
             path = os.path.join(self.work_dir, name)
             if not os.path.isfile(path):
                 continue
+            if "/" in name:
+                await self.sbx.files.make_dir(
+                    f"{_SANDBOX_HOME}/{name.rsplit('/', 1)[0]}"
+                )
             with open(path, "rb") as fh:
                 await self.sbx.files.write(f"{_SANDBOX_HOME}/{name}", fh.read())
+            self._uploaded_files.add(name)
             logger.info(f"成功上传文件到沙箱: {name}")
 
     # ---- 代码执行 ----
@@ -127,6 +139,9 @@ class E2BCodeInterpreter(BaseCodeInterpreter):
     async def execute_code(self, code: str) -> tuple[str, bool, str]:
         if not self.sbx:
             raise RuntimeError("沙箱环境未初始化")
+
+        # 每次执行前同步新添附件；已上传文件不覆盖沙箱中的执行状态。
+        await self._upload_all_files()
 
         logger.info(f"执行代码: {code}")
         self.notebook_serializer.add_code_cell_to_notebook(code)

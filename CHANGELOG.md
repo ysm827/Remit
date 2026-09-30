@@ -3,7 +3,21 @@
 All notable user-visible changes should be recorded here. The project follows
 [Semantic Versioning](https://semver.org/) for releases.
 
-## [Unreleased]
+## [2.0.0] - 2026-09-30
+
+- Upgrade the original Remit repository to the current Remit-Agent source snapshot
+  `7ca472cc06064bb5e7cc694dcf345693ed9b427d`, retaining the original commit ancestry.
+- Preserve branding, the current community QR code and Star History automation.
+- Add concise role-based conversations, resumable per-question experiments and a paper workspace.
+- Improve model-response recovery, result handoff and checkpoint validation.
+- Select figures by evidence contribution; normalize mathematical typography, centered tables,
+  image sizes and file-based figure references; check abstract layout and excessive whitespace.
+- Include native Windows/macOS installer builds with bundled compute and LaTeX dependencies.
+- Preserve the previous source at `legacy/pre-2.0` and `archive/pre-2.0-20260930`.
+
+Validation and limitations: [2.0 release notes](docs/releases/2.0.0.md).
+
+## Earlier development history
 
 ### Added
 

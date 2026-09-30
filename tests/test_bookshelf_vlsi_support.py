@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import sys
 import tempfile
 import unittest
@@ -11,16 +10,6 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 BACKEND_ROOT = PROJECT_ROOT / "backend"
-FRONTEND_STEPPER = PROJECT_ROOT / "frontend" / "src" / "components" / "UserStepper.vue"
-FRONTEND_DATA_VIEW = (
-    PROJECT_ROOT
-    / "frontend"
-    / "src"
-    / "pages"
-    / "task"
-    / "components"
-    / "ProjectDataView.vue"
-)
 sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.core.data_scout import build_data_profile, summarize_data_profile  # noqa: E402
@@ -28,32 +17,16 @@ from app.utils.common_utils import get_current_files  # noqa: E402
 from app.utils.file_types import is_sandbox_upload_file  # noqa: E402
 
 
-class BookshelfFrontendTests(unittest.TestCase):
-    def test_file_picker_accepts_all_bookshelf_attachments(self) -> None:
-        source = FRONTEND_STEPPER.read_text(encoding="utf-8")
-        accept_match = re.search(r'ACCEPTED_DATA_EXTENSIONS\s*=\s*"([^"]+)"', source)
-        self.assertIsNotNone(accept_match)
-        accepted_suffixes = {
-            suffix.strip().lower() for suffix in accept_match.group(1).split(",")
-        }
-        self.assertTrue({".blocks", ".nets", ".pl"} <= accepted_suffixes)
-
-    def test_project_data_view_lists_bookshelf_attachments(self) -> None:
-        source = FRONTEND_DATA_VIEW.read_text(encoding="utf-8")
-        for suffix in ("blocks", "nets", "pl"):
-            self.assertIn(f'"{suffix}"', source)
-
-
 class BookshelfBackendTests(unittest.TestCase):
     def test_discovery_and_sandbox_upload_include_bookshelf_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             folder = Path(temp_directory)
-            for filename in ("n100.blocks", "n100.nets", "n100.pl", "ignore.pdf"):
+            for filename in ("n100.blocks", "n100.nets", "n100.pl", "attachment.pdf"):
                 (folder / filename).touch()
 
             discovered = set(get_current_files(str(folder), "data"))
 
-        self.assertEqual(discovered, {"n100.blocks", "n100.nets", "n100.pl"})
+        self.assertEqual(discovered, {"n100.blocks", "n100.nets", "n100.pl", "attachment.pdf"})
         for filename in discovered:
             self.assertTrue(is_sandbox_upload_file(filename))
 

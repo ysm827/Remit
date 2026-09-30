@@ -112,10 +112,39 @@ def evaluate_analysis(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def evaluate_pilot(state: dict[str, Any]) -> dict[str, Any]:
+    """Old checkpoints must also distinguish a skipped experiment from success."""
+    reason = state.get("pilot_skipped")
+    if reason:
+        return {"status": "skipped", "issues": [f"探索实验未完成，沿用原方案：{reason}"],
+                "summary": "探索实验已跳过，未取得完整候选比较证据"}
+    outcome = (state.get("node_outcomes") or {}).get("pilot") or {}
+    if outcome.get("status") == "failed":
+        return outcome
+    if state.get("pilot_results") and state.get("pilot_decision"):
+        return {"status": "completed", "issues": [], "summary": "探索记录和选型结论已保存，仍需按规则验收"}
+    return {"status": "warning", "issues": ["尚无完整探索记录和选型结论"],
+            "summary": "候选比较证据不完整"}
+
+
+def pilot_evidence_notice(state: dict[str, Any]) -> str:
+    if not (state.get("pilot_skipped") or "pilot" in state.get("workflow_features", [])
+            or "pilot" in state.get("node_outcomes", {})):
+        return ""
+    outcome = evaluate_pilot(state)
+    if outcome["status"] == "completed":
+        return ""
+    return ("【探索证据限制】" + "；".join(outcome["issues"])
+            + "。不得声称已完成候选比较、由探索验证选型或编造比较指标。"
+            "正式求解结果只按自身真实证据报告。")
+
+
 def evaluated_node_status(state: dict[str, Any], node_id: str) -> str:
     """返回供进度条使用的真实状态。"""
     if node_id == "research":
         return str(evaluate_research(state)["status"])
     if node_id == "analysis":
         return str(evaluate_analysis(state)["status"])
+    if node_id == "pilot":
+        return str(evaluate_pilot(state)["status"])
     return "completed"

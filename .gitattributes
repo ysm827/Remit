@@ -24,3 +24,7 @@ Dockerfile text eol=lf
 *.js text eol=lf
 *.mjs text eol=lf
 *.tsx text eol=lf
+
+# Preserve upstream reference bytes for sources.lock.json hashes
+backend/app/competition_skills/vendor/** -text
+tools/redis/** -whitespace

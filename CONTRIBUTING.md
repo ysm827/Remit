@@ -58,8 +58,8 @@ backend\.venv\Scripts\python.exe -m pytest tests -q
 See [development and release](docs/development.md) for the complete local and CI
 verification workflow.
 
-Windows launcher tests require Windows. The repository CI runs backend and
-launcher tests on Windows and the frontend build on Linux.
+Windows launcher tests require Windows. The repository CI runs backend tests and the frontend build on Linux;
+Windows launcher checks must also be run locally when they change.
 
 ## Pull requests
 

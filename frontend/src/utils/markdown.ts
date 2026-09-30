@@ -1,20 +1,12 @@
 import "katex/dist/katex.min.css";
 import DOMPurify from "dompurify";
 import katex from "katex";
-import { type MarkedOptions, marked } from "marked";
+import { Marked, type MarkedOptions } from "marked";
 
 const BASE_OPTIONS: MarkedOptions = {
 	breaks: true,
 	gfm: true,
 };
-
-/** 行内/块级公式的分隔符正则 */
-const BLOCK_MATH_PATTERN = /\$\$([\s\S]*?)\$\$/g;
-const INLINE_MATH_PATTERN = /\\\(([\s\S]*?)\\\)/g;
-
-/** 本地图片引用（相对路径的常见图片扩展名） */
-const LOCAL_IMAGE_PATTERN =
-	/!\[(.*?)\]\(((?!https?:\/\/).*?\.(?:png|jpg|jpeg|gif|bmp|webp))\)/g;
 
 function typeset(tex: string, displayMode: boolean): string {
 	try {
@@ -29,49 +21,93 @@ function typeset(tex: string, displayMode: boolean): string {
 	}
 }
 
-/** 先把 $...$ / \(...\) 公式替换成 KaTeX HTML，再交给 marked 解析。 */
-function typesetMath(content: string): string {
-	return content
-		.replace(BLOCK_MATH_PATTERN, (_match, tex: string) => {
-			const html = typeset(tex.trim(), true);
-			return `<div class="math-block my-2 overflow-x-auto">${html}</div>`;
-		})
-		.replace(INLINE_MATH_PATTERN, (_match, tex: string) =>
-			typeset(tex.trim(), false),
-		);
-}
+// Keep extensions local: a dev-window hot update can retain old global rules.
+// Tokenize math before Markdown emphasis, but never inside code spans/fences.
+const markdownParser = new Marked({
+	extensions: [
+		{
+			name: "remitDisplayMath",
+			level: "block",
+			start(src: string) {
+				const m = /(?:^|\n)\\\[/.exec(src);
+				return m?.index;
+			},
+			tokenizer(src: string) {
+				const match = /^\\\[((?:(?!\\\])[\s\S])+?)\\\][ \t]*(?:\n|$)/.exec(src);
+				if (match)
+					return { type: "remitDisplayMath", raw: match[0], text: match[1] };
+			},
+			renderer(token) {
+				return typeset(token.text, true);
+			},
+		},
+		{
+			name: "remitMath",
+			level: "inline",
+			start(src: string) {
+				const i = src.search(/\$|\\\(/);
+				return i < 0 ? undefined : i;
+			},
+			tokenizer(src: string) {
+				const match =
+					/^(?:\$\$([\s\S]+?)\$\$|\\\(([\s\S]+?)\\\)|\$(?!\s)([^$\n]+?)(?<!\s)\$(?!\d))/.exec(
+						src,
+					);
+				if (match)
+					return {
+						type: "remitMath",
+						raw: match[0],
+						text: match[1] ?? match[2] ?? match[3],
+						display: match[1] !== undefined,
+					};
+			},
+			renderer(token) {
+				return typeset(token.text, token.display);
+			},
+		},
+	],
+});
 
-/**
- * 论文里引用的相对路径图片改指到后端静态目录。
- * 依赖 localStorage 里的 currentTaskId 定位任务工作区。
- */
-function resolveLocalImages(markdown: string): string {
+export interface MarkdownContext {
+	taskId?: string;
+	imageUrls?: Record<string, string>;
+}
+function resolveLocalImages(
+	markdown: string,
+	context: MarkdownContext,
+): string {
 	const apiBase =
 		import.meta.env.VITE_API_BASE_URL?.trim() || window.location.origin;
-	const taskId = window.localStorage.getItem("currentTaskId") || "";
+	const taskId =
+		context.taskId ?? window.localStorage.getItem("currentTaskId") ?? "";
 	return markdown.replace(
-		LOCAL_IMAGE_PATTERN,
-		(_match, alt: string, src: string) =>
-			`![${alt}](${apiBase}/static/${taskId}/${src})`,
+		/!\[([^\]]*)\]\(([^)]+)\)(?:\{[^}\n]*\})?/g,
+		(_raw, alt: string, source: string) => {
+			const src = source.replace(/^<|>$/g, "");
+			const previewSrc = /^media\/[^/]+\.svg$/i.test(src) ? `${src}.png` : src;
+			const mapped = context.imageUrls?.[src];
+			const url =
+				mapped ||
+				(/^(?:https?:|data:|blob:|\/)/i.test(src)
+					? src
+					: `${apiBase}/static/${encodeURIComponent(taskId)}/${previewSrc.split("/").map(encodeURIComponent).join("/")}`);
+			// Imported document caches are backend assets. In the desktop dev
+			// window, a root-relative URL would otherwise hit Vite's HTML fallback.
+			const resolved = url.startsWith("/static/")
+				? new URL(url, new URL(apiBase, window.location.origin)).href
+				: url;
+			return `![${alt}](<${resolved}>)`;
+		},
 	);
 }
-
-marked.use({
-	hooks: {
-		preprocess: resolveLocalImages,
-	},
-});
 
 /** 将 Markdown 文本同步渲染为 HTML。 */
 export function renderMarkdown(
 	content: string,
 	options: MarkedOptions = {},
+	context: MarkdownContext = {},
 ): string {
-	// 某些模型会把 \[ \] 单独成行，先归一化方便 KaTeX 处理
-	const normalized = content
-		.replace(/\\\[\s*\n/g, "\\[")
-		.replace(/\n\s*\\\]/g, "\\]");
-	const result = marked.parse(typesetMath(normalized), {
+	const result = markdownParser.parse(resolveLocalImages(content, context), {
 		...BASE_OPTIONS,
 		...options,
 		async: false,

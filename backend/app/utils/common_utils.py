@@ -10,7 +10,7 @@ from pathlib import Path
 
 from app.config.setting import settings
 from app.schemas.enums import CompTemplate
-from app.utils.file_types import is_data_file
+from app.utils.file_types import is_data_file, input_filenames
 from app.utils.log_util import logger
 
 # task_id 直接参与拼路径，必须排除分隔符与父目录引用
@@ -90,7 +90,7 @@ def get_work_dir(task_id: str) -> str:
 def get_config_template(comp_template: CompTemplate = CompTemplate.CHINA) -> dict:
     """读取竞赛模板对应的论文骨架配置。"""
     if comp_template == CompTemplate.CHINA:
-        return load_toml(os.path.join("app", "config", "md_template.toml"))
+        return load_toml(str(Path(__file__).resolve().parents[1] / "config/md_template.toml"))
     return {}
 
 
@@ -112,7 +112,15 @@ def get_current_files(folder_path: str, type: str = "all") -> list[str]:
         folder_path: 目标目录。
         type: ``all`` / ``md`` / ``ipynb`` / ``data`` / ``image``。
     """
-    entries = os.listdir(folder_path)
+    root = Path(folder_path).resolve()
+    entries = sorted(
+        set(os.listdir(folder_path))
+        | {
+            name
+            for name in input_filenames(root)
+            if (root / name).is_file() and (root / name).resolve().is_relative_to(root)
+        }
+    )
     match type:
         case "all":
             return entries
@@ -121,7 +129,11 @@ def get_current_files(folder_path: str, type: str = "all") -> list[str]:
         case "ipynb":
             return [f for f in entries if f.endswith(".ipynb")]
         case "data":
-            return [f for f in entries if is_data_file(f)]
+            return [
+                f
+                for f in entries
+                if is_data_file(f) or f in input_filenames(folder_path)
+            ]
         case "image":
             return [f for f in entries if f.endswith((".png", ".jpg"))]
         case _:

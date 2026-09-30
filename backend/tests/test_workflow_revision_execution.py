@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from app.config.setting import settings
 from app.core import workflow as workflow_module
 from app.core.deliverable_contract import build_stage_contract
+from app.core.pilot import PilotValidationError
 from app.core.workflow import RemitWorkFlow, WorkflowApprovalRequired
 from app.core.workflow_checkpoint import WorkflowCheckpoint
 from app.models.user_output import UserOutput
@@ -46,11 +47,37 @@ def _planning_state(checkpoint: WorkflowCheckpoint) -> dict:
 
 
 class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pilot_config_error_is_not_skipped_as_completed(self):
+        error = workflow_module.NonRetryableLLMError("missing workspaceid")
+        workflow = RemitWorkFlow()
+        workflow.checkpoint = MagicMock()
+        workflow.checkpoint.consume_revision_feedback.return_value = ""
+        workflow.code_interpreter = SimpleNamespace(language="matlab")
+        workflow.questions = {"ques1": "test"}
+        workflow.task_id = "test-config-error"
+        modeler = SimpleNamespace(design_pilot_plan=AsyncMock(side_effect=error))
+        coder = SimpleNamespace(run=AsyncMock())
+        state = {}
+        with (
+            patch.object(workflow, "_start_node", new=AsyncMock()),
+            patch.object(workflow, "_check_cancelled", new=AsyncMock()),
+            patch.object(workflow_module, "publish_activity", new=AsyncMock()),
+            patch.object(workflow_module.redis_manager, "publish_message", new=AsyncMock()),
+        ):
+            with self.assertRaises(workflow_module.NonRetryableLLMError):
+                await workflow._pilot_node(state, modeler, coder,
+                    ModelerToCoder(questions_solution={"ques1":"plan"}))
+        self.assertNotIn("pilot_skipped", state)
+        coder.run.assert_not_awaited()
+
+
     async def test_review_revision_reexecutes_solver_then_can_be_approved(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             checkpoint = WorkflowCheckpoint(root)
             state = _planning_state(checkpoint)
+            # 兼容旧检查点的写作中断恢复。
+            state["workflow_features"].remove("separate_writing")
             workflow = RemitWorkFlow()
             workflow.task_id = "revision-execution"
             workflow.work_dir = tmp
@@ -189,6 +216,25 @@ class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_incomplete_revision_uses_focused_repair_prompt(self):
         """未完成节点续跑时应先修磁盘产物，不得重新执行完整探索任务。"""
+        await self._assert_incomplete_revision_repair(has_evidence=True)
+
+    async def test_empty_eda_revision_reserves_execution_for_debugging(self):
+        """零交付不能套用两次小修预算，否则读取后首次报错就无法修复。"""
+        await self._assert_incomplete_revision_repair(has_evidence=False)
+
+    async def test_manual_review_revision_preserves_files_but_runs_requested_fix(self):
+        await self._assert_incomplete_revision_repair(
+            has_evidence=True, manual_review=True
+        )
+
+    async def test_failed_repair_cannot_submit_stale_manual_review_report(self):
+        await self._assert_incomplete_revision_repair(
+            has_evidence=True, manual_review=True, leave_stale_once=True
+        )
+
+    async def _assert_incomplete_revision_repair(
+        self, *, has_evidence, manual_review=False, leave_stale_once=False
+    ):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             checkpoint = WorkflowCheckpoint(root)
@@ -198,14 +244,15 @@ class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
             workflow.work_dir = tmp
             workflow.checkpoint = checkpoint
             workflow.code_interpreter = SimpleNamespace(get_code_output=lambda _: "")
-            root.joinpath("cleaned_spectra.csv").write_text("x\n1\n", encoding="utf-8")
+            if has_evidence:
+                root.joinpath("eda_cleaned.csv").write_text("x\n1\n", encoding="utf-8")
             report = {
                 "status": "pass",
                 "problem_type": "错误类型",
                 "selected_model": "cleaning_rule",
                 "candidate_models": [],
                 "robustness_checks": [{"name": "row reconciliation", "passed": True}],
-                "artifacts": ["cleaned_spectra.csv"],
+                "artifacts": ["eda_cleaned.csv"],
                 "paper_ready_images": [],
                 "type_specific": {
                     "raw_rows": 100,
@@ -217,22 +264,46 @@ class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
                 },
             }
             report_path = root / "eda_quality_report.json"
+            if manual_review:
+                report.update(
+                    status="manual_review",
+                    problem_type="eda",
+                    manual_review_required=True,
+                    failure_reason="巡航核验失败",
+                )
+                report_path.write_text(json.dumps(report), encoding="utf-8")
             checkpoint.start_node(state, "solve:eda")
+            if manual_review:
+                state["completed_nodes"].append("solve:eda")
             pending = checkpoint.request_approval(
                 state,
                 "solve:eda",
                 summary="缺少 eda_quality_report.json",
-                artifacts=["cleaned_spectra.csv"],
-                allow_incomplete=True,
+                artifacts=["eda_cleaned.csv"] if has_evidence else [],
+                allow_incomplete=not manual_review,
+                quality_report=report if manual_review else {},
             )
             state = checkpoint.request_revision(
                 state,
                 pending["checkpoint_id"],
                 "只把 problem_type 修复为 eda。",
             )
+            if manual_review:
+                self.assertTrue(root.joinpath("eda_cleaned.csv").is_file())
+                self.assertTrue(report_path.is_file())
+
+            attempts = 0
 
             async def repair_code(**_kwargs):
+                nonlocal attempts
+                attempts += 1
+                if leave_stale_once and attempts == 1:
+                    return CoderToWriter(code_response="代码报错，报告未更新")
+                root.joinpath("eda_cleaned.csv").write_text("x\n1\n", encoding="utf-8")
                 report["problem_type"] = "eda"
+                report["status"] = "pass"
+                report.pop("manual_review_required", None)
+                report.pop("failure_reason", None)
                 report_path.write_text(json.dumps(report), encoding="utf-8")
                 return CoderToWriter(code_response="已增量补齐质量报告")
 
@@ -282,13 +353,27 @@ class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
                     user_output=UserOutput(tmp, 1),
                 )
 
-            repair_prompt = coder.run.await_args.kwargs["prompt"]
+            repair_prompt = coder.run.await_args_list[0].kwargs["prompt"]
             self.assertTrue(repair_prompt.startswith("【断点返修模式"))
             self.assertIn("只把 problem_type 修复为 eda", repair_prompt)
             self.assertNotIn("从头执行完整数据清洗与探索", repair_prompt)
-            self.assertIn("第一次 execute_code", repair_prompt)
-            self.assertEqual(coder.run.await_args.kwargs["max_code_executions"], 2)
-            coder.run.assert_awaited_once()
+            self.assertIn(
+                "第一次 execute_code"
+                if has_evidence and not manual_review
+                else "至少预留一次报错修复",
+                repair_prompt,
+            )
+            self.assertIn(value["question_text"], repair_prompt)
+            self.assertIn(value["model_plan"], repair_prompt)
+            self.assertIn("不新增预测目标", repair_prompt)
+            self.assertEqual(
+                coder.run.await_args.kwargs["max_code_executions"],
+                2 if has_evidence and not manual_review else 4,
+            )
+            self.assertEqual(coder.run.await_count, 2 if leave_stale_once else 1)
+            if leave_stale_once:
+                self.assertIn("仍是旧版本", coder.run.await_args.kwargs["prompt"])
+                modeler.review_execution_result.assert_awaited_once()
 
     async def test_pilot_selection_reaches_solver_without_an_approval_restart(self):
         for hil_enabled, pilot_fails in ((False, False), (True, False), (False, True)):
@@ -340,12 +425,12 @@ class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
                 finalize_with_pilot=AsyncMock(return_value=pilot_decision),
             )
             if pilot_fails:
-                modeler.design_pilot_plan.side_effect = RuntimeError(
-                    "pilot unavailable"
+                modeler.design_pilot_plan.side_effect = PilotValidationError(
+                    "候选比较未满足最低要求"
                 )
 
             async def run_pilot(**_kwargs):
-                root.joinpath("pilot_results.json").write_text(
+                root.joinpath(_kwargs["required_files"][0]).write_text(
                     json.dumps(
                         {
                             "questions": {
@@ -403,6 +488,7 @@ class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(workflow, "_write_chapters_parallel", new=AsyncMock()),
                 patch.object(workflow, "_finalize_node", new=AsyncMock()),
             ):
+                factory.return_value.get_modeling_llms.return_value = (None, None, None)
                 factory.return_value.get_all_llms.return_value = (
                     None,
                     None,
@@ -422,6 +508,8 @@ class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(question_call["value"]["model_plan"], expected)
             self.assertIn(expected, question_call["value"]["coder_prompt"])
             persisted = checkpoint.load()
+            if pilot_fails:
+                self.assertEqual(persisted["node_outcomes"]["pilot"]["status"], "skipped")
             self.assertEqual(
                 persisted["modeler_response"]["questions_solution"]["ques1"], expected
             )

@@ -13,6 +13,7 @@ from app.core.deliverable_contract import (
     ModelQualityValidationError,
     build_repair_prompt,
     build_question_contract,
+    build_stage_contract,
     collect_model_quality_evidence,
     validate_question_deliverables,
     validate_writer_section,
@@ -23,6 +24,57 @@ from app.schemas.request import Problem
 
 
 class PredictionDeliverableTests(unittest.TestCase):
+    def test_repair_carries_failed_code_and_error_from_same_stage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cells = [
+                {"cell_type": "markdown", "source": ["##### eda:\n", "执行"]},
+                {
+                    "cell_type": "code",
+                    "source": ["T.可计算 = true;"],
+                    "outputs": [
+                        {
+                            "output_type": "error",
+                            "traceback": ["call_0002.m 行: 4 文本字符无效"],
+                        }
+                    ],
+                },
+                {"cell_type": "markdown", "source": "##### ques1:\n执行"},
+                {
+                    "cell_type": "code",
+                    "source": "unrelated_model()",
+                    "outputs": [
+                        {"output_type": "error", "traceback": ["other stage failed"]}
+                    ],
+                },
+            ]
+            (root / "notebook.ipynb").write_text(
+                json.dumps({"cells": cells}), encoding="utf-8"
+            )
+            prompt = build_repair_prompt(
+                build_stage_contract("eda"),
+                DeliverableValidationError("缺少报告"),
+                root,
+            )
+            self.assertIn("T.可计算 = true;", prompt)
+            self.assertIn("call_0002.m 行: 4", prompt)
+            self.assertNotIn("unrelated_model", prompt)
+            self.assertIn("至少预留一次报错修复", prompt)
+
+    def test_eda_repair_retains_task_without_requiring_predictive_models(self):
+        contract = build_stage_contract("eda")
+        prompt = build_repair_prompt(
+            contract,
+            DeliverableValidationError("缺少清洗报告"),
+            task_context="核验80箱、16节点与无人机库存，不训练预测模型。",
+        )
+        self.assertIn("核验80箱、16节点与无人机库存", prompt)
+        self.assertIn("允许为空数组 []", prompt)
+        self.assertIn("不新增预测目标", prompt)
+        self.assertNotIn("其中至少一个 `role` 为 `baseline`", prompt)
+        self.assertNotIn("训练集 R²", prompt)
+        self.assertFalse(contract.requires_prediction_values)
+
     def setUp(self) -> None:
         self.contract = build_question_contract(
             question_key="ques1",
@@ -526,6 +578,49 @@ class PredictionDeliverableTests(unittest.TestCase):
             ]
             self.assertEqual(preview["rows"][0]["term"], "gw_c")
             self.assertEqual(preview["rows"][1]["bootstrap_ci_high"], "-0.000964")
+
+    def test_reviewer_gets_only_current_stage_executed_code_with_bounds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cells = [
+                {"cell_type": "markdown", "source": ["##### ques1:\n"]},
+                {
+                    "cell_type": "code",
+                    "source": "old()",
+                    "outputs": [{"output_type": "stream", "text": "old"}],
+                },
+                {
+                    "cell_type": "code",
+                    "source": "failed()",
+                    "outputs": [
+                        {"output_type": "error", "traceback": ["actual error"]}
+                    ],
+                },
+                {
+                    "cell_type": "code",
+                    "source": "terrain = endpoints;" + "x" * 20000,
+                    "outputs": [{"output_type": "stream", "text": "measured output"}],
+                },
+                {"cell_type": "code", "source": "not_executed()", "outputs": []},
+                {"cell_type": "markdown", "source": "##### ques2:"},
+                {
+                    "cell_type": "code",
+                    "source": "other_stage()",
+                    "outputs": [{"output_type": "stream", "text": "other"}],
+                },
+            ]
+            root.joinpath("notebook.ipynb").write_text(
+                json.dumps({"cells": cells}), encoding="utf-8"
+            )
+            evidence = collect_model_quality_evidence(root, self.contract)
+            preview = evidence["executed_code_preview"]
+            self.assertEqual(len(preview), 2)
+            self.assertTrue(preview[0]["execution_failed"])
+            self.assertEqual(preview[0]["output"], "actual error")
+            self.assertTrue(preview[1]["source_truncated"])
+            self.assertEqual(len(preview[1]["source"]), 16000)
+            self.assertNotIn("other_stage", json.dumps(preview))
+            self.assertNotIn("not_executed", json.dumps(preview))
 
     def test_unconfirmed_leakage_check_record_fails(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -61,6 +61,7 @@ class UserOutput:
         self.res[key] = {
             "response_content": writer_response.response_content,
             "footnotes": writer_response.footnotes,
+            "omitted_images": writer_response.omitted_images,
         }
 
     def get_res(self) -> dict[str, dict[str, Any]]:
@@ -70,7 +71,7 @@ class UserOutput:
     def get_model_build_solve(self) -> str:
         """把各小问的求解结果压成一段摘要，供评审章节引用。"""
         return ",".join(
-            f"{key}-{value}"
+            f"{key}-{value['response_content']}"
             for key, value in self.res.items()
             if key.startswith("ques") and key != "ques_count"
         )
@@ -108,16 +109,16 @@ class UserOutput:
         for key in self.seq:
             text = section_texts[key]
             for uid in _UUID_REF.findall(text):
-                text = text.replace(f"[{uid}]", f"[^{next_index}]")
                 if self.footnotes[uid].get("number") is None:
                     self.footnotes[uid]["number"] = next_index
-                next_index += 1
+                    next_index += 1
+                text = text.replace(f"[{uid}]", f"[^{self.footnotes[uid]['number']}]")
             ordered[key] = text
         return ordered
 
     def _reference_list(self) -> str:
         """渲染参考文献区块。"""
-        lines = ["\n\n ## 参考文献"]
+        lines = ["\n\n## 参考文献"]
         for _, meta in sorted(self.footnotes.items(), key=lambda kv: kv[1]["number"]):
             lines.append(f"\n\n[^{meta['number']}]: {meta['content']}")
         return "".join(lines)
@@ -143,7 +144,9 @@ class UserOutput:
         root = Path(self.work_dir)
         internal = root / ".remit"
         internal.mkdir(parents=True, exist_ok=True)
-        (internal / "paper_sections.json").write_text(
+        temporary = internal / f"paper_sections.{uuid.uuid4().hex}.tmp"
+        temporary.write_text(
             json.dumps(self.res, ensure_ascii=False, indent=4), encoding="utf-8"
         )
+        temporary.replace(internal / "paper_sections.json")
         (root / "res.json").unlink(missing_ok=True)

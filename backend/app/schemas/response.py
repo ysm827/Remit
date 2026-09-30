@@ -163,7 +163,7 @@ class ProgressStage(BaseModel):
     label: str
     plain_label: str
     description: str
-    status: Literal["completed", "warning", "failed", "running", "pending"] = "pending"
+    status: Literal["completed", "warning", "skipped", "failed", "running", "pending"] = "pending"
 
 
 class ProgressMessage(Message):

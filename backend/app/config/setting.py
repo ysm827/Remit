@@ -156,7 +156,7 @@ class Settings(BaseSettings):
     REDIS_MAX_CONNECTIONS: int = 32
     UPLOAD_MAX_FILE_BYTES: int = Field(default=128 * 1024 * 1024, gt=0)
     UPLOAD_MAX_TOTAL_BYTES: int = Field(default=512 * 1024 * 1024, gt=0)
-    UPLOAD_MAX_FILES: int = Field(default=100, gt=0)
+    UPLOAD_MAX_FILES: int = Field(default=1000, gt=0)
     CORS_ALLOW_ORIGINS: Annotated[list[str] | str, BeforeValidator(parse_cors)] = "*"
     SERVER_HOST: str = "http://localhost:18000"
     DEEPSEEK_MODEL: str | None = None

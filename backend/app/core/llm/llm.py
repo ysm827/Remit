@@ -9,7 +9,7 @@ import httpx
 
 from app.config.setting import ApiType, settings
 from app.core.activity import AGENT_LABELS, publish_activity
-from app.core.llm.errors import NonRetryableLLMError
+from app.core.llm.errors import NonRetryableLLMError, TransientLLMError
 from app.core.llm.providers.anthropic import AnthropicProvider
 from app.core.llm.providers.base import BaseProvider
 from app.core.llm.providers.gemini import GeminiProvider
@@ -51,7 +51,7 @@ def _resolve_provider(api_type: ApiType | None) -> BaseProvider:
 
 def _is_retryable_connection_error(error: Exception) -> bool:
     """传输层故障（中转掐断、连接重置、握手失败）同样值得加长重试。"""
-    if isinstance(error, httpx.TransportError):
+    if isinstance(error, (httpx.TransportError, TransientLLMError)):
         return True
     if isinstance(getattr(error, "__cause__", None), httpx.TransportError):
         return True
@@ -214,10 +214,24 @@ class LLM:
         agent_name: str = "SystemAgent",
         sub_title: str | None = None,
         publish: bool = True,
+        parallel_tool_calls: bool | None = None,
     ) -> StandardResponse:
         """发起一次对话调用，内建重试、备用模型与前端播报。"""
         self._validate_config(agent_name)
         messages = _repair_tool_call_chain(history) if history else []
+        from app.services.team_state import context_for
+
+        shared_context = await asyncio.to_thread(context_for, self.task_id, agent_name)
+        from app.services.competitions import context_for as competition_context
+
+        contest_context = await asyncio.to_thread(
+            competition_context, self.task_id, agent_name
+        )
+        if contest_context:
+            messages = [*messages, {"role": "user", "content": contest_context}]
+        if shared_context:
+            # 不改原始历史；下一轮再次读取最新公共状态，避免陈旧副本累积。
+            messages = [*messages, {"role": "user", "content": shared_context}]
 
         retry_limit = max_retries if max_retries is not None else settings.MAX_RETRIES
         if retry_limit is None:
@@ -240,6 +254,7 @@ class LLM:
                     top_p=top_p,
                     on_delta=on_delta,
                     reasoning_effort=self.reasoning_effort,
+                    parallel_tool_calls=parallel_tool_calls,
                 )
             except Exception as error:
                 attempt += 1

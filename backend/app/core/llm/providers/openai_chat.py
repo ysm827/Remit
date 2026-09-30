@@ -27,6 +27,8 @@ class OpenAIChatProvider(BaseProvider):
             request.max_tokens,
             request.top_p,
         )
+        if request.tools and request.parallel_tool_calls is not None:
+            payload["parallel_tool_calls"] = request.parallel_tool_calls
         response = await client.chat.completions.create(**payload)
         return self._normalize(response)
 

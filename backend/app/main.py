@@ -9,7 +9,15 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config.setting import settings
-from app.routers import common_router, files_router, modeling_router, ws_router
+from app.routers import (
+    common_router,
+    files_router,
+    modeling_router,
+    ws_router,
+    writing_router,
+)
+from app.routers import team_router, project_router
+from app.services import paper_proposals, competitions
 from app.services.redis_manager import redis_manager
 from app.utils.cli import get_ascii_banner
 from app.utils.log_util import logger
@@ -29,21 +37,34 @@ async def lifespan(app: FastAPI):
         logger.warning(f"已将 {interrupted} 个重启前未结束的任务标记为停止")
 
     _PROJECT_ROOT.mkdir(exist_ok=True)
+    team_router.recover_commands()
     try:
         yield
     finally:
         logger.info("Stopping Remit")
+        await team_router.shutdown_team()
+        await writing_router.shutdown_writers()
         await redis_manager.close()
 
 
 app = FastAPI(
     title="Remit",
     description="Local-first multi-agent workbench for mathematical modeling",
-    version="0.1.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
-for module in (modeling_router, ws_router, common_router, files_router):
+for module in (
+    modeling_router,
+    ws_router,
+    writing_router,
+    paper_proposals,
+    competitions,
+    team_router,
+    project_router,
+    common_router,
+    files_router,
+):
     app.include_router(module.router)
 
 cors_origins = list(settings.CORS_ALLOW_ORIGINS)
@@ -51,7 +72,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_credentials="*" not in cors_origins,
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
     expose_headers=["Content-Disposition"],
 )

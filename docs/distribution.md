@@ -8,7 +8,7 @@
 发布环境使用独立的 `remit-release` 项目名，避免复用开发环境的数据卷。
 
 ```bash
-docker build --build-arg SOURCE_REVISION=$(git rev-parse HEAD) -t remit:0.1.0 .
+docker build --build-arg SOURCE_REVISION=$(git rev-parse HEAD) -t remit:2.0.0 .
 docker compose -f docker-compose.release.yml up -d --no-build
 ```
 
@@ -24,18 +24,17 @@ docker compose -f docker-compose.release.yml up -d --no-build
 
 ```bash
 docker pull redis:7.4-alpine
-docker save remit:0.1.0 redis:7.4-alpine | gzip > remit-0.1.0-linux-amd64.tar.gz
+docker save remit:2.0.0 redis:7.4-alpine | gzip > remit-2.0.0-linux-amd64.tar.gz
 ```
 
 接收方需要支持 Linux 容器的 Docker，先导入归档，再使用随包 Compose 文件：
 
 ```bash
-docker load -i remit-0.1.0-linux-amd64.tar.gz
+docker load -i remit-2.0.0-linux-amd64.tar.gz
 docker compose -f docker-compose.release.yml up -d --no-build --pull never
 ```
 
-Windows 本机如果使用本次构建准备的 WSL Ubuntu，可在终端通过
-`wsl -d Ubuntu-24.04 -u root -- docker ...` 调用 Docker，或进入该发行版后执行上述命令。
+Windows 用户可使用 Docker Desktop 的 Linux 容器后端，或自行配置 WSL 中的 Docker。
 镜像导入后不需要网络安装计算依赖；实际建模仍需要可访问的模型服务。
 
 ## Windows 安装包
@@ -51,6 +50,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/package_win.ps1
 安装包不捆绑 MiKTeX/TeX Live；需要导出最终 LaTeX/PDF 论文时，请在目标电脑安装
 XeLaTeX，并确保 `xelatex` 可从 PATH 调用。没有编译器时应用会给出明确提示。
 本机构建与隔离目录验证不能替代所有 Windows 版本上的安装兼容性测试。
+
+安装目录内可运行随包自检（无模型调用）：
+
+```powershell
+.\runtime\python\python.exe .\tools\verify_portable_runtime.pyc --install-root . --report .\logs\runtime-check.json
+```
+
+自检会使用包内 Python 启动独立 Jupyter 内核，检查计算库、写作技能读取、
+简单运算及 CSV/PNG 导出。临时计算目录在结束后清理，不读取历史任务。
+目标电脑已安装 XeLaTeX 时，可追加 `--with-latex`，实际编译并渲染国赛、
+华为杯和美赛三套带公式及图片的测试模板。自检成功不代表外部模型连接、
+MATLAB 或具体赛题结果已通过验证；默认不检查 LaTeX。
 
 分发时保留 LICENSE、NOTICE.md 与 THIRD_PARTY_NOTICES.md，并用提供的 SHA256
 校验文件确认下载完整性。

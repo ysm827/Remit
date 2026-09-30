@@ -35,6 +35,8 @@ NODE_LABELS = {
     "write:symbol": "符号说明",
     "write:judge": "模型评价、改进与推广",
     "finalize": "论文合并与最终质量门禁",
+    "sync_writing": "同步建模成果到论文工作区",
+    "review_results": "最终计算结果验收",
 }
 
 NodeStatus = Literal["completed", "interrupted", "available"]
@@ -77,7 +79,7 @@ class WorkflowCheckpoint:
             "status": "running",
             "current_node": None,
             # 新任务启用调研与探索实验节点；旧任务缺失该字段时保持旧节点序
-            "workflow_features": ["research", "analysis", "pilot"],
+            "workflow_features": ["research", "analysis", "pilot", "separate_writing"],
             "completed_nodes": [],
             "questions": {},
             "ques_count": 0,
@@ -135,6 +137,9 @@ class WorkflowCheckpoint:
             encoding="utf-8",
         )
         temp_path.replace(self.path)
+        from app.services.team_state import checkpoint_event
+
+        checkpoint_event(self.work_dir, state)
 
     @staticmethod
     def solution_keys(state: dict[str, Any]) -> list[str]:
@@ -165,8 +170,13 @@ class WorkflowCheckpoint:
                 order.append(f"solve:{key}")
                 if key == "eda" and "pilot" in features:
                     order.append("pilot")
-            order.extend(f"write:{key}" for key in WRITE_NODE_KEYS)
-            order.append("finalize")
+            if "separate_writing" in features:
+                if "critical_review" in features:
+                    order.append("review_results")
+                order.append("sync_writing")
+            else:
+                order.extend(f"write:{key}" for key in WRITE_NODE_KEYS)
+                order.append("finalize")
         return order
 
     @staticmethod
@@ -177,7 +187,7 @@ class WorkflowCheckpoint:
             question = str(state.get("questions", {}).get(key, "")).strip()
             number = key.removeprefix("ques")
             suffix = f"：{' '.join(question.split())[:36]}" if question else ""
-            return f"问题 {number} 求解与论文段落{suffix}"
+            return f"问题 {number} 求解与验证{suffix}"
         return NODE_LABELS.get(node_id, node_id)
 
     @classmethod
@@ -359,6 +369,11 @@ class WorkflowCheckpoint:
             state,
             node_id,
             preserve_interrupted_artifacts=bool(pending.get("allow_incomplete")),
+            preserve_review_artifacts=(
+                node_id == pending.get("node_id")
+                and (pending.get("quality_report") or {}).get("status")
+                == "manual_review"
+            ),
         )
         feedback_by_node = dict(state.get("revision_feedback", {}))
         feedback_by_node[node_id] = normalized_feedback
@@ -442,6 +457,8 @@ class WorkflowCheckpoint:
         旧结果会冒充新实验通过校验，使用户的退回意见静默失效。
         """
         state.pop("pilot_plan", None)
+        state.pop("pilot_plan_signature", None)
+        state.pop("pilot_progress", None)
         state.pop("pilot_results", None)
         state.pop("pilot_decision", None)
         state.pop("pilot_skipped", None)
@@ -460,6 +477,7 @@ class WorkflowCheckpoint:
         node_id: str,
         *,
         preserve_interrupted_artifacts: bool = True,
+        preserve_review_artifacts: bool = False,
     ) -> dict[str, Any]:
         """校验续跑节点并使该节点及其下游旧产物失效。
 
@@ -468,6 +486,8 @@ class WorkflowCheckpoint:
             node_id: 用户选择的节点 ID。
             preserve_interrupted_artifacts: 仅中断恢复可复用当前未完成节点的
                 产物；人工返修必须传 False，使旧证据失效。
+            preserve_review_artifacts: 当前 manual_review 节点的增量返修保留文件，
+                仍使已完成/批准状态失效；不适用于上游重新建模。
 
         Returns:
             已完成失效处理并落盘的状态。
@@ -478,11 +498,19 @@ class WorkflowCheckpoint:
         available = {item["node_id"] for item in self.resume_nodes(state)}
         if node_id not in available:
             raise WorkflowCheckpointError("所选节点缺少完整前置成果，不能从这里续跑")
-        preserve_selected_artifacts = (
-            preserve_interrupted_artifacts
-            and state.get("current_node") == node_id
-            and node_id not in state.get("completed_nodes", [])
+        preserve_selected_artifacts = state.get("current_node") == node_id and (
+            preserve_review_artifacts
+            or (
+                preserve_interrupted_artifacts
+                and node_id not in state.get("completed_nodes", [])
+            )
         )
+        recover_skipped_pilot = (
+            node_id == "pilot" and preserve_interrupted_artifacts
+            and bool(state.get("pilot_skipped"))
+            and not any(str(n).startswith("solve:ques") for n in state.get("completed_nodes", []))
+        )
+        preserve_pilot = node_id == "pilot" and (preserve_selected_artifacts or recover_skipped_pilot)
 
         # 兼容升级前已经执行过 Fable、但尚未记录独立预算字段的任务。
         # 只要评审结论已经落盘，就视为本任务额度已使用，避免续跑再次扣费。
@@ -523,8 +551,14 @@ class WorkflowCheckpoint:
         state["approved_nodes"] = [
             item for item in state.get("approved_nodes", []) if item not in invalidated
         ]
-        if "pilot" in invalidated:
+        state["node_outcomes"] = {
+            key: value for key, value in state.get("node_outcomes", {}).items()
+            if key not in invalidated
+        }
+        if "pilot" in invalidated and not preserve_pilot:
             self._invalidate_pilot_state(state)
+        elif preserve_pilot:
+            state.pop("pilot_skipped", None)
         # 任何续跑都会改动论文内容，终稿评审必须重做
         state.pop("paper_review", None)
 
@@ -728,6 +762,10 @@ class WorkflowCheckpoint:
             (root / str(value)).resolve()
             for value in state.get("protected_input_files", [])
         }
+        # 后续导入的数据与最初输入同样受保护，不因返修清理而删除。
+        from app.utils.file_types import input_filenames
+
+        protected.update((root / value).resolve() for value in input_filenames(root))
         retained = {
             (root / str(value)).resolve()
             for key, result in solution_results.items()
