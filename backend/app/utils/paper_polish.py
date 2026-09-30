@@ -337,11 +337,11 @@ def _split_china_paper(
 
 
 def _normalize_unicode_greek(markdown: str) -> str:
-    """把游离在公式之外的 Unicode 希腊字母换成 $...$ 数学命令，避免丢字。"""
+    """Use explicit math delimiters; dollar closers before digits are ambiguous."""
     parts = MATH_SPAN_RE.split(markdown)
     for index in range(0, len(parts), 2):
         parts[index] = GREEK_CHAR_RE.sub(
-            lambda match: f"${GREEK_UNICODE_MAP[match.group(0)]}$", parts[index]
+            lambda match: "`\\(" + GREEK_UNICODE_MAP[match.group(0)] + "\\)`{=latex}", parts[index]
         )
     return "".join(parts)
 
@@ -414,7 +414,7 @@ def build_china_paper_preamble() -> str:
     作者手写编号（一、/1.1/5.1.1）直接作为标题文字，故关闭自动编号。
     """
     return r"""% !TEX program = xelatex
-% Remit-LaTeX-Assembler: china-v1
+% Remit-LaTeX-Assembler: china-v2
 \documentclass[UTF8,a4paper,zihao=-4,linespread=1.08]{ctexart}
 \usepackage[top=2.5cm,bottom=2.5cm,left=2.5cm,right=2.5cm]{geometry}
 \usepackage{amsmath,amssymb}
@@ -445,17 +445,28 @@ def build_china_paper_preamble() -> str:
 \usepackage{indentfirst}
 \setlength{\parindent}{2em}
 \setlength{\emergencystretch}{3em}
+\raggedbottom
+% Let following text fill space when a figure cannot fit at its callout.
+\renewcommand{\topfraction}{0.9}
+\renewcommand{\bottomfraction}{0.85}
+\renewcommand{\textfraction}{0.08}
+\renewcommand{\floatpagefraction}{0.7}
+\setcounter{topnumber}{3}
+\setcounter{bottomnumber}{2}
+\setcounter{totalnumber}{4}
+\setlength{\textfloatsep}{12pt plus 2pt minus 2pt}
+\setlength{\intextsep}{10pt plus 2pt minus 2pt}
 \makeatletter
 \newsavebox\pandoc@box
-% 插图统一缩放到 0.75 倍版心宽；过高时按半页高封顶，保证图幅一致且不超页
+% 常规插图同宽，只有极高的纵向图才触发安全高度限制。
 \newcommand*\pandocbounded[1]{%
   \sbox\pandoc@box{#1}%
-  \Gscale@div\@tempa{0.75\linewidth}{\wd\pandoc@box}%
-  \Gscale@div\@tempb{0.5\textheight}{\dimexpr\ht\pandoc@box+\dp\pandoc@box\relax}%
+  \Gscale@div\@tempa{0.85\linewidth}{\wd\pandoc@box}%
+  \Gscale@div\@tempb{0.64\textheight}{\dimexpr\ht\pandoc@box+\dp\pandoc@box\relax}%
   \ifdim\@tempb\p@<\@tempa\p@\let\@tempa\@tempb\fi%
   \scalebox{\@tempa}{\usebox\pandoc@box}%
 }
-\def\fps@figure{H}
+\def\fps@figure{!htbp}
 \makeatother
 \providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
 \usepackage{fancyvrb}
@@ -616,7 +627,7 @@ def _merge_symbol_section_tables(body_tex: str) -> str:
             # together instead of leaving a few at the bottom of the prior page.
             header = re.split(r"\\endfirsthead|\\endhead", merged_body, maxsplit=1)[0]
             merged = (
-                "\\begin{table}[H]\n\\centering\n\\caption{主要符号说明}\n"
+                "\\begin{table}[!htbp]\n\\centering\n\\caption{主要符号说明}\n"
                 + f"\\begin{{tabular}}{{{spec}}}\n" + header.strip() + "\n"
                 + data_rows + "\n\\bottomrule\n\\end{tabular}\n\\end{table}\n"
             )
@@ -647,7 +658,7 @@ FIGURE_OR_HEADING_RE = re.compile(
 FIGURE_GRAPHICS_RE = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^{}]*)\}")
 FIGURE_CAPTION_RE = re.compile(r"\\caption\{(?P<text>.*?)\}\s*", re.S)
 MANUAL_FIGNO_RE = re.compile(
-    r"^\s*(?:图|Fig(?:ure)?\.?)\s*(\d+(?:[-–.]\d+)?)\s*[:：．.、]?\s*"
+    r"^\s*(?:图|Fig(?:ure)?\.?)\s*(\d+(?:[-–.]\d+)?(?:[（(][a-zA-Z][）)])?)\s*[:：．.、]?\s*"
 )
 SUBFIG_TAG_RE = re.compile(r"^\s*[（(][a-zA-Z][）)]\s*")
 _CN_SECTION_NUMBERS = {
@@ -735,6 +746,57 @@ def _center_longtables(body_tex: str) -> str:
     return body_tex.replace("\\begin{longtable}[]", "\\begin{longtable}[c]")
 
 
+def _normalize_numeric_tables(body_tex: str) -> str:
+    """Give short numeric tables natural column widths and explicit unit rows.
+
+    Long/text-heavy tables retain their multipage layout. Cell values are kept
+    byte-for-byte; only header layout and the surrounding environment change.
+    """
+    for start, end, spec, body in reversed(_find_symbol_tables(body_tex)):
+        if "\\endlastfoot" not in body:
+            continue
+        data = body.split("\\endlastfoot", 1)[1].strip()
+        rows = re.split(r"\\\\\s*(?:\n|$)", data)
+        rows = [row.strip() for row in rows if row.strip()]
+        count = _table_column_count(spec)
+        if not 2 <= count <= 9 or not 1 <= len(rows) <= 24:
+            continue
+        cells = [cell.strip() for row in rows for cell in row.split("&")]
+        numeric = sum(bool(re.fullmatch(r"[-+\d.,eE%\\(){} ]+|是|否|—|-", cell)) for cell in cells)
+        compact_text_table = count <= 5 and "\\real{" not in spec and all(len(cell) <= 60 for cell in cells)
+        if numeric < len(cells) * .7 and not compact_text_table:
+            continue
+        header_match = re.search(r"\\toprule(?:\\noalign\{\})?\s*(.*?)\\midrule", body, re.S)
+        if not header_match:
+            continue
+        header = MINIPAGE_CELL_RE.sub(lambda m: m.group(1).strip(), header_match.group(1)).strip()
+        header = re.sub(r"\\\\\s*$", "", header)
+        headers = header.split("&")
+        if len(headers) != count:
+            continue
+        formatted = []
+        for cell in headers:
+            cell = " ".join(cell.split())
+            unit = re.search(r"/([A-Za-z°%][A-Za-z0-9°%^{}\\-]*)$", cell)
+            if unit:
+                cell = "\\shortstack{" + cell[:unit.start()].strip() + "\\\\(" + unit[1] + ")}"
+            formatted.append(cell)
+        title = re.search(r"(?:^|\n\n)(表\s*\d+(?:[-–.]\d+)?[　 \t]+[^\n]{1,120})\s*\n\n$", body_tex[:start])
+        caption = ""
+        if title and "。" not in title[1]:
+            caption = "\\caption*{" + title[1].strip() + "}\n"
+            start = title.start()
+        replacement = (
+            "\\begin{table}[!htbp]\n\\centering\n\\small\n"
+            + caption
+            + "\\begin{tabular*}{\\linewidth}{@{\\extracolsep{\\fill}}" + ("l" if compact_text_table else "r") + "r" * (count - 1) + "@{}}\n\\toprule\n"
+            + " & ".join(formatted) + " \\\\\n\\midrule\n"
+            + data + "\n\\bottomrule\n\\end{tabular*}\n\\end{table}\n"
+        )
+        body_tex = body_tex[:start] + replacement + body_tex[end:]
+    return body_tex
+
+
 def _china_section_number(title: str) -> int | None:
     """从手写标题推断一级节号："五、…" 或 "5.1 …" 两种写法。"""
     match = re.match(rf"^\s*([{CN_NUM_CHARS}]{{1,3}})\s*[、.．]", title)
@@ -781,22 +843,34 @@ def _normalize_figures(body_tex: str) -> str:
             pieces.append(block)
             continue
         caption_text = ""
-        caption_match = FIGURE_CAPTION_RE.search(block)
+        caption_match = re.search(r"\\caption\{", block)
         if caption_match:
-            caption_text = " ".join(caption_match.group("text").split())
+            close = _match_braces(block, caption_match.end() - 1)
+            if close >= 0:
+                caption_text = " ".join(block[caption_match.end():close].split())
+        # Some writers put the real caption in a separate paragraph after an
+        # image whose alt text is just its filename. Move that title into the
+        # figure so it cannot be duplicated or stranded by float placement.
+        following = re.match(r"\s*\n(图\s*\d+(?:[-–.]\d+)?(?:[（(][a-zA-Z][）)])?[　 \t]+[^\n]{1,160})\n", body_tex[cursor:])
+        if not caption_text and following and "。" not in following[1] and not re.match(r"图\s*\d+(?:[-–.]\d+)?\s+(?:给出|显示|表明|可见|中)", following[1]):
+            caption_text = following[1].strip()
+            cursor += following.end()
         manual = MANUAL_FIGNO_RE.match(caption_text)
         if manual:
             label = f"图 {manual.group(1)}"
             caption_text = MANUAL_FIGNO_RE.sub("", caption_text)
+            number = re.fullmatch(rf"{section}[-–.](\d+)", manual.group(1))
+            if number:
+                counter = max(counter, int(number[1]))
         else:
             counter += 1
             label = f"图 {section}-{counter}" if section else f"图 {counter}"
         caption_text = SUBFIG_TAG_RE.sub("", caption_text).strip(" ，,。；;")
         caption = f"{label}　{caption_text}" if caption_text else label
         pieces.append(
-            "\\begin{figure}[H]\n\\centering\n"
-            "\\includegraphics[width=0.90\\linewidth,"
-            "height=0.38\\textheight,keepaspectratio]"
+            "\\begin{figure}[!htbp]\n\\centering\n"
+            "\\includegraphics[width=0.85\\linewidth,"
+            "height=0.64\\textheight,keepaspectratio]"
             f"{{{graphics_match.group(1)}}}\n"
             f"\\caption*{{{caption}}}\n\\end{{figure}}\n"
         )
@@ -825,7 +899,9 @@ def _assemble_china_paper(
             + "}\n\\par\\vspace{1.5em}\n{\\heiti\\zihao{4} 摘\\hspace{0.5em}要}\n"
             "\\end{center}\n\\vspace{0.8em}\n"
         )
-        parts.append(_markdown_fragment_to_latex(abstract_md, resource_path))
+        # A center environment suppresses indentation of the following paragraph.
+        # Explicit horizontal space is stable across ctex/platform font choices.
+        parts.append("\\noindent\\hspace*{2em}%\n" + _markdown_fragment_to_latex(abstract_md, resource_path).lstrip())
         if keywords:
             parts.append(
                 "\\par\\vspace{1em}\n\\noindent{\\heiti\\bfseries 关键词："
@@ -841,6 +917,7 @@ def _assemble_china_paper(
         _markdown_fragment_to_latex(body_md, resource_path)
     )
     body_tex = _merge_symbol_section_tables(body_tex)
+    body_tex = _normalize_numeric_tables(body_tex)
     body_tex = _normalize_figures(_center_longtables(body_tex))
     refs_tex = _build_references_latex(refs)
     if REFS_PLACEHOLDER in body_tex:

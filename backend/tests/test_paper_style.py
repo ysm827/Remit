@@ -99,6 +99,27 @@ def test_figure_override_rejects_changed_evidence_and_path_escape(tmp_path):
         figure_overrides(tmp_path, "r1")
 
 
+def test_pdf_review_measures_indent_and_detects_stranded_body_content(tmp_path):
+    import pymupdf
+    from app.services.paper_layout import inspect_layout
+    for indent, expected in [(0, True), (24, False)]:
+        pdf = tmp_path / f"indent-{indent}.pdf"
+        with pymupdf.open() as doc:
+            page = doc.new_page(width=595, height=842)
+            page.insert_text((240, 100), "摘 要", fontname="china-s", fontsize=12)
+            page.insert_text((72 * 25 / 25.4 + indent, 140), "摘要第一段应按正文的两个汉字宽度缩进并保留完整内容", fontname="china-s", fontsize=12)
+            page.insert_text((72 * 25 / 25.4, 166), "后续正文内容", fontname="china-s", fontsize=12)
+            page.insert_text((70, 660), "关键词：运输", fontname="china-s")
+            page = doc.new_page(width=595, height=842)
+            page.insert_text((70, 100), "只有顶部内容，大块留白应报告", fontname="china-s")
+            page = doc.new_page(width=595, height=842)
+            page.insert_text((70, 100), "末页留白允许", fontname="china-s")
+            doc.save(pdf)
+        result = inspect_layout(pdf)
+        assert any("首段" in issue for issue in result["issues"]) == expected
+        assert result["metrics"]["sparse_body_pages"] == [2]
+
+
 def test_render_font_guard_survives_latin_style_reset(tmp_path: Path):
     import matplotlib
     matplotlib.use("Agg")

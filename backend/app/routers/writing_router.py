@@ -580,6 +580,9 @@ async def _generate(
                 + str(config.get(key, ""))
             )
             prompt += flows._citation_block() + "\n" + str(evidence.get("evidence_notice") or "")
+            from app.services.writer_evidence import source_excerpt
+
+            prompt += source_excerpt(snapshot, entry, evidence.get("artifact_hashes") or {})
             response = await write_validated(
                 agent, key, prompt,
                 images=entry.get("paper_ready_images", []), validation=validation,
