@@ -1692,11 +1692,18 @@ def validate_writer_section(
 
     def check_length() -> None:
         compact = re.sub(r"\s+", "", content)
-        minimum = 600 if section_key.startswith("ques") else 250
+        minimum = 600 if section_key.startswith("ques") else (100 if section_key in {"modelAssumption", "symbol"} else 250)
         if len(compact) < minimum:
             raise DeliverableValidationError(
                 f"{section_key} 正文过短: {len(compact)} < {minimum}"
             )
+
+    def check_style() -> None:
+        from app.core.paper_style import style_issues
+
+        issues = style_issues(section_key, content)
+        if issues:
+            raise DeliverableValidationError("；".join(issues))
 
     def check_markers() -> None:
         found = [
@@ -1875,6 +1882,7 @@ def validate_writer_section(
                 check_images,
                 check_metric_grounding,
                 check_abstract_structure,
+                check_style,
             ]
         )
     )

@@ -26,6 +26,7 @@ from app.tools.notebook_serializer import NotebookSerializer
 from app.utils.file_types import is_sandbox_upload_file, input_filenames
 from app.utils.common_utils import get_current_files
 from app.utils.log_util import logger
+from app.tools.plot_fonts import bootstrap as font_bootstrap
 
 _SANDBOX_HOME = "/home/user"
 # 沙箱里的 shell 启动文件没有同步价值
@@ -54,6 +55,7 @@ pyplot.rcParams.update({{
 }})
 print('Remit sandbox fonts:', len(font_files))
 """.strip()
+_FONT_BOOTSTRAP += "\n" + font_bootstrap(_SANDBOX_HOME)
 
 
 class E2BCodeInterpreter(BaseCodeInterpreter):

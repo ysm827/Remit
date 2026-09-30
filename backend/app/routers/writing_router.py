@@ -51,8 +51,10 @@ def _set_generation(root: Path, status: str, **fields) -> None:
     meta = _meta(root)
     previous = meta.get("generation", {})
     identity = {
-        k: previous[k] for k in ("generation_id", "input_revision") if k in previous
+        k: previous[k] for k in ("generation_id", "input_revision", "file", "partial", "completed_sections", "follow_draft") if k in previous
     }
+    if fields.get("generation_id", previous.get("generation_id")) != previous.get("generation_id"):
+        identity = {}
     meta["generation"] = {**identity, "status": status, "at": workspace.now(), **fields}
     workspace.write_json(root / "workspace.json", meta)
     from app.services.team_state import record
@@ -287,7 +289,7 @@ async def pdf_page(
             current = document[page]
             zoom = max(
                 0.5,
-                min(2.0, scale, 2400 / max(current.rect.width, current.rect.height)),
+                min(4.0, scale, 4608 / max(current.rect.width, current.rect.height)),
             )
             return current.get_pixmap(
                 matrix=pymupdf.Matrix(zoom, zoom), alpha=False
@@ -341,7 +343,7 @@ async def history(task_id: str, name: str) -> list[dict]:
 
 
 @router.post("/{task_id}/generate")
-async def generate(task_id: str) -> dict:
+async def generate(task_id: str, revise_style: bool = False) -> dict:
     """独立启动论文手，生成新文件供用户切换，不覆盖现有论文。"""
     async with _lock(task_id):
         root = _root(task_id)
@@ -355,6 +357,20 @@ async def generate(task_id: str) -> dict:
         if not settings.WRITER_API_KEY or not settings.WRITER_MODEL:
             raise HTTPException(409, "请在主页面的模型连接中配置论文手")
         generation_id = _generation_id(root, inputs["revision"])
+        if revise_style:
+            previous = _meta(root).get("generation", {})
+            previous_id = str(previous.get("generation_id", ""))
+            if previous.get("input_revision") != inputs["revision"] or not re.fullmatch(r"[0-9a-f]{10}", previous_id):
+                raise HTTPException(409, "缺少同一建模版本的章节草稿，请先生成初稿")
+            cached = workspace.read_json(root / ".drafts" / previous_id / ".remit" / "paper_sections.json")
+            if not cached:
+                raise HTTPException(409, "未找到可复用章节，请先生成初稿")
+            generation_id = uuid4().hex[:10]
+            # Explicit style revision reuses verified scientific chapters. All
+            # retained chapters still pass current validation before publication.
+            for key in ("firstPage", "RepeatQues", "analysisQues", "modelAssumption", "symbol"):
+                cached.pop(key, None)
+            workspace.write_json(root / ".drafts" / generation_id / ".remit" / "paper_sections.json", cached)
         _set_generation(
             root,
             "running",
@@ -444,6 +460,62 @@ async def _generate(
             build_citation_brief(evidence.get("citation_ledger") or {}),
         )
         sections = evidence.get("solution_results") or {}
+        published_name = f"draft-{generation_id}.tex"
+        if (root / published_name).exists():
+            published_name = f"draft-{generation_id}-{uuid4().hex[:6]}.tex"
+        published_text = None
+        follow_draft = _meta(root).get("generation", {}).get("follow_draft", True)
+
+        async def publish_draft(*, partial):
+            nonlocal original_revision, published_name, published_text, follow_draft
+            from app.services.competitions import adapt_generated_source
+
+            # The assembler also serves complete papers; use only completed
+            # sections here so an unfinished chapter never becomes placeholder prose.
+            order = output.seq
+            try:
+                output.seq = [key for key in order if key in output.res]
+                markdown = polish_markdown(output.get_result_to_save(), snapshot / "assets")
+            finally:
+                output.seq = order
+            asset_prefix = f"assets/{revision}"
+            overrides = workspace.figure_overrides(root, revision)
+            for asset in sorted((snapshot / "assets").rglob("*"), key=lambda item: len(str(item)), reverse=True):
+                if asset.is_file():
+                    name = asset.relative_to(snapshot / "assets").as_posix()
+                    path = overrides.get(name, f"{asset_prefix}/{name}")
+                    markdown = markdown.replace(f"]({name})", f"]({path})")
+            candidate = scratch / "preview.tex"
+            await asyncio.to_thread(_convert_markdown_to_latex, markdown, candidate, root, scratch, template)
+            text = adapt_generated_source(root.parent, candidate.read_text(encoding="utf-8"))
+            async with _lock(task_id):
+                follow_draft = follow_draft and workspace.project_revision(root) == original_revision
+                target = root / published_name
+                if target.exists() and target.read_text(encoding="utf-8") != published_text:
+                    # A user edited this generated file; retain it and publish separately.
+                    published_name = f"draft-{generation_id}-{uuid4().hex[:6]}.tex"
+                    target = root / published_name
+                shutil.copytree(snapshot / "assets", root / asset_prefix, dirs_exist_ok=True)
+                target.write_text(text, encoding="utf-8")
+                published_text = text
+                if follow_draft:
+                    meta = _meta(root)
+                    meta["main"] = published_name
+                    workspace.write_json(root / "workspace.json", meta)
+                _set_generation(root, "running",
+                                file=published_name, partial=partial,
+                                follow_draft=follow_draft,
+                                completed_sections=list(output.res), input_revision=revision,
+                                message=("已更新部分草稿，后续章节仍在撰写。" if partial else
+                                         "章节已齐，正在检查 PDF 排版。") if follow_draft else
+                                "检测到手工编辑，草稿已另存，原文件保持不变。")
+                original_revision = workspace.project_revision(root)
+            if follow_draft:
+                try:
+                    return await compile_source(task_id)
+                except Exception as exc:
+                    return {"status": "failed", "log": str(exc)}
+            return None
 
         async def write_validated(agent, key, prompt, *, images=None, validation=None):
             validation = validation or {}
@@ -514,6 +586,9 @@ async def _generate(
             )
             output.set_res(key, response)
             output.save_result()
+            await publish_draft(partial=True)
+        if output.res and not core_changed:
+            await publish_draft(partial=True)
         for key, prompt in flows.get_write_flows(
             output, config, problem.get("ques_all", "")
         ).items():
@@ -526,6 +601,7 @@ async def _generate(
                     pass
                 else:
                     output.set_res(key, saved)
+                    await publish_draft(partial=True)
                     continue
             async with _lock(task_id):
                 _set_generation(root, "running", section=key, input_revision=revision)
@@ -538,58 +614,27 @@ async def _generate(
             response = await write_validated(agent, key, prompt)
             output.set_res(key, response)
             output.save_result()
-        markdown = polish_markdown(output.get_result_to_save(), snapshot / "assets")
-        asset_prefix = f"assets/{revision}"
-        for asset in sorted(
-            (snapshot / "assets").rglob("*"),
-            key=lambda item: len(str(item)),
-            reverse=True,
-        ):
-            if asset.is_file():
-                name = asset.relative_to(snapshot / "assets").as_posix()
-                markdown = markdown.replace(f"]({name})", f"]({asset_prefix}/{name})")
-        name = f"draft-{generation_id}.tex"
-        await asyncio.to_thread(
-            _convert_markdown_to_latex,
-            markdown,
-            scratch / name,
-            root,
-            scratch,
-            template,
-        )
-        from app.services.competitions import adapt_generated_source
-
-        draft_path = scratch / name
-        draft_path.write_text(
-            adapt_generated_source(root.parent, draft_path.read_text(encoding="utf-8")),
-            encoding="utf-8",
-        )
-        async with _lock(task_id):
-            activate = workspace.project_revision(root) == original_revision
-            shutil.copytree(
-                snapshot / "assets", root / asset_prefix, dirs_exist_ok=True
-            )
-            shutil.copy2(scratch / name, root / name)
-            if activate:
-                meta = _meta(root)
-                meta["main"] = name
-                workspace.write_json(root / "workspace.json", meta)
-            _set_generation(
-                root,
-                "completed",
-                file=name,
-                input_revision=revision,
-                message=("初稿已生成并打开，正在准备 PDF 预览；请核对正文与证据。" if activate else
-                         "初稿已另存。检测到写作期间有编辑，已保留当前主文件，请选择初稿查看。"),
-            )
-        if activate:
-            try:
-                await compile_source(task_id)
-            except Exception as exc:
-                # A PDF failure must not erase a successfully saved draft.
-                async with _lock(task_id):
-                    _set_generation(root, "completed", file=name,
-                                    message=f"初稿已保存，PDF 预览尚未完成：{str(exc)[:300]}")
+            await publish_draft(partial=True)
+        compiled = await publish_draft(partial=False)
+        review = (compiled or {}).get("layout_review", {})
+        abstract_issues = [item for item in review.get("issues", []) if item.startswith("摘要")]
+        if abstract_issues and "firstPage" in output.res:
+            _set_generation(root, "running", section="firstPage", message="首页版式检查未通过，墨墨正在按实际 PDF 修订摘要（1/1）")
+            agent = WriterAgent(task_id, llm, comp_template=template, context_window=settings.WRITER_CONTEXT_WINDOW)
+            prompt = flows.get_write_flows(output, config, problem.get("ques_all", ""))["firstPage"]
+            prompt += "\n实际 PDF 检查反馈：" + "；".join(abstract_issues)
+            prompt += "\n原摘要：\n" + output.res["firstPage"]["response_content"]
+            response = await write_validated(agent, "firstPage", prompt)
+            output.set_res("firstPage", response)
+            output.save_result()
+            compiled = await publish_draft(partial=False)
+            review = (compiled or {}).get("layout_review", {})
+        if compiled and (compiled.get("status") != "completed" or review.get("issues")):
+            _set_generation(root, "failed", error="草稿已保留，排版仍需修订：" + "；".join(review.get("issues") or [str(compiled.get("log", "PDF 编译失败"))[-1200:]]))
+        else:
+            _set_generation(root, "completed", partial=False,
+                            message="初稿已生成并通过自动排版检查，请核对正文、图表与证据。" if compiled else
+                            "初稿已另存，原编辑文件保持不变；请打开草稿并编译核验。")
     except asyncio.CancelledError:
         async with _lock(task_id):
             _set_generation(

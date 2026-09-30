@@ -8,6 +8,7 @@ export interface CompileResult {
 	at?: string;
 	log?: string;
 	diagnostics?: { file: string; line: number; message: string }[];
+	layout_review?: { status: string; issues: string[]; metrics?: { abstract_page_fill?: number }; manual_checks?: string[] };
 }
 export interface PaperWorkspace {
 	main: string;
@@ -27,6 +28,8 @@ export interface PaperWorkspace {
 		status: string;
 		section?: string;
 		file?: string;
+		partial?: boolean;
+		completed_sections?: string[];
 		error?: string;
 		message?: string;
 	};

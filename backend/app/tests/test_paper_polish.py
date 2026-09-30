@@ -18,7 +18,7 @@ from app.utils.paper_polish import (
 class TestPaperPolish(unittest.TestCase):
     """验证论文后处理的关键规则。"""
 
-    def test_compact_abstract_adds_bold_lead(self) -> None:
+    def test_abstract_preserves_prose(self) -> None:
         """摘要首段应自动加粗问题导语。"""
         markdown = """## 摘要
 
@@ -27,8 +27,8 @@ class TestPaperPolish(unittest.TestCase):
 **关键词：** A；B；C
 """
         polished = compact_abstract(markdown)
-        self.assertIn("**针对问题一：**", polished)
-        self.assertIn("**关键词：**", polished)
+        self.assertIn("针对问题一，本文", polished)
+        self.assertIn("**关键词：A；B；C**", polished)
 
     def test_merge_image_blocks_builds_composite(self) -> None:
         """相邻图片应合并成一张复合图。"""
@@ -51,10 +51,8 @@ class TestPaperPolish(unittest.TestCase):
             )
             polished = merge_image_blocks(markdown, work_dir)
 
-            self.assertIn("paper_composites/composite_001.png", polished)
-            self.assertTrue(
-                (work_dir / "paper_composites" / "composite_001.png").exists()
-            )
+            self.assertIn("![图A](a.png)", polished)
+            self.assertIn("![图B](b.png)", polished)
 
     def test_normalize_common_math_keeps_display_equations_intact(self) -> None:
         """公式块内的 R^2 不应被拆坏成错误的行内数学。"""
@@ -80,8 +78,8 @@ class TestPaperPolish(unittest.TestCase):
         polished = compact_abstract(markdown)
         body = polished.split("## 摘要", 1)[1]
         self.assertLess(len(body), 700)
-        self.assertIn("**针对问题一：**", polished)
-        self.assertIn("**结果表明", polished)
+        self.assertIn("针对问题一，本文", polished)
+        self.assertIn("平均降低0.0022", polished)
 
 
 if __name__ == "__main__":

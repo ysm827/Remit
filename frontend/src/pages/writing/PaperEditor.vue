@@ -61,6 +61,7 @@ const numbersLayer = ref<HTMLDivElement | null>(null);
 const splitArea = ref<HTMLDivElement | null>(null);
 const split = ref(50);
 const zoom = ref(100);
+const pdfRenderScale = computed(() => (zoom.value >= 125 ? 4 : 2.5));
 const cursor = ref({ line: 1, column: 1 });
 const savedAt = ref("");
 const busy = ref(false);
@@ -73,6 +74,11 @@ const dirty = computed(() => content.value !== savedContent.value);
 const generating = computed(
 	() => project.value?.generation.status === "running",
 );
+const writingSection = computed(() => {
+	const section = project.value?.generation.section || "";
+	const names: Record<string, string> = { eda: "数据分析", sensitivity_analysis: "敏感性分析", firstPage: "摘要", RepeatQues: "问题重述", analysisQues: "问题分析", modelAssumption: "模型假设", symbol: "符号说明", judge: "模型评价" };
+	return names[section] || (/^ques\d+$/.test(section) ? `问题 ${section.slice(4)}` : "整理草稿");
+});
 const pdfUrl = computed(() =>
 	project.value?.pdf_available
 		? `${writingUrl(props.task_id, "/pdf")}?v=${project.value.compile.pdf_revision || ""}#view=FitH`
@@ -131,13 +137,16 @@ function message(cause: unknown): string {
 }
 async function refresh() {
 	const previousMain = project.value?.main;
+	const previousRevision = project.value?.revision;
 	project.value = (await getPaperWorkspace(props.task_id)).data;
 	if (previousMain && project.value.main !== previousMain && selected.value === previousMain && !dirty.value && !saving.value) {
 		await loadFile(project.value.main);
+	} else if (previousRevision && previousRevision !== project.value.revision && selected.value === project.value.generation.file && !dirty.value && !saving.value) {
+		await loadFile(selected.value, true);
 	}
 }
-async function loadFile(name: string) {
-	if (name === selected.value) return;
+async function loadFile(name: string, force = false) {
+	if (name === selected.value && !force) return;
 	if (!(await save())) return;
 	busy.value = true;
 	try {
@@ -420,8 +429,8 @@ onUnmounted(() => {
 			<div class="project-actions"><ContestReview :task_id="task_id" /><button @click="showHistory" :disabled="!selected"><History :size="15" />历史</button><a :href="writingUrl(task_id, '/export')"><Download :size="15" />下载项目</a><RouterLink :to="`/project/${task_id}`">团队对话</RouterLink><RouterLink :to="`/project/${task_id}/results`">建模结果</RouterLink></div>
 		</header>
 		<div v-if="error" class="error-banner" role="alert"><span>{{ error }}</span><button @click="error = ''" aria-label="关闭错误"><X :size="15" /></button></div>
-		<div class="evidence-bar"><div><span class="sync-dot" :class="{ ready: project?.ready }" />{{ project?.ready ? '建模成果已就绪' : '等待建模与计算完成' }}<span class="evidence-count">{{ project?.inputs.sections?.length || 0 }} 个章节 · {{ project?.inputs.asset_count || 0 }} 项素材</span></div><div><button :disabled="busy || !project?.ready" @click="action('sync')"><RefreshCw :size="13" />同步结果</button><button v-if="generating" @click="action('cancel')"><Square :size="12" />停止写作</button><button v-else :disabled="busy || !project?.ready" class="generate-button" @click="action('generate')"><WandSparkles :size="14" />生成论文初稿</button></div></div>
-		<div v-if="generating || project?.generation.status === 'failed' || project?.generation.status === 'completed' || project?.generation.status === 'interrupted'" class="generation-bar" role="status"><LoaderCircle v-if="generating" :size="14" class="spin" /><span v-if="generating">论文手正在写作：{{ project?.generation.section }}。你可以继续编辑，初稿会另存为新文件。</span><span v-else-if="project?.generation.error">{{ project.generation.error }}</span><template v-else><span>初稿已生成，打开并设为主文件后即可编译。</span><button v-if="project?.generation.file" @click="loadFile(project.generation.file)">打开 {{ project.generation.file }}</button></template></div>
+		<div class="evidence-bar"><div><span class="sync-dot" :class="{ ready: project?.ready }" />{{ project?.ready ? '建模成果已就绪' : '等待建模与计算完成' }}<span class="evidence-count">{{ project?.inputs.sections?.length || 0 }} 个章节 · {{ project?.inputs.asset_count || 0 }} 项素材</span></div><div><button :disabled="busy || !project?.ready" @click="action('sync')"><RefreshCw :size="13" />同步建模素材</button><button v-if="generating" @click="action('cancel')"><Square :size="12" />停止写作</button><button v-else :disabled="busy || !project?.ready" class="generate-button" @click="action('generate')"><WandSparkles :size="14" />生成论文初稿</button></div></div>
+		<div v-if="generating || project?.generation.status === 'failed' || project?.generation.status === 'completed' || project?.generation.status === 'interrupted'" class="generation-bar" role="status"><LoaderCircle v-if="generating" :size="14" class="spin" /><span v-if="generating">墨墨正在撰写{{ writingSection }}。<template v-if="project?.generation.partial">已写 {{ project.generation.completed_sections?.length || 0 }} 个章节，当前为部分草稿，会继续更新。</template><template v-else>首个章节通过校验后会更新正文预览。</template></span><span v-else-if="project?.generation.error">{{ project.generation.error }}</span><template v-else><span>{{ project?.generation.message || "初稿已生成，请核对正文与证据。" }}</span><button v-if="project?.generation.file" @click="loadFile(project.generation.file)">打开 {{ project.generation.file }}</button></template></div>
 		<div v-if="loading" class="loading-state"><LoaderCircle class="spin" />正在打开论文项目…</div>
 		<div v-else class="editor-layout">
 			<aside v-if="filesOpen" class="file-panel">
@@ -442,7 +451,7 @@ onUnmounted(() => {
 				<section class="pdf-panel" aria-label="PDF 预览">
 					<div class="panel-toolbar pdf-toolbar"><div class="compile-group"><button class="compile-button" :disabled="compiling || project?.compiling" @click="compile"><LoaderCircle v-if="compiling || project?.compiling" :size="14" class="spin" /><Play v-else :size="13" fill="currentColor" />{{ compiling || project?.compiling ? '正在编译…' : '重新编译' }}</button><label class="auto-compile"><input v-model="autoCompile" type="checkbox" />自动</label></div><div><button @click="logsOpen = !logsOpen" :class="{ 'has-errors': project?.compile.status === 'failed' }" title="日志与错误">日志<span v-if="project?.compile.diagnostics?.length" class="error-count">{{ project.compile.diagnostics.length }}</span></button><a v-if="pdfUrl" :href="writingUrl(task_id, '/pdf')" target="_blank" rel="noopener" title="打开或下载 PDF" aria-label="打开 PDF"><Download :size="16" /></a></div></div>
 					<div v-if="stale" class="pdf-stale">源码已更新 · 当前显示上次成功编译的 PDF</div>
-					<div v-if="pdfUrl && project?.compile.page_count" class="pdf-view-controls"><span>{{ project.compile.page_count }} 页</span><label>缩放 <select v-model="zoom" aria-label="PDF 缩放"><option :value="75">75%</option><option :value="100">适合宽度</option><option :value="125">125%</option><option :value="150">150%</option></select></label></div><div class="pdf-surface"><div v-if="pdfUrl && project?.compile.page_count" class="pdf-pages" aria-label="论文 PDF 页面"><figure v-for="page in project.compile.page_count" :key="`${project.compile.pdf_revision}-${page}`" :style="{ width: `${zoom}%` }"><img :src="writingUrl(task_id, `/pdf/pages/${page - 1}?revision=${project.compile.pdf_revision}&scale=1.5`)" :alt="`论文 PDF 第 ${page} 页`" loading="lazy" /><figcaption>{{ page }} / {{ project.compile.page_count }}</figcaption></figure></div><div v-else class="pdf-empty"><FileText :size="44" /><h2>{{ compiling ? '正在排版你的论文' : 'PDF 预览' }}</h2><p>{{ compiling ? 'XeLaTeX 编译完成后，PDF 会显示在这里。' : '点击重新编译，查看左侧源码的排版效果。' }}</p><button v-if="project?.compile.status === 'failed'" @click="logsOpen = true">查看编译错误</button></div></div>
+					<details v-if="project?.compile.layout_review?.issues?.length" class="pdf-stale" open><summary>排版仍需修订（{{ project.compile.layout_review.issues.length }} 项）</summary><ul><li v-for="issue in project.compile.layout_review.issues" :key="issue">{{ issue }}</li></ul></details><div v-if="pdfUrl && project?.compile.page_count" class="pdf-view-controls"><span>{{ project.compile.page_count }} 页</span><label>缩放 <select v-model="zoom" aria-label="PDF 缩放"><option :value="75">75%</option><option :value="100">适合宽度</option><option :value="125">125%</option><option :value="150">150%</option></select></label></div><div class="pdf-surface"><div v-if="pdfUrl && project?.compile.page_count" class="pdf-pages" aria-label="论文 PDF 页面"><figure v-for="page in project.compile.page_count" :key="`${project.compile.pdf_revision}-${page}`" :style="{ width: `${zoom}%` }"><img :src="writingUrl(task_id, `/pdf/pages/${page - 1}?revision=${project.compile.pdf_revision}&scale=${pdfRenderScale}`)" :alt="`论文 PDF 第 ${page} 页`" loading="lazy" /><figcaption>{{ page }} / {{ project.compile.page_count }}</figcaption></figure></div><div v-else class="pdf-empty"><FileText :size="44" /><h2>{{ compiling ? '正在排版你的论文' : 'PDF 预览' }}</h2><p>{{ compiling ? 'XeLaTeX 编译完成后，PDF 会显示在这里。' : '点击重新编译，查看左侧源码的排版效果。' }}</p><button v-if="project?.compile.status === 'failed'" @click="logsOpen = true">查看编译错误</button></div></div>
 					<div v-if="logsOpen" class="compile-logs"><header><strong>{{ project?.compile.status === 'completed' ? '编译成功' : '编译日志' }}</strong><button @click="logsOpen = false" aria-label="关闭编译日志"><X :size="14" /></button></header><div class="diagnostics"><button v-for="(diagnostic, index) in project?.compile.diagnostics" :key="index" @click="jump(diagnostic.line)">第 {{ diagnostic.line }} 行：{{ diagnostic.message }}</button></div><pre>{{ project?.compile.log || '尚无编译日志。' }}</pre></div>
 					<footer class="pdf-status"><span>XeLaTeX · {{ project?.main }}</span><span>{{ project?.compile.status === 'completed' ? '编译成功' : project?.compile.status === 'failed' ? '编译失败 · 查看日志' : '等待编译' }}</span></footer>
 				</section>

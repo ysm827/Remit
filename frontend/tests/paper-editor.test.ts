@@ -96,6 +96,42 @@ describe("论文编辑器保存与编译", () => {
 		wrapper.unmount();
 	});
 
+	it("同名草稿增量更新会刷新正文，并显示实际排版问题", async () => {
+		const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
+		await flushPromises();
+		api.getPaperWorkspace.mockResolvedValue({ data: {
+			main: "main.tex", ready: true, revision: "chapter-2", pdf_available: true,
+			files: [{ name: "main.tex", editable: true }], inputs: {},
+			generation: { status: "running", file: "main.tex", section: "symbol", partial: true, completed_sections: ["firstPage", "RepeatQues"] },
+			compile: { pdf_revision: "chapter-2", page_count: 2, layout_review: { status: "needs_revision", issues: ["摘要和关键词跨页"] } },
+		} });
+		api.getPaperSource.mockResolvedValue({ data: { content: "new chapter", version: "chapter-2" } });
+		await vi.advanceTimersByTimeAsync(4000);
+		await flushPromises();
+		expect(wrapper.get("textarea").element.value).toBe("new chapter");
+		expect(wrapper.text()).toContain("墨墨正在撰写符号说明");
+		expect(wrapper.text()).toContain("已写 2 个章节");
+		expect(wrapper.text()).toContain("摘要和关键词跨页");
+		wrapper.unmount();
+	});
+
+	it("草稿轮询不会覆盖尚未保存的用户修改", async () => {
+		const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
+		await flushPromises();
+		api.savePaperSource.mockRejectedValue(new Error("保存冲突"));
+		await wrapper.get("textarea").setValue("my draft");
+		api.getPaperWorkspace.mockResolvedValue({ data: {
+			main: "main.tex", ready: true, revision: "chapter-2", pdf_available: false,
+			files: [{ name: "main.tex", editable: true }], inputs: {},
+			generation: { status: "running", file: "main.tex" }, compile: {},
+		} });
+		await vi.advanceTimersByTimeAsync(4000);
+		await flushPromises();
+		expect(wrapper.get("textarea").element.value).toBe("my draft");
+		expect(api.getPaperSource).toHaveBeenCalledTimes(1);
+		wrapper.unmount();
+	});
+
 	it("保存请求期间继续输入时，按新版本顺序保存而不丢失修改", async () => {
 		let finish!: (value: unknown) => void;
 		api.savePaperSource.mockReturnValueOnce(

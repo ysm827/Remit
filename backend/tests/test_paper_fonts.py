@@ -56,11 +56,11 @@ def test_pandoc_includes_selected_font_in_delivered_source(
         tex_path,
         tmp_path,
         build_dir,
-        CompTemplate.CHINA,
+        CompTemplate.AMERICAN,
     )
 
     source = tex_path.read_text(encoding="utf-8")
-    assert build_pdf_header(tmp_path).strip() in source
+    assert build_pdf_header(tmp_path, CompTemplate.AMERICAN).strip() in source
     assert "\\begin{document}" in source
     assert "中文字体回归测试" in source
     assert ("simhei.ttf" in source) is bundled_font

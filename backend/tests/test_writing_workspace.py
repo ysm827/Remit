@@ -261,6 +261,9 @@ def test_writer_resume_reuses_validated_sections(writing_client, edit_during_gen
         asyncio.run(writing_router._generate("paper-test", root, inputs["revision"]))
         first = workspace.read_json(root / "workspace.json")["generation"]
         assert first["status"] == "failed"
+        assert first["partial"] is True
+        assert first["completed_sections"] == ["eda"]
+        assert (root / first["file"]).is_file()
         asyncio.run(writing_router._generate("paper-test", root, inputs["revision"]))
     second = workspace.read_json(root / "workspace.json")["generation"]
     assert second["status"] == "completed"
@@ -272,7 +275,7 @@ def test_writer_resume_reuses_validated_sections(writing_client, edit_during_gen
         compiler.assert_not_awaited()
     else:
         assert workspace.read_json(root / "workspace.json")["main"] == second["file"]
-        compiler.assert_awaited_once()
+        assert compiler.await_count == 3  # first chapter, resumed second chapter, final
     assert "保存过的真实章节" in (root / second["file"]).read_text(encoding="utf-8")
 
 
@@ -300,7 +303,7 @@ def test_writer_repairs_rejected_section_once_without_publishing_invalid_prose(w
         patch("app.utils.paper_polish.polish_markdown", side_effect=lambda text, *_: text),
         patch("app.utils.paper_polish._convert_markdown_to_latex", side_effect=lambda text, path, *_: path.write_text(text, encoding="utf-8")),
         patch("app.services.competitions.adapt_generated_source", side_effect=lambda _, text: text),
-        patch.object(writing_router, "compile_source", AsyncMock()),
+        patch.object(writing_router, "compile_source", AsyncMock(return_value={"status": "completed"})),
     ):
         asyncio.run(writing_router._generate("paper-test", root, inputs["revision"]))
     generation = workspace.read_json(root / "workspace.json")["generation"]
@@ -325,7 +328,7 @@ def test_writer_repairs_rejected_section_once_without_publishing_invalid_prose(w
         patch("app.utils.paper_polish.polish_markdown", side_effect=lambda text, *_: text),
         patch("app.utils.paper_polish._convert_markdown_to_latex", side_effect=lambda text, path, *_: path.write_text(text, encoding="utf-8")),
         patch("app.services.competitions.adapt_generated_source", side_effect=lambda _, text: text),
-        patch.object(writing_router, "compile_source", AsyncMock()),
+        patch.object(writing_router, "compile_source", AsyncMock(return_value={"status": "completed"})),
     ):
         asyncio.run(writing_router._generate("paper-test", root, inputs["revision"]))
     resumed.assert_not_awaited()

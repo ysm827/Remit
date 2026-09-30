@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
 import shutil
 import subprocess
@@ -18,13 +17,11 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
-from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from app.config.setting import settings
 from app.schemas.enums import CompTemplate
 from app.utils.log_util import logger
 
-MAX_ABSTRACT_CHARS = 700
 IMAGE_BLOCK_RE = re.compile(r"^\s*!\[(?P<alt>.*?)\]\((?P<src>.*?)\)\s*$")
 HEADING_RE = re.compile(r"^\s*#{1,6}\s+")
 ABSTRACT_RE = re.compile(r"^\s*#{1,6}\s*摘要\s*$")
@@ -32,6 +29,47 @@ KEYWORD_RE = re.compile(r"^\s*\*{0,2}\s*关(?:键)?词[:：]?\s*\*{0,2}")
 QUESTION_LEAD_RE = re.compile(
     r"^(?P<prefix>针对)?(?P<lead>问题[一二三四五六七八九十])[,，：: ]*(?P<body>.*)$",
 )
+
+# ---- 中文赛事论文组装（摘要页 / 标题层级 / 参考文献著录） ----
+
+CN_NUM_CHARS = "一二三四五六七八九十"
+CHINA_ABSTRACT_RE = re.compile(r"^\s{0,3}#{1,6}\s*摘\s*要\s*$")
+REFS_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s*参考文献\s*$")
+REF_DEF_RE = re.compile(r"^\s{0,3}\[\^(\d+)\]:\s*(.*)$")
+FOOTNOTE_REF_RE = re.compile(r"\[\^(\d+)\]")
+
+# 写作手常直接输入 Unicode 希腊字母；正文字体不含这些字形时 XeLaTeX 会静默丢字，
+# 统一换成数学命令交给数学字体渲染。
+GREEK_UNICODE_MAP = {
+    "α": r"\alpha", "β": r"\beta", "γ": r"\gamma", "δ": r"\delta",
+    "ε": r"\varepsilon", "ζ": r"\zeta", "η": r"\eta", "θ": r"\theta",
+    "ι": r"\iota", "κ": r"\kappa", "λ": r"\lambda", "μ": r"\mu",
+    "ν": r"\nu", "ξ": r"\xi", "π": r"\pi", "ρ": r"\rho",
+    "σ": r"\sigma", "τ": r"\tau", "υ": r"\upsilon", "φ": r"\varphi",
+    "χ": r"\chi", "ψ": r"\psi", "ω": r"\omega",
+    "Γ": r"\Gamma", "Δ": r"\Delta", "Θ": r"\Theta", "Λ": r"\Lambda",
+    "Ξ": r"\Xi", "Π": r"\Pi", "Σ": r"\Sigma", "Φ": r"\Phi",
+    "Ψ": r"\Psi", "Ω": r"\Omega",
+    "ϵ": r"\epsilon", "ϑ": r"\vartheta", "ϕ": r"\phi",
+    "ς": r"\varsigma", "ϱ": r"\varrho", "ϖ": r"\varpi",
+    # 微符号与上/下标：宋体没有这些字形，文本模式会静默丢字（豆腐块）。
+    "µ": r"\mu",
+    "−": r"-",
+    "⁰": r"{}^{0}", "¹": r"{}^{1}", "²": r"{}^{2}", "³": r"{}^{3}",
+    "⁴": r"{}^{4}", "⁵": r"{}^{5}", "⁶": r"{}^{6}", "⁷": r"{}^{7}",
+    "⁸": r"{}^{8}", "⁹": r"{}^{9}", "⁺": r"{}^{+}", "⁻": r"{}^{-}",
+    "₀": r"{}_{0}", "₁": r"{}_{1}", "₂": r"{}_{2}", "₃": r"{}_{3}",
+    "₄": r"{}_{4}", "₅": r"{}_{5}", "₆": r"{}_{6}", "₇": r"{}_{7}",
+    "₈": r"{}_{8}", "₉": r"{}_{9}", "₊": r"{}_{+}", "₋": r"{}_{-}",
+}
+GREEK_CHAR_RE = re.compile("[" + "".join(GREEK_UNICODE_MAP) + "]")
+MATH_SPAN_RE = re.compile(
+    r"(\$\$.+?\$\$|\$[^$\n]+\$|\\\(.+?\\\)|\\\[.+?\\\])", re.S
+)
+MD_HEADING_LINE_RE = re.compile(r"^(\s{0,3}#{1,6})\s+(.*)$")
+VERBATIM_BLOCK_RE = re.compile(r"\\begin\{verbatim\}.*?\\end\{verbatim\}", re.DOTALL)
+DISPLAY_MATH_RE = re.compile(r"\\\[(.*?)\\\]", re.DOTALL)
+REFS_PLACEHOLDER = "REMITREFERENCESECTIONPLACEHOLDER"
 
 _LEGACY_PAPER_OUTPUTS = (
     "res.md",
@@ -116,8 +154,13 @@ def _convert_markdown_to_latex(
     build_dir: Path,
     comp_template: CompTemplate,
 ) -> None:
+    if comp_template == CompTemplate.CHINA:
+        _assemble_china_paper(markdown, output_path, resource_path)
+        return
+
     import pypandoc  # type: ignore[import-unresolved]
 
+    markdown = _extract_inline_images(markdown)
     header_path = build_dir / "paper_header.tex"
     header_path.write_text(
         build_pdf_header(resource_path, comp_template), encoding="utf-8"
@@ -139,6 +182,678 @@ def _convert_markdown_to_latex(
         raise PaperRenderError(f"Pandoc 生成 LaTeX 失败: {exc}") from exc
 
 
+def _escape_latex_text(text: str) -> str:
+    """转义纯文本片段，让标题、关键词与参考文献条目安全进入 LaTeX。"""
+    text = text.replace("**", "")
+    out: list[str] = []
+    for char in text:
+        if char == "\\":
+            out.append(r"\textbackslash{}")
+        elif char in "&%$#_{}":
+            out.append("\\" + char)
+        elif char == "~":
+            out.append(r"\textasciitilde{}")
+        elif char == "^":
+            out.append(r"\textasciicircum{}")
+        else:
+            out.append(char)
+    return "".join(out)
+
+
+def _normalize_keywords(keywords: str) -> str:
+    """关键词统一用顿号分隔；写作手可能用空格、逗号或分号分隔。"""
+    parts = [
+        part.strip()
+        for part in re.split(r"[、，,；;]|\s{2,}|\t", keywords)
+        if part.strip()
+    ]
+    return "、".join(parts) if parts else keywords.strip()
+
+
+def _normalize_heading_level(marks: str, title: str) -> str:
+    """按作者手写编号推断标题真实层级，修正跨章节 # 数量不一致。"""
+    text = title.strip()
+    if re.match(rf"^[{CN_NUM_CHARS}]{{1,3}}、", text):
+        return "#"
+    match = re.match(r"^\d+(?:\.\d+){1,2}(?=\D|$)", text)
+    if match:
+        return "#" * min(match.group(0).count(".") + 1, 6)
+    return marks.strip()
+
+
+def _split_china_paper(
+    markdown: str,
+) -> tuple[str, str, str, list[tuple[int, str]], str]:
+    """把整篇 Markdown 拆成标题、摘要、关键词、参考文献条目与正文。
+
+    Writer 各章节带手工编号（一、/1.1/5.1.1），引用为 [^n] 脚注语法；
+    这里只拆分结构，不改动任何句子内容。索引先定位后一次性切片，
+    避免边删边改导致的下标漂移。
+    """
+    markdown = re.sub(r"(?m)^[ \t]*(?:\*\*)?摘[ \t]*要(?:\*\*)?[ \t]*$", "## 摘要", markdown)
+    lines = markdown.splitlines()
+    headings = [
+        (idx, line)
+        for idx, line in enumerate(lines)
+        if re.match(r"^\s{0,3}#{1,6}\s+", line)
+    ]
+    abstract_idx = next(
+        (i for i, line in headings if CHINA_ABSTRACT_RE.match(line)), None
+    )
+    refs_idx = next((i for i, line in headings if REFS_HEADING_RE.match(line)), None)
+
+    title, title_idx = "", None
+    limit = abstract_idx if abstract_idx is not None else len(lines)
+    for idx, line in enumerate(lines[:limit]):
+        match = re.match(r"^\s{0,3}#\s+(.+?)\s*$", line)
+        if match:
+            title, title_idx = match.group(1).strip(), idx
+            break
+    if title_idx is None:
+        for idx, line in headings:
+            if idx in (abstract_idx, refs_idx):
+                continue
+            match = re.match(r"^\s{0,3}#\s+(.+?)\s*$", line)
+            if match:
+                title, title_idx = match.group(1).strip(), idx
+                break
+
+    abstract_lines: list[str] = []
+    keywords = ""
+    abstract_end: int | None = None
+    if abstract_idx is not None:
+        abstract_end = next((i for i, _ in headings if i > abstract_idx), len(lines))
+        for line in lines[abstract_idx + 1 : abstract_end]:
+            if KEYWORD_RE.match(line) and not keywords:
+                keywords = (
+                    KEYWORD_RE.sub("", line)
+                    .strip()
+                    .strip("*")
+                    .strip()
+                    .lstrip("：:")
+                    .strip()
+                )
+            else:
+                abstract_lines.append(line)
+
+    refs: list[tuple[int, str]] = []
+    refs_end: int | None = None
+    if refs_idx is not None:
+        refs_end = next((i for i, _ in headings if i > refs_idx), len(lines))
+        current: tuple[int, str] | None = None
+        for line in lines[refs_idx + 1 : refs_end]:
+            match = REF_DEF_RE.match(line)
+            if match:
+                if current:
+                    refs.append(current)
+                current = (int(match.group(1)), match.group(2).strip())
+            elif current and line.strip():
+                current = (current[0], current[1] + " " + line.strip())
+        if current:
+            refs.append(current)
+
+    skip: set[int] = set()
+    if title_idx is not None:
+        skip.add(title_idx)
+    if abstract_idx is not None and abstract_end is not None:
+        skip.update(range(abstract_idx, abstract_end))
+
+    body_lines: list[str] = []
+    for idx, line in enumerate(lines):
+        if idx in skip:
+            continue
+        if refs_idx is not None and refs_end is not None:
+            if idx == refs_idx:
+                body_lines.append(REFS_PLACEHOLDER)
+                continue
+            if refs_idx < idx < refs_end:
+                continue
+        body_lines.append(line)
+
+    # 兜底收集散落在正文里的脚注定义，避免被 pandoc 转成页脚脚注。
+    kept_lines: list[str] = []
+    for line in body_lines:
+        match = REF_DEF_RE.match(line)
+        if match:
+            number = int(match.group(1))
+            if all(number != existing for existing, _ in refs):
+                refs.append((number, match.group(2).strip()))
+        else:
+            kept_lines.append(line)
+    refs = sorted({number: content for number, content in refs}.items())
+
+    normalized: list[str] = []
+    for line in kept_lines:
+        match = MD_HEADING_LINE_RE.match(line)
+        if match:
+            line = (
+                _normalize_heading_level(match.group(1), match.group(2))
+                + " "
+                + match.group(2).strip()
+            )
+        normalized.append(line)
+
+    return title, "\n".join(abstract_lines).strip(), keywords, refs, "\n".join(normalized)
+
+
+def _normalize_unicode_greek(markdown: str) -> str:
+    """把游离在公式之外的 Unicode 希腊字母换成 $...$ 数学命令，避免丢字。"""
+    parts = MATH_SPAN_RE.split(markdown)
+    for index in range(0, len(parts), 2):
+        parts[index] = GREEK_CHAR_RE.sub(
+            lambda match: f"${GREEK_UNICODE_MAP[match.group(0)]}$", parts[index]
+        )
+    return "".join(parts)
+
+
+def _markdown_fragment_to_latex(markdown: str, resource_path: Path) -> str:
+    """pandoc 转正文片段；[^n] 引用替换为上标，行尾统一为 LF。
+
+    pandoc 在 Windows 返回 CRLF，文本模式写文件会二次转换成 \\r\\r\\n，
+    多余空行会让 longtable 列声明解析失败。
+    """
+    import pypandoc  # type: ignore[import-unresolved]
+
+    markdown = _normalize_unicode_greek(markdown)
+    markdown = FOOTNOTE_REF_RE.sub(
+        lambda match: f"`\\textsuperscript{{[{match.group(1)}]}}`{{=latex}}", markdown
+    )
+    try:
+        fragment = pypandoc.convert_text(
+            markdown,
+            to="latex",
+            format="markdown-auto_identifiers+tex_math_dollars+tex_math_single_backslash+pipe_tables+raw_html",
+            extra_args=[
+                f"--resource-path={resource_path}",
+                "--wrap=none",
+                "--syntax-highlighting=none",
+            ],
+        )
+    except Exception as exc:
+        raise PaperRenderError(f"Pandoc 生成 LaTeX 失败: {exc}") from exc
+    return fragment.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _number_display_equations(latex: str) -> str:
+    """单行展示公式转为 equation 环境编号（右对齐），多行裸公式保持原样。"""
+
+    def repl(match: re.Match[str]) -> str:
+        content = match.group(1)
+        if "\\\\" in content and "\\begin{" not in content:
+            return match.group(0)
+        # Split long lists of independent equations at explicit top-level
+        # spacing, never inside fractions, text, cases or existing alignments.
+        if len(content) > 180 and "\\begin{" not in content:
+            cuts = []
+            depth = 0
+            for token in re.finditer(r"\\[{}]|[{}]|[,;]\s*\\qquad\b", content):
+                value = token.group()
+                if value == "{":
+                    depth += 1
+                elif value == "}":
+                    depth -= 1
+                elif depth == 0 and value[0] in ",;":
+                    cuts.append((token.start() + 1, token.end()))
+            if cuts:
+                rows = []
+                start = 0
+                for end, following in cuts:
+                    rows.append(content[start:end].strip())
+                    start = following
+                rows.append(content[start:].strip())
+                content = "\\begin{gathered}\n" + " \\\\\n".join(rows) + "\n\\end{gathered}"
+        return "\\begin{equation}" + content.strip() + "\\end{equation}"
+
+    return DISPLAY_MATH_RE.sub(repl, latex)
+
+
+def build_china_paper_preamble() -> str:
+    """国赛风格版式：宋体正文、单倍行距、黑体标题、2.5cm 页边距、页脚居中页码。
+
+    标题字号对齐优秀论文惯例：一级标题四号黑体居中，二/三级小四黑体左对齐；
+    作者手写编号（一、/1.1/5.1.1）直接作为标题文字，故关闭自动编号。
+    """
+    return r"""% !TEX program = xelatex
+% Remit-LaTeX-Assembler: china-v1
+\documentclass[UTF8,a4paper,zihao=-4,linespread=1.08]{ctexart}
+\usepackage[top=2.5cm,bottom=2.5cm,left=2.5cm,right=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+% 允许行内公式在逗号后断行，避免长数值序列顶出版心
+\makeatletter
+\mathchardef\remit@origcomma=\mathcode`,
+\mathcode`,="8000
+\begingroup
+\catcode`,=\active
+\gdef,{\remit@origcomma\penalty0\relax}
+\endgroup
+\makeatother
+\usepackage{longtable,booktabs,array}
+\usepackage{caption}
+\captionsetup{labelsep=quad}
+\captionsetup[table]{skip=6pt}
+\captionsetup[figure]{skip=6pt}
+\newcounter{none} % for unnumbered tables
+\usepackage{calc}
+\usepackage{etoolbox}
+\makeatletter
+\patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
+\makeatother
+\IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
+\makesavenoteenv{longtable}
+\usepackage{float}
+\usepackage{indentfirst}
+\setlength{\parindent}{2em}
+\setlength{\emergencystretch}{3em}
+\makeatletter
+\newsavebox\pandoc@box
+% 插图统一缩放到 0.75 倍版心宽；过高时按半页高封顶，保证图幅一致且不超页
+\newcommand*\pandocbounded[1]{%
+  \sbox\pandoc@box{#1}%
+  \Gscale@div\@tempa{0.75\linewidth}{\wd\pandoc@box}%
+  \Gscale@div\@tempb{0.5\textheight}{\dimexpr\ht\pandoc@box+\dp\pandoc@box\relax}%
+  \ifdim\@tempb\p@<\@tempa\p@\let\@tempa\@tempb\fi%
+  \scalebox{\@tempa}{\usebox\pandoc@box}%
+}
+\def\fps@figure{H}
+\makeatother
+\providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+\usepackage{fancyvrb}
+\RecustomVerbatimEnvironment{verbatim}{Verbatim}{fontsize=\small}
+\ctexset{
+  section = {numbering=false, format=\centering\heiti\zihao{4}},
+  subsection = {numbering=false, format=\heiti\zihao{-4}},
+  subsubsection = {numbering=false, format=\heiti\zihao{-4}},
+  paragraph = {numbering=false, format=\heiti\zihao{-4}},
+}
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0pt}
+\fancypagestyle{plain}{\fancyhf{}\fancyfoot[C]{\small\thepage}\renewcommand{\headrulewidth}{0pt}}
+\usepackage[hidelinks]{hyperref}
+"""
+
+
+def _build_references_latex(refs: list[tuple[int, str]]) -> str:
+    """编号著录的参考文献节；条目为模型给出的纯文本，逐字符转义。"""
+    if not refs:
+        return ""
+    items = "\n".join(
+        f"\\noindent [{number}] {_escape_latex_text(content)}\\par"
+        for number, content in refs
+    )
+    return (
+        "\\section{参考文献}\n\\begingroup\n\\zihao{5}\n"
+        "\\setlength{\\parindent}{0pt}\n\\setlength{\\parskip}{3pt}\n"
+        f"{items}\n\\endgroup\n"
+    )
+
+
+SYMBOL_HEADING_RE = re.compile(r"(?m)^\\(?:sub)?section\{[^}]*符号说明[^}]*\}\s*$")
+SYMBOL_REGION_END_RE = re.compile(r"(?m)^\\(?:sub)?section\{")
+LONGTABLE_START_RE = re.compile(
+    r"\{\\def\\LTcaptype\{none\}[^\n]*\n"
+    r"\\begin\{longtable\}(?:\[[^\]]*\])?\{"
+)
+LONGTABLE_END_RE = re.compile(r"\\end\{longtable\}\n\}\n?")
+MINIPAGE_CELL_RE = re.compile(
+    r"\\begin\{minipage\}\[b\]\{\\linewidth\}\\raggedright\s*(.*?)\s*\\end\{minipage\}",
+    re.S,
+)
+SUBSUBSECTION_LINE_RE = re.compile(r"(?m)^\\subsubsection\{[^}]*\}\s*\n?")
+SYMBOL_FULL_WIDTH_SPECS = {
+    2: r"@{}>{\centering\arraybackslash}p{0.22\linewidth}p{0.68\linewidth}@{}",
+    3: (
+        r"@{}>{\centering\arraybackslash}p{0.17\linewidth}"
+        r"p{0.62\linewidth}"
+        r">{\centering\arraybackslash}p{0.12\linewidth}@{}"
+    ),
+}
+
+
+def _match_braces(text: str, open_index: int) -> int:
+    depth = 0
+    for index in range(open_index, len(text)):
+        char = text[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
+def _find_symbol_tables(region: str) -> list[tuple[int, int, str, str]]:
+    """找出区域内每个 longtable 块的 (起点, 终点, 列声明, 表体)。
+
+    列声明可能跨行并含嵌套花括号（pandoc 通栏表的 \\real{} 写法），
+    用花括号配对而不是单纯正则来截取。
+    """
+    blocks = []
+    for match in LONGTABLE_START_RE.finditer(region):
+        open_brace = match.end() - 1
+        close_brace = _match_braces(region, open_brace)
+        if close_brace < 0:
+            continue
+        end = LONGTABLE_END_RE.search(region, close_brace + 1)
+        if not end:
+            continue
+        blocks.append(
+            (
+                match.start(),
+                end.end(),
+                region[open_brace + 1 : close_brace],
+                region[close_brace + 1 : end.start()],
+            )
+        )
+    return blocks
+
+
+def _table_column_count(spec: str) -> int:
+    if "\\real{" in spec:
+        return spec.count("\\real{")
+    cleaned = re.sub(r"@\{[^{}]*\}", "", spec)
+    cleaned = re.sub(r">\{[^{}]*\}", "", cleaned)
+    return len(re.findall(r"[lcr]", cleaned))
+
+
+def _merge_symbol_section_tables(body_tex: str) -> str:
+    """把"符号说明"小节里被拆分的多张子表合并成一张通栏三线表。
+
+    写作手容易按类别把符号表拆成 4.1.1/4.1.2 等子表，而比赛惯例是
+    一整张通栏三线表。这里在 LaTeX 层面兜底：丢弃子节标题、按出现
+    顺序拼接各表数据行，并把列声明统一为通栏 p 列；列数不一致时
+    保持原样，避免产出无法编译的表格。
+    """
+    headings = list(SYMBOL_HEADING_RE.finditer(body_tex))
+    if not headings:
+        return body_tex
+    subsections = [m for m in headings if m.group(0).startswith("\\subsection")]
+    heading = subsections[0] if subsections else headings[0]
+    boundary = SYMBOL_REGION_END_RE.search(body_tex, heading.end())
+    region_end = boundary.start() if boundary else len(body_tex)
+    region = body_tex[heading.start() : region_end]
+    if not _find_symbol_tables(region):
+        return body_tex
+    region = SUBSUBSECTION_LINE_RE.sub("", region)
+    tables = _find_symbol_tables(region)
+    if not tables:
+        return body_tex
+
+    first_count = _table_column_count(tables[0][2])
+    if any(_table_column_count(table[2]) != first_count for table in tables[1:]):
+        return body_tex
+
+    row_chunks = [tables[0][3]]
+    for _, _, _, chunk in tables[1:]:
+        if "\\endlastfoot" in chunk:
+            chunk = chunk.split("\\endlastfoot", 1)[1]
+        elif "\\endhead" in chunk:
+            chunk = chunk.split("\\endhead", 1)[1]
+        row_chunks.append(chunk.strip("\n") + "\n")
+    merged_body = MINIPAGE_CELL_RE.sub(lambda m: m.group(1), "".join(row_chunks))
+    if "\\endfirsthead" not in merged_body and "\\endhead" in merged_body:
+        header, rows = merged_body.split("\\endhead", 1)
+        # A caption belongs to the first head only, not every continuation page.
+        merged_body = header + "\\endfirsthead\n" + header + "\\endhead\n" + rows
+    spec = SYMBOL_FULL_WIDTH_SPECS.get(first_count, tables[0][2])
+    # 符号表是论文里少数必须带题注的通栏表：表题置于表上方，整表居中，
+    # 不再借用 pandoc 的 LTcaptype=none 包装（那会吞掉表号）。
+    merged = (
+        f"\\begin{{longtable}}[c]{{{spec}}}\n"
+        "\\caption{主要符号说明}\\\\\n"
+        + merged_body.strip("\n")
+        + "\n\\end{longtable}\n"
+    )
+    if "\\endlastfoot" in merged_body:
+        data_rows = merged_body.split("\\endlastfoot", 1)[1].strip()
+        row_count = len(re.findall(r"\\\\\s*(?:\n|$)", data_rows))
+        if 0 < row_count <= 18 and len(data_rows) < 5000:
+            # The bounded core-symbol table fits on one page. Keep its rows
+            # together instead of leaving a few at the bottom of the prior page.
+            header = re.split(r"\\endfirsthead|\\endhead", merged_body, maxsplit=1)[0]
+            merged = (
+                "\\begin{table}[H]\n\\centering\n\\caption{主要符号说明}\n"
+                + f"\\begin{{tabular}}{{{spec}}}\n" + header.strip() + "\n"
+                + data_rows + "\n\\bottomrule\n\\end{tabular}\n\\end{table}\n"
+            )
+
+    span_start, span_end = tables[0][0], tables[-1][1]
+    between = region[span_start:span_end]
+    leftover_parts = []
+    cursor = 0
+    for start, end, _, _ in tables:
+        leftover_parts.append(between[cursor : start - span_start])
+        cursor = end - span_start
+    leftover_parts.append(between[cursor:])
+    leftover = "".join(leftover_parts).strip()
+    replacement = (leftover + "\n\n" if leftover else "") + merged
+    region = region[:span_start] + replacement + region[span_end:]
+    return body_tex[: heading.start()] + region + body_tex[region_end:]
+
+
+INLINE_IMAGE_SPLIT_RE = re.compile(r"(!\[[^\]]*\]\([^)]+\))")
+BRACE_FOOTNOTE_DEF_RE = re.compile(r"\{\^?\[(\d+)\]:\s*([^{}\n]+?)\}")
+FIGURE_ENV_RE = re.compile(r"\\begin\{figure\}.*?\\end\{figure\}", re.S)
+FILENAME_CAPTION_RE = re.compile(
+    r"\\caption\{[^{}]*\.(?:png|jpg|jpeg|pdf|svg)[^{}]*\}\s*\n?", re.I
+)
+FIGURE_OR_HEADING_RE = re.compile(
+    r"\\(?:sub)?section\{[^{}]*\}|\\begin\{figure\}.*?\\end\{figure\}", re.S
+)
+FIGURE_GRAPHICS_RE = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^{}]*)\}")
+FIGURE_CAPTION_RE = re.compile(r"\\caption\{(?P<text>.*?)\}\s*", re.S)
+MANUAL_FIGNO_RE = re.compile(
+    r"^\s*(?:图|Fig(?:ure)?\.?)\s*(\d+(?:[-–.]\d+)?)\s*[:：．.、]?\s*"
+)
+SUBFIG_TAG_RE = re.compile(r"^\s*[（(][a-zA-Z][）)]\s*")
+_CN_SECTION_NUMBERS = {
+    "一": 1,
+    "二": 2,
+    "三": 3,
+    "四": 4,
+    "五": 5,
+    "六": 6,
+    "七": 7,
+    "八": 8,
+    "九": 9,
+    "十": 10,
+    "十一": 11,
+    "十二": 12,
+}
+
+
+def _convert_brace_footnotes(markdown: str) -> str:
+    """把写作手误写成 {^[n]: 著录} 或 {[^n]: 著录} 的内嵌文献还原成标准脚注。
+
+    原地留下 [^n] 引用，著录文本移入文末参考文献区，交给既有编号著录
+    流程；同编号已有定义时丢弃重复著录。
+    """
+    collected: list[tuple[str, str]] = []
+
+    def repl(match: re.Match[str]) -> str:
+        number, text = match.group(1), match.group(2).strip()
+        collected.append((number, text))
+        return f"[^{number}]"
+
+    converted = BRACE_FOOTNOTE_DEF_RE.sub(repl, markdown)
+    additions = [
+        f"[^{number}]: {text}"
+        for number, text in collected
+        if f"[^{number}]:" not in converted
+    ]
+    if not additions:
+        return converted
+    lines = converted.splitlines()
+    refs_idx = next(
+        (idx for idx, line in enumerate(lines) if REFS_HEADING_RE.match(line)),
+        None,
+    )
+    insert_at = refs_idx + 1 if refs_idx is not None else len(lines)
+    lines[insert_at:insert_at] = [""] + additions + [""]
+    return "\n".join(lines)
+
+
+def _extract_inline_images(markdown: str) -> str:
+    """把混在正文行内的图片提取为独立图片段落。
+
+    图片与文字同段时 pandoc 会把图片当作行内元素，导致排版错乱且没有
+    题注；独立成段后由 implicit_figures 生成居中 figure 与题注。
+    """
+    out: list[str] = []
+    for line in markdown.splitlines():
+        stripped = line.lstrip()
+        if (
+            "![" not in line
+            or stripped.startswith("|")
+            or stripped.startswith("#")
+        ):
+            out.append(line)
+            continue
+        pending: list[str] = []
+        for part in INLINE_IMAGE_SPLIT_RE.split(line):
+            part = part.strip()
+            if not part:
+                continue
+            if IMAGE_BLOCK_RE.match(part):
+                if pending:
+                    out.append("".join(pending))
+                    pending = []
+                out.extend(["", part, ""])
+            else:
+                pending.append(part)
+        if pending:
+            out.append("".join(pending))
+    return "\n".join(out)
+
+
+def _center_longtables(body_tex: str) -> str:
+    """pandoc 生成的 longtable 默认贴左，比赛惯例是三线表整体居中。"""
+    return body_tex.replace("\\begin{longtable}[]", "\\begin{longtable}[c]")
+
+
+def _china_section_number(title: str) -> int | None:
+    """从手写标题推断一级节号："五、…" 或 "5.1 …" 两种写法。"""
+    match = re.match(rf"^\s*([{CN_NUM_CHARS}]{{1,3}})\s*[、.．]", title)
+    if match:
+        return _CN_SECTION_NUMBERS.get(match.group(1))
+    match = re.match(r"^\s*(\d+)(?:\.\d+)*(?=\D|$)", title)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _normalize_figures(body_tex: str) -> str:
+    """统一 figure 排版：固定图幅、独立成图、题注规范为"图 N 描述"。
+
+    写作手给的 alt 可能带手写编号（"图 6-3 …"）、文件名或 (a) 子图
+    标记；题注统一用不自动编号的 \\caption*，编号沿用作者手写值，
+    缺省时按当前一级节自动编排（图 5-1、图 6-2…），与正文引用一致。
+    """
+    tokens = list(FIGURE_OR_HEADING_RE.finditer(body_tex))
+    if not any(token.group(0).startswith("\\begin{figure}") for token in tokens):
+        return body_tex
+
+    section = 0
+    counter = 0
+    pieces: list[str] = []
+    cursor = 0
+    for token in tokens:
+        text = token.group(0)
+        if not text.startswith("\\begin{figure}"):
+            title = text[text.index("{") + 1 : -1]
+            number = _china_section_number(title)
+            if number is not None and (
+                text.startswith("\\section{") or section == 0
+            ):
+                section = number
+                counter = 0
+            continue
+
+        pieces.append(body_tex[cursor : token.start()])
+        cursor = token.end()
+        block = FILENAME_CAPTION_RE.sub("", text)
+        graphics_match = FIGURE_GRAPHICS_RE.search(block)
+        if not graphics_match:
+            pieces.append(block)
+            continue
+        caption_text = ""
+        caption_match = FIGURE_CAPTION_RE.search(block)
+        if caption_match:
+            caption_text = " ".join(caption_match.group("text").split())
+        manual = MANUAL_FIGNO_RE.match(caption_text)
+        if manual:
+            label = f"图 {manual.group(1)}"
+            caption_text = MANUAL_FIGNO_RE.sub("", caption_text)
+        else:
+            counter += 1
+            label = f"图 {section}-{counter}" if section else f"图 {counter}"
+        caption_text = SUBFIG_TAG_RE.sub("", caption_text).strip(" ，,。；;")
+        caption = f"{label}　{caption_text}" if caption_text else label
+        pieces.append(
+            "\\begin{figure}[H]\n\\centering\n"
+            "\\includegraphics[width=0.90\\linewidth,"
+            "height=0.38\\textheight,keepaspectratio]"
+            f"{{{graphics_match.group(1)}}}\n"
+            f"\\caption*{{{caption}}}\n\\end{{figure}}\n"
+        )
+    pieces.append(body_tex[cursor:])
+    return "".join(pieces)
+
+
+def _assemble_china_paper(
+    markdown: str, output_path: Path, resource_path: Path
+) -> None:
+    """中文赛事论文：摘要专用页 + 正文片段 + 参考文献，组装为完整 LaTeX。
+
+    摘要页按国赛惯例组织：三号黑体居中标题、居中"摘 要"、小四正文、
+    黑体"关键词："引导，页码从摘要页开始；参考文献保持题目要求的
+    位置（正文之后、附录之前），由占位符回插。
+    """
+    markdown = _convert_brace_footnotes(markdown)
+    title, abstract_md, keywords, refs, body_md = _split_china_paper(markdown)
+    body_md = _extract_inline_images(body_md)
+    parts = [build_china_paper_preamble(), "\\begin{document}\n"]
+    title_tex = _escape_latex_text(title) if title else "数学建模论文"
+    if abstract_md:
+        parts.append(
+            "\\begin{center}\n{\\heiti\\zihao{3} "
+            + title_tex
+            + "}\n\\par\\vspace{1.5em}\n{\\heiti\\zihao{4} 摘\\hspace{0.5em}要}\n"
+            "\\end{center}\n\\vspace{0.8em}\n"
+        )
+        parts.append(_markdown_fragment_to_latex(abstract_md, resource_path))
+        if keywords:
+            parts.append(
+                "\\par\\vspace{1em}\n\\noindent{\\heiti\\bfseries 关键词："
+                + _escape_latex_text(_normalize_keywords(keywords))
+                + "}\n"
+            )
+        parts.append("\\newpage\n")
+    else:
+        parts.append(
+            "\\begin{center}{\\heiti\\zihao{3} " + title_tex + "}\\end{center}\n"
+        )
+    body_tex = _number_display_equations(
+        _markdown_fragment_to_latex(body_md, resource_path)
+    )
+    body_tex = _merge_symbol_section_tables(body_tex)
+    body_tex = _normalize_figures(_center_longtables(body_tex))
+    refs_tex = _build_references_latex(refs)
+    if REFS_PLACEHOLDER in body_tex:
+        body_tex = body_tex.replace(
+            REFS_PLACEHOLDER, "\n" + refs_tex if refs_tex else ""
+        )
+    elif refs_tex:
+        body_tex += "\n" + refs_tex
+    parts.append(body_tex)
+    parts.append("\n\\end{document}\n")
+    output_path.write_text("".join(parts), encoding="utf-8", newline="\n")
+
+
 def _validate_latex_source(tex_path: Path) -> None:
     if not tex_path.is_file() or tex_path.stat().st_size < 500:
         raise PaperRenderError("生成的 res.tex 为空或内容异常短")
@@ -147,7 +862,11 @@ def _validate_latex_source(tex_path: Path) -> None:
     missing = [token for token in required if token not in source]
     if missing:
         raise PaperRenderError("res.tex 缺少完整文档结构: " + ", ".join(missing))
-    markdown_leaks = re.findall(r"(?m)^\s*(?:#{1,6}\s+|!\[[^\]]*\]\([^)]+\))", source)
+    # 附录源码里的注释行（# ...）不是 Markdown 泄漏，先剔除逐字代码块再扫描。
+    scan_source = VERBATIM_BLOCK_RE.sub("", source)
+    markdown_leaks = re.findall(
+        r"(?m)^\s*(?:#{1,6}\s+|!\[[^\]]*\]\([^)]+\))", scan_source
+    )
     if markdown_leaks:
         raise PaperRenderError("res.tex 仍包含未转换的 Markdown 块标记")
 
@@ -406,7 +1125,11 @@ def normalize_common_math(markdown: str) -> str:
 
 
 def compact_abstract(markdown: str) -> str:
-    """Shorten the abstract and emphasize lead phrases."""
+    """Normalize keywords without deleting the writer's evidence or emphasis.
+
+    Length corrections belong to the writer's bounded revision loop. String
+    truncation here used to remove results and silently undo bold formatting.
+    """
     lines = markdown.splitlines()
     start = None
     start_level = 0
@@ -439,20 +1162,10 @@ def compact_abstract(markdown: str) -> str:
     for paragraph in paragraphs:
         if KEYWORD_RE.match(paragraph):
             keyword_lines.append(
-                "**关键词：** " + KEYWORD_RE.sub("", paragraph).strip()
+                "**关键词：" + KEYWORD_RE.sub("", paragraph).replace("**", "").strip() + "**"
             )
             continue
-        abstract_blocks.append(compact_abstract_paragraph(paragraph))
-
-    if len("\n\n".join(abstract_blocks)) > MAX_ABSTRACT_CHARS:
-        abstract_blocks = [tighten_paragraph(p) for p in abstract_blocks]
-    if len("\n\n".join(abstract_blocks)) > MAX_ABSTRACT_CHARS:
-        abstract_blocks = [compress_abstract_paragraph(p) for p in abstract_blocks]
-    if len("\n\n".join(abstract_blocks)) > MAX_ABSTRACT_CHARS:
-        abstract_blocks = [
-            limit_abstract_paragraph(p, 140 if idx == 0 else 110)
-            for idx, p in enumerate(abstract_blocks)
-        ]
+        abstract_blocks.append(paragraph)
 
     rebuilt: list[str] = [*prefix, ""]
     for block in abstract_blocks:
@@ -465,131 +1178,6 @@ def compact_abstract(markdown: str) -> str:
         rebuilt.append("")
     rebuilt.extend(suffix)
     return "\n".join(rebuilt)
-
-
-def compact_abstract_paragraph(paragraph: str) -> str:
-    """Compress a single abstract paragraph."""
-    text = paragraph.strip()
-    if not text:
-        return text
-
-    text = text.replace("**", "")
-    match = QUESTION_LEAD_RE.match(text)
-    if match:
-        lead = (match.group("prefix") or "") + match.group("lead")
-        rest = match.group("body").strip(" ,，：:")
-        sentences = split_sentences(rest)
-        result = next((s for s in sentences if sentence_has_signal(s)), "")
-        if not result and sentences:
-            result = sentences[0]
-        result = squeeze_clause(result)
-        if result:
-            return f"**{lead}：** **{result}**"
-        return f"**{lead}：**"
-
-    sentences = split_sentences(text)
-    if len(sentences) <= 2:
-        return text
-
-    first = sentences[0]
-    second = next((s for s in sentences[1:] if sentence_has_signal(s)), "")
-    if not second and len(sentences) > 1:
-        second = sentences[1]
-    if second:
-        return first + second
-    return first
-
-
-def compress_abstract_paragraph(paragraph: str) -> str:
-    """Aggressively compress an abstract paragraph when it is still too long."""
-    text = paragraph.strip().replace("**", "")
-    match = QUESTION_LEAD_RE.match(text)
-    if match:
-        lead = (match.group("prefix") or "") + match.group("lead")
-        rest = match.group("body").strip(" ,，：:")
-        sentences = split_sentences(rest)
-        result = next((s for s in sentences if sentence_has_signal(s)), "")
-        if not result and sentences:
-            result = sentences[0]
-        result = squeeze_clause(result)
-        return f"**{lead}：** {result}" if result else f"**{lead}：**"
-
-    sentences = split_sentences(text)
-    if not sentences:
-        return text
-    signal = next((s for s in sentences if sentence_has_signal(s)), sentences[0])
-    return squeeze_clause(signal)
-
-
-def limit_abstract_paragraph(paragraph: str, max_chars: int) -> str:
-    """Final fallback to keep the abstract within one page."""
-    text = paragraph.strip()
-    if len(text) <= max_chars:
-        return text
-    if text.startswith("**") and "** " in text:
-        lead, body = text.split("** ", 1)
-        body = body[: max_chars - len(lead) - 5].rstrip("，,；;。 ") + "…"
-        return f"{lead}** {body}"
-    return text[: max_chars - 1].rstrip("，,；;。 ") + "…"
-
-
-def squeeze_clause(text: str) -> str:
-    """Trim a sentence to its most informative clause."""
-    text = text.strip()
-    if not text:
-        return text
-    for delimiter in ("；", ";"):
-        if delimiter in text:
-            parts = [part.strip() for part in text.split(delimiter) if part.strip()]
-            if parts:
-                return parts[0]
-    return text
-
-
-def tighten_paragraph(paragraph: str) -> str:
-    """Further shorten a paragraph if the abstract is still too long."""
-    sentences = split_sentences(paragraph)
-    if not sentences:
-        return paragraph.strip()
-    if len(sentences) == 1:
-        return sentences[0]
-    return sentences[0] + sentences[-1]
-
-
-def sentence_has_signal(sentence: str) -> bool:
-    """Heuristic signal sentence detection."""
-    tokens = [
-        "结果",
-        "表明",
-        "因此",
-        "最终",
-        "推荐",
-        "回退",
-        "RMSE",
-        "MAE",
-        "R2",
-        "R²",
-        "Brier",
-        "Bootstrap",
-        "LSBoost",
-        "PLS",
-        "Firth",
-        "BMI",
-        "风险",
-        "不能",
-        "未能",
-        "区分",
-        "诊断",
-    ]
-    if any(token in sentence for token in tokens):
-        return True
-    return bool(re.search(r"\d|%|<|>|=|±|\\", sentence))
-
-
-def split_sentences(text: str) -> list[str]:
-    """Split Chinese text into sentence-like pieces."""
-    parts = re.split(r"(?<=[。！？；])", text)
-    return [part.strip() for part in parts if part.strip()]
 
 
 def split_paragraphs(lines: list[str]) -> list[str]:
@@ -609,161 +1197,30 @@ def split_paragraphs(lines: list[str]) -> list[str]:
 
 
 def merge_image_blocks(markdown: str, work_dir: Path) -> str:
-    """Merge adjacent image blocks into composite figures."""
-    lines = markdown.splitlines()
-    result: list[str] = []
-    block: list[tuple[str, str]] = []
-    blank_after_block = 0
-    composite_index = 1
+    """把每张图片规范为独立段落：前后各空一行。
 
-    def flush_block() -> None:
-        nonlocal composite_index, blank_after_block
-        if not block:
-            return
-        if len(block) == 1:
-            alt, rel = block[0]
-            result.append(f"![{alt}]({rel})")
-        else:
-            composite_rel = build_composite_figure(
-                [work_dir / rel for _, rel in block],
-                [alt for alt, _ in block],
-                work_dir,
-                composite_index,
-            )
-            composite_index += 1
-            caption = "；".join(alt for alt, _ in block if alt) or "复合图"
-            result.append(f"![{caption}]({composite_rel.as_posix()})")
-        block.clear()
-        blank_after_block = 0
-
-    for line in lines:
-        match = IMAGE_BLOCK_RE.match(line)
-        if match:
-            block.append((match.group("alt").strip(), match.group("src").strip()))
+    pandoc 的 implicit_figures 只对独占一段的图片生成 figure 环境
+    （居中、统一图幅、带题注）；图片与文字同段会被当成行内元素，
+    导致图幅不一、题注丢失、排版错乱。这里在 Markdown 层面兜底，
+    写作手漏写空行时也能得到规范 figure。work_dir 仅保留调用签名。
+    """
+    del work_dir
+    out: list[str] = []
+    for line in markdown.splitlines():
+        if IMAGE_BLOCK_RE.match(line):
+            if out and out[-1] != "":
+                out.append("")
+            out.append(line.strip())
+            out.append("")
             continue
-
         if not line.strip():
-            if block:
-                blank_after_block += 1
-                continue
-            result.append("")
+            if out and out[-1] != "":
+                out.append("")
             continue
-
-        if block:
-            flush_block()
-        result.append(line)
-
-    if block:
-        flush_block()
-    return "\n".join(result)
-
-
-def build_composite_figure(
-    image_paths: list[Path],
-    labels: list[str],
-    work_dir: Path,
-    index: int,
-) -> Path:
-    """Build a composite image from a small group of related figures."""
-    available = [
-        (path, label) for path, label in zip(image_paths, labels) if path.exists()
-    ]
-    if not available:
-        return image_paths[0]
-
-    composite_dir = work_dir / "paper_composites"
-    composite_dir.mkdir(parents=True, exist_ok=True)
-    composite_path = composite_dir / f"composite_{index:03d}.png"
-
-    images = [Image.open(path).convert("RGB") for path, _ in available]
-    try:
-        cols = 2 if len(images) > 1 else 1
-        rows = math.ceil(len(images) / cols)
-        cell_w = 920
-        cell_h = 620
-        caption_h = 72
-        gap = 24
-        canvas_w = cols * cell_w + (cols + 1) * gap
-        canvas_h = rows * (cell_h + caption_h) + (rows + 1) * gap
-        canvas = Image.new("RGB", (canvas_w, canvas_h), "white")
-        draw = ImageDraw.Draw(canvas)
-        caption_font = load_font(work_dir, 22)
-        title_font = load_font(work_dir, 26)
-
-        for idx, (image, (_, label)) in enumerate(zip(images, available)):
-            row = idx // cols
-            col = idx % cols
-            x0 = gap + col * (cell_w + gap)
-            y0 = gap + row * (cell_h + caption_h + gap)
-            tile = Image.new("RGB", (cell_w, cell_h + caption_h), "white")
-            fitted = ImageOps.contain(image, (cell_w - 40, cell_h - 40))
-            tile.paste(
-                fitted,
-                ((cell_w - fitted.width) // 2, 12 + (cell_h - fitted.height) // 2),
-            )
-            tile_draw = ImageDraw.Draw(tile)
-            caption = label or f"图{idx + 1}"
-            bbox = tile_draw.textbbox((0, 0), caption, font=caption_font)
-            caption_w = bbox[2] - bbox[0]
-            tile_draw.text(
-                ((cell_w - caption_w) / 2, cell_h + 12),
-                caption,
-                fill="#333333",
-                font=caption_font,
-            )
-            canvas.paste(tile, (x0, y0))
-            draw.rounded_rectangle(
-                [x0, y0, x0 + cell_w, y0 + cell_h + caption_h],
-                radius=22,
-                outline="#8A8A8A",
-                width=2,
-            )
-
-        summary = " / ".join(label for label in labels if label.strip())
-        if summary:
-            draw.text(
-                (canvas_w // 2, canvas_h - 18),
-                summary[:120],
-                fill="#666666",
-                font=title_font,
-                anchor="ms",
-            )
-        canvas.save(composite_path)
-    finally:
-        for image in images:
-            image.close()
-
-    return composite_path.relative_to(work_dir)
-
-
-def load_font(
-    work_dir: Path, size: int
-) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    """Load a Chinese-capable font."""
-    backend_root = Path(__file__).resolve().parents[2]
-    candidates = [
-        work_dir / "FandolHei-Regular.otf",
-        backend_root / "fonts" / "FandolHei-Regular.otf",
-        work_dir / "simhei.ttf",
-        backend_root / "fonts" / "simhei.ttf",
-        backend_root / "fonts" / "SimHei.ttf",
-        backend_root / "fonts" / "msyh.ttc",
-        Path("C:/Windows/Fonts/simhei.ttf"),
-        # macOS：PingFang.ttc 受 SIP 保护无法被 PIL 读取，选用实测可打开的字体
-        Path("/System/Library/Fonts/STHeiti Medium.ttc"),
-        Path("/System/Library/Fonts/Hiragino Sans GB.ttc"),
-        Path("/System/Library/Fonts/Supplemental/Songti.ttc"),
-        Path("/Library/Fonts/Arial Unicode.ttf"),
-        Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
-        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            try:
-                return ImageFont.truetype(str(candidate), size)
-            except OSError:
-                continue
-    return ImageFont.load_default()
+        out.append(line)
+    while out and out[-1] == "":
+        out.pop()
+    return "\n".join(out) + "\n"
 
 
 def append_source_code_appendix(markdown: str, work_dir: Path) -> str:
@@ -1151,7 +1608,7 @@ def build_pdf_header(
   \setCJKmainfont[BoldFont=FandolSong-Bold]{FandolSong-Regular}
 }"""
     return f"""
-\\usepackage[{paper},top=2.4cm,bottom=2.3cm,left=2.5cm,right=2.5cm]{{geometry}}
+\\usepackage[{paper},margin=2.54cm]{{geometry}}
 \\usepackage{{fontspec}}
 \\usepackage{{xeCJK}}
 \\usepackage{{amsmath,amssymb}}

@@ -87,6 +87,15 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
 
     def _pre_execute_code(self) -> None:
         """切到任务目录并装载中文字体，保证图表渲染正常。"""
+        bundled_font = os.path.normpath(
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "..",
+                "..",
+                "fonts",
+                "simhei.ttf",
+            )
+        )
         bootstrap = (
             "import os\n"
             f"work_dir = r'{self.work_dir}'\n"
@@ -103,19 +112,39 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
             "    _pl.Path(_cache_file).unlink(missing_ok=True)\n"
             "font_manager.fontManager.__init__()\n"
             "_loaded = False\n"
+            # 随仓库分发的中文字体兜底，不依赖系统字体安装状态
+            f"_bundled_font = r'{bundled_font}'\n"
+            "if os.path.isfile(_bundled_font):\n"
+            "    font_manager.fontManager.addfont(_bundled_font)\n"
+            "    _loaded = True\n"
             "for _f in os.listdir(work_dir):\n"
             "    if _f.lower().endswith(('.ttf', '.otf', '.ttc')):\n"
             "        font_manager.fontManager.addfont(os.path.join(work_dir, _f))\n"
             "        _loaded = True\n"
             "if _loaded:\n"
             "    print(f'中文字体已加载，可用字体数: {len(font_manager.fontManager.ttflist)}')\n"
-            "plt.rcParams['font.sans-serif'] = ['FandolHei', 'SimHei', 'Heiti SC', 'STHeiti', "
+            "plt.rcParams['font.sans-serif'] = ['SimHei', 'Heiti SC', 'STHeiti', "
             "'PingFang SC', 'Noto Sans CJK SC', 'Noto Sans SC', "
             "'WenQuanYi Micro Hei', 'Microsoft YaHei', 'sans-serif']\n"
             "plt.rcParams['axes.unicode_minus'] = False\n"
             "plt.rcParams['font.family'] = 'sans-serif'\n"
+            "print('图中文字体解析为:', font_manager.findfont('SimHei'))\n"
+            # SimHei/YaHei 缺上标字符（³²等），savefig 前改写成 mathtext，避免豆腐块
+            "import matplotlib.figure as _mf\n"
+            "_SUPER = {'¹': '$^1$', '²': '$^2$', '³': '$^3$', '⁴': '$^4$', '⁻': '$^-$', 'µ': r'$\\mu$'}\n"
+            "_orig_savefig = _mf.Figure.savefig\n"
+            "def _savefig_cjk_safe(self, *args, **kwargs):\n"
+            "    for _t in self.findall(matplotlib.text.Text):\n"
+            "        _s = _t.get_text()\n"
+            "        _n = ''.join(_SUPER.get(_c, _c) for _c in _s)\n"
+            "        if _n != _s and '$' not in _s:\n"
+            "            _t.set_text(_n)\n"
+            "    return _orig_savefig(self, *args, **kwargs)\n"
+            "_mf.Figure.savefig = _savefig_cjk_safe\n"
         )
-        self._run_raw(bootstrap)
+        from app.tools.plot_fonts import bootstrap as font_bootstrap
+
+        self._run_raw(bootstrap + "\n" + font_bootstrap(self.work_dir))
 
     async def cleanup(self) -> None:
         if self.kc is None or self.km is None:

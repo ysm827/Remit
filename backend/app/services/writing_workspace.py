@@ -55,6 +55,27 @@ def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 
 
+def figure_overrides(root: Path, revision: str) -> dict[str, str]:
+    """Use reviewed re-exports only for the exact original evidence snapshot.
+
+    Original plots remain immutable. A stale, edited, or out-of-project override
+    fails closed instead of silently substituting a different experiment's plot.
+    """
+    manifest = read_json(root / "figure_overrides.json")
+    if manifest.get("input_revision") != revision:
+        return {}
+    result = {}
+    for name, entry in manifest.get("files", {}).items():
+        original = (root / ".inputs" / revision / "assets" / name).resolve()
+        replacement = (root / entry["file"]).resolve()
+        if not original.is_relative_to((root / ".inputs" / revision / "assets").resolve()) or not replacement.is_relative_to((root / "assets").resolve()):
+            raise ValueError("图表修订路径越出素材目录")
+        if hashlib.sha256(original.read_bytes()).hexdigest() != entry["source_sha256"] or hashlib.sha256(replacement.read_bytes()).hexdigest() != entry["rendered_sha256"]:
+            raise ValueError("图表修订版本已变化，请重新核验后再用于论文")
+        result[name] = replacement.relative_to(root).as_posix()
+    return result
+
+
 def paper_root(task_root: Path) -> Path:
     """返回独立论文目录，并阻止符号链接越界。"""
     root = (task_root / "paper").resolve()
@@ -303,6 +324,13 @@ def compile_build(build: Path, main: str, revision: str) -> dict[str, Any]:
     except OSError as exc:
         logs.append(str(exc))
     result["log"] = "\n".join(logs)[-40000:]
+    if result["status"] == "completed":
+        from app.services.paper_layout import inspect_layout
+
+        try:
+            result["layout_review"] = inspect_layout(build / "preview.pdf", result["log"])
+        except Exception as exc:
+            result["layout_review"] = {"status": "unverified", "issues": [f"版式检查未完成：{exc}"]}
     for match in re.finditer(
         r"(?:\./)?([^\r\n:]+\.tex):(\d+):\s*([^\r\n]+)", result["log"]
     ):

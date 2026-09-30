@@ -263,7 +263,7 @@ class MatlabCodeInterpreter(BaseCodeInterpreter):
         self.engine.cd(str(self.work_path), nargout=0)
         self.engine.addpath(str(Path(__file__).with_name("matlab_helpers")), nargout=0)
         self.engine.eval(
-            "set(groot, 'defaultFigureVisible', 'off');",
+            "set(groot, 'defaultFigureVisible', 'off'); remit_plot_defaults;",
             nargout=0,
         )
         return str(self.engine.version())
