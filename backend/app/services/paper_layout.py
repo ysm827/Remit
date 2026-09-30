@@ -48,6 +48,10 @@ def inspect_layout(pdf: Path, log: str = "") -> dict:
             # Exclude abstract, final page and running footer. Detect both bottom
             # holes and large empty bands; dense text cannot hide a stranded float.
             if chinese_abstract and 0 < i < len(doc) - 1:
+                if len(page.get_image_info()) >= 2:
+                    prose = re.sub(r"(?m)^\s*图\s*\d[^\n]*$|^\s*\d+\s*$", "", page.get_text())
+                    if len(re.sub(r"\s+", "", prose)) < 120:
+                        issues.append(f"第 {i + 1} 页主要由连续图片组成，正文论证与图分离，请检查选图和浮动位置")
                 top, bottom = 72 * 25 / 25.4, page.rect.height - 72 * 25 / 25.4
                 bands = [(line["bbox"][1], line["bbox"][3]) for block in page.get_text("dict")["blocks"] if "lines" in block for line in block["lines"] if top - 8 <= line["bbox"][1] < bottom]
                 bands += [(img["bbox"][1], img["bbox"][3]) for img in page.get_image_info()]

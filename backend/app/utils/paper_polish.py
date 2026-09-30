@@ -371,7 +371,14 @@ def _markdown_fragment_to_latex(markdown: str, resource_path: Path) -> str:
         )
     except Exception as exc:
         raise PaperRenderError(f"Pandoc 生成 LaTeX 失败: {exc}") from exc
-    return fragment.replace("\r\n", "\n").replace("\r", "\n")
+    return _normalize_vector_math(fragment.replace("\r\n", "\n").replace("\r", "\n"))
+
+
+def _normalize_vector_math(latex: str) -> str:
+    """Use bold italic math for vector glyphs, without changing operators or text."""
+    return re.sub(r"\\\(.*?\\\)|\\\[.*?\\\]", lambda span: re.sub(
+        r"\\(?:mathbf|boldsymbol)\s*\{", lambda _: r"\bm{", span[0]
+    ), latex, flags=re.S)
 
 
 def _number_display_equations(latex: str) -> str:
@@ -417,7 +424,7 @@ def build_china_paper_preamble() -> str:
 % Remit-LaTeX-Assembler: china-v2
 \documentclass[UTF8,a4paper,zihao=-4,linespread=1.08]{ctexart}
 \usepackage[top=2.5cm,bottom=2.5cm,left=2.5cm,right=2.5cm]{geometry}
-\usepackage{amsmath,amssymb}
+\usepackage{amsmath,amssymb,bm}
 \usepackage{graphicx}
 % 允许行内公式在逗号后断行，避免长数值序列顶出版心
 \makeatletter
@@ -447,13 +454,13 @@ def build_china_paper_preamble() -> str:
 \setlength{\emergencystretch}{3em}
 \raggedbottom
 % Let following text fill space when a figure cannot fit at its callout.
-\renewcommand{\topfraction}{0.9}
-\renewcommand{\bottomfraction}{0.85}
-\renewcommand{\textfraction}{0.08}
-\renewcommand{\floatpagefraction}{0.7}
-\setcounter{topnumber}{3}
-\setcounter{bottomnumber}{2}
-\setcounter{totalnumber}{4}
+\renewcommand{\topfraction}{0.68}
+\renewcommand{\bottomfraction}{0.5}
+\renewcommand{\textfraction}{0.2}
+\renewcommand{\floatpagefraction}{0.9}
+\setcounter{topnumber}{1}
+\setcounter{bottomnumber}{1}
+\setcounter{totalnumber}{2}
 \setlength{\textfloatsep}{12pt plus 2pt minus 2pt}
 \setlength{\intextsep}{10pt plus 2pt minus 2pt}
 \makeatletter
@@ -461,12 +468,12 @@ def build_china_paper_preamble() -> str:
 % 常规插图同宽，只有极高的纵向图才触发安全高度限制。
 \newcommand*\pandocbounded[1]{%
   \sbox\pandoc@box{#1}%
-  \Gscale@div\@tempa{0.85\linewidth}{\wd\pandoc@box}%
-  \Gscale@div\@tempb{0.64\textheight}{\dimexpr\ht\pandoc@box+\dp\pandoc@box\relax}%
+  \Gscale@div\@tempa{0.68\linewidth}{\wd\pandoc@box}%
+  \Gscale@div\@tempb{0.42\textheight}{\dimexpr\ht\pandoc@box+\dp\pandoc@box\relax}%
   \ifdim\@tempb\p@<\@tempa\p@\let\@tempa\@tempb\fi%
   \scalebox{\@tempa}{\usebox\pandoc@box}%
 }
-\def\fps@figure{!htbp}
+\def\fps@figure{htb}
 \makeatother
 \providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
 \usepackage{fancyvrb}
@@ -515,10 +522,10 @@ MINIPAGE_CELL_RE = re.compile(
 )
 SUBSUBSECTION_LINE_RE = re.compile(r"(?m)^\\subsubsection\{[^}]*\}\s*\n?")
 SYMBOL_FULL_WIDTH_SPECS = {
-    2: r"@{}>{\centering\arraybackslash}p{0.22\linewidth}p{0.68\linewidth}@{}",
+    2: r"@{}>{\centering\arraybackslash}p{0.22\linewidth}>{\centering\arraybackslash}p{0.68\linewidth}@{}",
     3: (
-        r"@{}>{\centering\arraybackslash}p{0.17\linewidth}"
-        r"p{0.62\linewidth}"
+        r"@{}>{\centering\arraybackslash}p{0.25\linewidth}"
+        r">{\centering\arraybackslash}p{0.54\linewidth}"
         r">{\centering\arraybackslash}p{0.12\linewidth}@{}"
     ),
 }
@@ -743,7 +750,12 @@ def _extract_inline_images(markdown: str) -> str:
 
 def _center_longtables(body_tex: str) -> str:
     """pandoc 生成的 longtable 默认贴左，比赛惯例是三线表整体居中。"""
-    return body_tex.replace("\\begin{longtable}[]", "\\begin{longtable}[c]")
+    body_tex = body_tex.replace("\\begin{longtable}[]", "\\begin{longtable}[c]")
+    body_tex = body_tex.replace(r"\raggedright\arraybackslash", r"\centering\arraybackslash")
+    body_tex = body_tex.replace(r"\raggedright", r"\centering")
+    # Compact Pandoc column specs (l/r/c) need centering as well.
+    return re.sub(r"(\\begin\{longtable\}\[c\]\{)([@{}lrc ]+)(\})",
+                  lambda m: m[1] + re.sub("[lr]", "c", m[2]) + m[3], body_tex)
 
 
 def _normalize_numeric_tables(body_tex: str) -> str:
@@ -774,13 +786,7 @@ def _normalize_numeric_tables(body_tex: str) -> str:
         headers = header.split("&")
         if len(headers) != count:
             continue
-        formatted = []
-        for cell in headers:
-            cell = " ".join(cell.split())
-            unit = re.search(r"/([A-Za-z°%][A-Za-z0-9°%^{}\\-]*)$", cell)
-            if unit:
-                cell = "\\shortstack{" + cell[:unit.start()].strip() + "\\\\(" + unit[1] + ")}"
-            formatted.append(cell)
+        formatted = [" ".join(cell.split()) for cell in headers]
         title = re.search(r"(?:^|\n\n)(表\s*\d+(?:[-–.]\d+)?[　 \t]+[^\n]{1,120})\s*\n\n$", body_tex[:start])
         caption = ""
         if title and "。" not in title[1]:
@@ -789,7 +795,7 @@ def _normalize_numeric_tables(body_tex: str) -> str:
         replacement = (
             "\\begin{table}[!htbp]\n\\centering\n\\small\n"
             + caption
-            + "\\begin{tabular*}{\\linewidth}{@{\\extracolsep{\\fill}}" + ("l" if compact_text_table else "r") + "r" * (count - 1) + "@{}}\n\\toprule\n"
+            + "\\begin{tabular*}{\\linewidth}{@{\\extracolsep{\\fill}}" + "c" * count + "@{}}\n\\toprule\n"
             + " & ".join(formatted) + " \\\\\n\\midrule\n"
             + data + "\n\\bottomrule\n\\end{tabular*}\n\\end{table}\n"
         )
@@ -868,14 +874,35 @@ def _normalize_figures(body_tex: str) -> str:
         caption_text = SUBFIG_TAG_RE.sub("", caption_text).strip(" ，,。；;")
         caption = f"{label}　{caption_text}" if caption_text else label
         pieces.append(
-            "\\begin{figure}[!htbp]\n\\centering\n"
-            "\\includegraphics[width=0.85\\linewidth,"
-            "height=0.64\\textheight,keepaspectratio]"
+            "\\begin{figure}[htb]\n\\centering\n"
+            "\\includegraphics[width=0.68\\linewidth,"
+            "height=0.42\\textheight,keepaspectratio]"
             f"{{{graphics_match.group(1)}}}\n"
             f"\\caption*{{{caption}}}\n\\end{{figure}}\n"
         )
     pieces.append(body_tex[cursor:])
     return "".join(pieces)
+
+
+def _resolve_figure_callouts(body_tex: str) -> str:
+    """Resolve file-based citations only after actual figure selection/numbering."""
+    labels = {}
+    for block in FIGURE_ENV_RE.findall(body_tex):
+        graphic = FIGURE_GRAPHICS_RE.search(block)
+        caption = re.search(r"\\caption\*?\{(图\s*\d+(?:[-–.]\d+)?(?:[（(][a-zA-Z][）)])?)", block)
+        if graphic and caption:
+            name = Path(graphic[1]).name
+            if name in labels and labels[name] != caption[1]:
+                raise PaperRenderError(f"图片重复插入，图号无法唯一确定：{name}")
+            labels[name] = caption[1]
+
+    def resolve(match):
+        name = Path(match[1].replace(r"\_", "_")).name
+        if name not in labels:
+            raise PaperRenderError(f"正文引用了未插入的图片：{name}")
+        return labels[name]
+
+    return re.sub(r"@fig:([^@\n]+)@", resolve, body_tex)
 
 
 def _assemble_china_paper(
@@ -918,7 +945,7 @@ def _assemble_china_paper(
     )
     body_tex = _merge_symbol_section_tables(body_tex)
     body_tex = _normalize_numeric_tables(body_tex)
-    body_tex = _normalize_figures(_center_longtables(body_tex))
+    body_tex = _resolve_figure_callouts(_normalize_figures(_center_longtables(body_tex)))
     refs_tex = _build_references_latex(refs)
     if REFS_PLACEHOLDER in body_tex:
         body_tex = body_tex.replace(
@@ -1688,7 +1715,7 @@ def build_pdf_header(
 \\usepackage[{paper},margin=2.54cm]{{geometry}}
 \\usepackage{{fontspec}}
 \\usepackage{{xeCJK}}
-\\usepackage{{amsmath,amssymb}}
+\\usepackage{{amsmath,amssymb,bm}}
 \\usepackage{{booktabs,longtable,array,graphicx,float}}
 \\IfFontExistsTF{{Times New Roman}}{{\\setmainfont{{Times New Roman}}}}{{\\setmainfont{{TeX Gyre Termes}}}}
 {cjk_font}

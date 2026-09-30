@@ -2131,6 +2131,7 @@ class RemitWorkFlow(WorkFlow):
                         key,
                         writer_response.response_content,
                         required_images=paper_images,
+                        omitted_images=writer_response.omitted_images,
                         quality_report=(
                             final_evidence.get("quality_report")
                             if isinstance(final_evidence.get("quality_report"), dict)
@@ -2600,6 +2601,7 @@ class RemitWorkFlow(WorkFlow):
                     key,
                     rewritten.response_content,
                     required_images=required_images,
+                    omitted_images=rewritten.omitted_images,
                     quality_report=rewrite_quality_report,
                     question_text=question_text,
                     grounding_values=grounding,

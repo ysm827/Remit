@@ -139,3 +139,23 @@ def test_render_font_guard_survives_latin_style_reset(tmp_path: Path):
         plt.close(fig)
     assert not [w for w in caught if "Glyph" in str(w.message)]
     assert (tmp_path / "plot.png").stat().st_size > 1000
+
+
+def test_pdf_review_reports_figure_gallery_without_argument(tmp_path):
+    import pymupdf
+    from app.services.paper_layout import inspect_layout
+    pdf = tmp_path / "gallery.pdf"
+    pixel = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 2, 2), False)
+    pixel.clear_with(128)
+    with pymupdf.open() as doc:
+        first = doc.new_page(width=595, height=842)
+        first.insert_text((70, 100), "摘要", fontname="china-s")
+        first.insert_text((70, 660), "关键词：证据", fontname="china-s")
+        page = doc.new_page(width=595, height=842)
+        page.insert_image(pymupdf.Rect(100, 80, 480, 370), pixmap=pixel, keep_proportion=False)
+        page.insert_text((200, 392), "图 1 方法对比", fontname="china-s")
+        page.insert_image(pymupdf.Rect(100, 420, 480, 720), pixmap=pixel, keep_proportion=False)
+        page.insert_text((200, 742), "图 2 资源比较", fontname="china-s")
+        doc.new_page()
+        doc.save(pdf)
+    assert any("正文论证与图分离" in issue for issue in inspect_layout(pdf)["issues"])

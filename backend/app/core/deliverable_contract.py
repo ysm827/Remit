@@ -1685,6 +1685,7 @@ def validate_writer_section(
     question_text: str = "",
     grounding_values: set[float] | None = None,
     expected_question_count: int = 0,
+    omitted_images: dict[str, str] | None = None,
 ) -> None:
     """Reject empty, failed or evidence-free writer sections."""
     if not isinstance(content, str):
@@ -1791,10 +1792,21 @@ def validate_writer_section(
             )
 
     def check_images() -> None:
+        omitted = omitted_images or {}
+        candidates = {str(image) for image in required_images or ()}
+        referenced = set(re.findall(r"!\[[^\]]*\]\(([^)]+)\)", content))
+        cited = {Path(image).name for image in referenced}
+        for name, reason in omitted.items():
+            if name not in candidates or not isinstance(reason, str) or len(reason.strip()) < 12:
+                raise DeliverableValidationError(f"{section_key} 图片取舍记录无效：{name}，请说明替代证据与保留位置")
+            if name in referenced:
+                raise DeliverableValidationError(f"{section_key} 同一图片既插入又标为未采用：{name}")
+        if candidates and omitted and not any(Path(image).name in cited for image in candidates):
+            raise DeliverableValidationError(f"{section_key} 不可仅以取舍说明省略全部证据图片")
         missing = [
             str(image)
             for image in required_images or ()
-            if Path(image).name not in content and str(image) not in content
+            if Path(image).name not in cited and str(image) not in omitted
         ]
         if missing:
             raise DeliverableValidationError(

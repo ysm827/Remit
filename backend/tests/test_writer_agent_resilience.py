@@ -50,7 +50,18 @@ class WriterAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "未保存为完成稿"):
                 await agent.run("Write from evidence", sub_title="ques1")
-        self.assertEqual(agent._chat.await_count, 2)
+        self.assertEqual(agent._chat.await_count, 4)
+
+    async def test_reasoning_only_truncation_receives_room_for_prose(self) -> None:
+        agent = WriterAgent(task_id="task-test", model=MagicMock())
+        agent._chat = AsyncMock(side_effect=[
+            StandardResponse(content="", finish_reason="length"),
+            StandardResponse(content="完整的证据论述。", finish_reason="stop"),
+        ])
+        with patch("app.core.agents.writer_agent.redis_manager.publish_message", new=AsyncMock()):
+            result = await agent.run("Write from evidence", sub_title="ques1")
+        self.assertEqual(result.response_content, "完整的证据论述。")
+        self.assertEqual(agent._chat.await_args_list[1].kwargs["max_tokens"], 32768)
 
     async def test_search_failure_falls_back_to_prose(self) -> None:
         model = MagicMock()

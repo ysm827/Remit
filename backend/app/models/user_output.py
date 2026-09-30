@@ -61,6 +61,7 @@ class UserOutput:
         self.res[key] = {
             "response_content": writer_response.response_content,
             "footnotes": writer_response.footnotes,
+            "omitted_images": writer_response.omitted_images,
         }
 
     def get_res(self) -> dict[str, dict[str, Any]]:
@@ -70,7 +71,7 @@ class UserOutput:
     def get_model_build_solve(self) -> str:
         """把各小问的求解结果压成一段摘要，供评审章节引用。"""
         return ",".join(
-            f"{key}-{value}"
+            f"{key}-{value['response_content']}"
             for key, value in self.res.items()
             if key.startswith("ques") and key != "ques_count"
         )
@@ -117,7 +118,7 @@ class UserOutput:
 
     def _reference_list(self) -> str:
         """渲染参考文献区块。"""
-        lines = ["\n\n ## 参考文献"]
+        lines = ["\n\n## 参考文献"]
         for _, meta in sorted(self.footnotes.items(), key=lambda kv: kv[1]["number"]):
             lines.append(f"\n\n[^{meta['number']}]: {meta['content']}")
         return "".join(lines)

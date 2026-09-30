@@ -1,6 +1,8 @@
 """写作 Agent：把建模与执行证据组织成竞赛论文章节。"""
 
 import asyncio
+import json
+import re
 from typing import Any
 
 from app.core.activity import publish_activity
@@ -57,7 +59,7 @@ class WriterAgent(Agent):
 
         Args:
             prompt: 章节写作要求。
-            available_images: 需要插入正文的图片相对路径。
+            available_images: 可按证据贡献选用的图片相对路径。
             sub_title: 章节名，用于前端展示。
 
         Returns:
@@ -71,7 +73,7 @@ class WriterAgent(Agent):
 
         if available_images:
             self.available_images = available_images
-            prompt += self._image_directive(available_images)
+            prompt += self._image_directive(available_images, self.comp_template)
 
         logger.info(f"{self.__class__.__name__}:开始:执行对话")
         await self._inject_user_notes()
@@ -99,14 +101,35 @@ class WriterAgent(Agent):
 
         self._record_final_turn(body, response)
         logger.info(f"{self.__class__.__name__}:完成:执行对话")
-        return WriterResponse(response_content=body, footnotes=[])
+        return self._section_response(body)
 
     # ---- 内部步骤 ----
 
+    @staticmethod
+    def _section_response(body: str) -> WriterResponse:
+        pattern = r"<!--\s*remit-omitted-images:\s*(.*?)\s*-->"
+        records = re.findall(pattern, body, re.S)
+        omitted = {}
+        for record in records:
+            data = json.loads(record)
+            if not isinstance(data, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in data.items()):
+                raise ValueError("图片取舍记录必须为文件名与理由的映射")
+            if omitted.keys() & data.keys():
+                raise ValueError("图片取舍记录重复")
+            omitted.update(data)
+        plain_pattern = r"<!--\s*remit-omit:\s*([^|\n]+)\|([^\n]+?)\s*-->"
+        for name, reason in re.findall(plain_pattern, body):
+            name, reason = name.strip(), reason.strip()
+            if name in omitted:
+                raise ValueError("图片取舍记录重复")
+            omitted[name] = reason
+        clean = re.sub(plain_pattern, "", re.sub(pattern, "", body, flags=re.S))
+        return WriterResponse(response_content=clean.strip(), omitted_images=omitted)
+
     async def _complete_response(self, **kwargs: Any) -> Any:
-        """Retry incomplete prose once; never publish an empty/truncated draft as done."""
+        """Allow three bounded retries; never publish incomplete prose as done."""
         budget = configured_output_budget(self.model)
-        for attempt in range(2):
+        for attempt in range(4):
             response = await self._chat(**kwargs, max_tokens=budget)
             truncated = response_was_truncated(response, budget)
             has_text = bool((response.content or "").strip())
@@ -117,11 +140,13 @@ class WriterAgent(Agent):
                 and not (response.tool_calls and not kwargs.get("tools"))
             ):
                 return response
-            if attempt == 1:
+            if attempt == 3:
                 raise RuntimeError(
-                    "论文手连续两次返回空内容、截断正文或无效工具调用，未保存为完成稿"
+                    "论文手连续四次返回空内容、截断正文或无效工具调用，未保存为完成稿"
                 )
-            if truncated:
+            if truncated and not has_text:
+                budget = max(expanded_output_budget(budget), 32768)
+            elif truncated:
                 budget = expanded_output_budget(budget)
             await publish_activity(
                 self.task_id, "论文章节响应不完整，正在重新生成", category="repair"
@@ -129,14 +154,25 @@ class WriterAgent(Agent):
         raise RuntimeError("论文手没有返回完整正文")
 
     @staticmethod
-    def _image_directive(available_images: list[str]) -> str:
-        """把图片清单转成必须执行的插图指令。"""
+    def _image_directive(available_images: list[str], template: CompTemplate = CompTemplate.CHINA) -> str:
+        """Offer evidence figures for selection, not a compulsory slide gallery."""
         lines = "\n".join(f"- ![{img}]({img})" for img in available_images)
+        references = (
+            "用 @fig:文件名.png@ 引用图片，排版器会填入真实图号；alt写简洁图题，不手填图号。"
+            if template == CompTemplate.CHINA else
+            "正文图号须与图片顺序一致，按 Figure 1, Figure 2 顺序引用，alt只写简洁图题。"
+        )
         directive = (
-            "\n\n【必须插入的图片列表】\n"
-            "以下图片是代码手生成的，你必须在论文相关段落后用 Markdown 格式逐一插入：\n"
+            "\n\n【可供正文选用的证据图片】\n"
+            "按独特证据贡献选取下列图片，不要求全部展示；优先保留关键对比、约束与负结果：\n"
             f"{lines}\n"
-            "插入格式为独占一行的 ![描述](文件名)，每张图片后需配3行以上的分析解读。\n"
+            "图片以 ![简洁图题](文件名) 独占一行，前后留空行，插入相邻论证段落之间。"
+            "图题不超过20字，不写文件名。正文先提出结论，"
+            f"{references}"
+            "自然解释证据，不逐图机械写三行说明，不重复罗列所有点值。"
+            "正文末尾为每张未选图片写一条单行隐藏注释：<!-- remit-omit: 文件.png | 具体理由及替代证据位置 -->。"
+            "这条记录会单独保存，不进入论文正文；"
+            "理由须说明其证据在哪段正文、表格或另一图保留，不能以篇幅为由隐藏不利结果。\n"
         )
         logger.info(f"image_prompt是:{directive}")
         return directive

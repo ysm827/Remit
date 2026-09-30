@@ -49,8 +49,8 @@ def test_normalize_figures_uniform_width_and_caption() -> None:
         "\\caption{图 9-9 敏感性分析}\n\\end{figure}\n"
     )
     out = _normalize_figures(body)
-    assert "width=0.85\\linewidth" in out
-    assert "\\begin{figure}[!htbp]" in out
+    assert "width=0.68\\linewidth" in out
+    assert "\\begin{figure}[htb]" in out
     assert "\\caption*{图 5-1　收敛曲线}" in out
     assert "\\caption*{图 9-9　敏感性分析}" in out
     assert "alt=" not in out
@@ -83,8 +83,10 @@ def test_numeric_table_keeps_values_and_attaches_title():
     )
     result = _normalize_numeric_tables(table)
     assert data in result
-    assert r"\shortstack{作业时间\\(s)}" in result
-    assert r"\shortstack{平均 $q_{max}$\\(kg)}" in result
+    assert "作业时间/s" in result
+    assert "shortstack" not in result
+    assert r"@{\extracolsep{\fill}}cccc" in result
+    assert "平均 $q_{max}$/kg" in result
     assert result.count("扰动响应") == 1
     assert r"\caption*{表 6-1　扰动响应}" in result
     assert r"\begin{table}[!htbp]" in result
@@ -117,7 +119,7 @@ def test_merge_symbol_section_tables_merges_split_tables() -> None:
     assert "\\caption{主要符号说明}" in merged
     assert "\\subsubsection" not in merged
     assert "\\(x\\)" in merged and "\\(E\\)" in merged
-    assert "p{0.17\\linewidth}" in merged
+    assert "p{0.25\\linewidth}" in merged
     assert "\\subsection{4.2 数据预处理}" in merged
 
 

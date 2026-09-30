@@ -527,7 +527,7 @@ async def _generate(
                     {"attempt": attempt + 1, "response": response.model_dump()},
                 )
                 try:
-                    validate_writer_section(key, response.response_content, **validation)
+                    validate_writer_section(key, response.response_content, omitted_images=response.omitted_images, **validation)
                 except DeliverableValidationError as exc:
                     if attempt:
                         raise
@@ -558,7 +558,7 @@ async def _generate(
             if key in cached:
                 try:
                     saved = WriterResponse.model_validate(cached[key])
-                    validate_writer_section(key, saved.response_content, **validation)
+                    validate_writer_section(key, saved.response_content, omitted_images=saved.omitted_images, **validation)
                 except (ValueError, DeliverableValidationError):
                     pass
                 else:
