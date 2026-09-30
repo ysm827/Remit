@@ -4,6 +4,32 @@
 
 A local mathematical modeling workbench with coordinator, modeler, coder and writer roles. [中文说明](README.md).
 
+## Product preview
+
+[![Remit modeling workbench](./assets/remit-workbench-overview.png)](./assets/remit-workbench-overview.png)
+
+<p align="center"><sub>Preserved workbench preview; the current 2.0 interface may differ. Click to view full size.</sub></p>
+
+## Agent architecture
+
+```mermaid
+flowchart TB
+    U[Problem · Data · User requirements] --> C[Tuantuan · Coordinator]
+    C --> M[Lingling · Modeler]
+    M --> P[Diandian · Coder]
+    P --> V[Validation and checkpoints]
+    V --> W[Momo · Writer]
+    V -->|Repair needed| P
+    W --> O[Paper workspace · LaTeX · PDF]
+    H[User review and acceptance] -.-> C
+    H -.-> M
+    O --> H
+    classDef agent fill:#f7fee7,stroke:#a3b629,color:#20251b;
+    classDef artifact fill:#f6f7f8,stroke:#9aa2a9,color:#20251b;
+    class C,M,P,W agent;
+    class U,V,O,H artifact;
+```
+
 ## Version 2.0
 
 This release brings the current team conversation, resumable execution, paper workspace,

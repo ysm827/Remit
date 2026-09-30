@@ -1,7 +1,7 @@
 <div align="center">
   <img src="./assets/remit-icon.png" alt="Remit 标志" width="140" />
-  <h1>Remit 2.0 — 数模 Agent · 数学建模 AI 助手</h1>
-  <p><strong>本地优先、可检查、可恢复的数学建模工作台</strong></p>
+  <h1>Remit 2.0 · 数模小助手</h1>
+  <p><strong>多 Agent 协作的数学建模 AI 工作台</strong></p>
   <p>让 Agent 像一支数模队伍一样协作，让人始终握着题意、选型和交付的决定权。</p>
   <p>
     <a href="https://github.com/zhou2030109-glitch/Remit/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/zhou2030109-glitch/Remit/actions/workflows/ci.yml/badge.svg" /></a>
@@ -12,6 +12,8 @@
   </p>
   <p>
     <a href="#20-升级">2.0 升级</a> ·
+    <a href="#产品展示">产品展示</a> ·
+    <a href="#协作架构">协作架构</a> ·
     <a href="#快速启动docker">快速开始</a> ·
     <a href="./docs/upgrading-to-v2.md">旧版与升级</a> ·
     <a href="./docs/paper-quality.md">论文质量规则</a> ·
@@ -30,6 +32,36 @@
 本地数学建模工作台：通过团队对话，让协调手、建模手、代码手和论文手协作完成题目分析、计算与论文写作。
 
 [English](README_EN.md) · [安装与分发](docs/distribution.md) · [配置说明](docs/configuration.md) · [赛事适配](docs/competition-adapters.md)
+
+## 产品展示
+
+<p align="center">
+  <a href="./assets/remit-workbench-overview.png"><img src="./assets/remit-workbench-overview.png" alt="Remit 数学建模工作台：项目、团队协作与结果展示" width="100%" /></a>
+</p>
+
+<p align="center"><sub>保留的工作台展示图；2.0 的具体界面以当前版本为准。点击可查看大图。</sub></p>
+
+## 协作架构
+
+团团协调计划，灵灵负责建模，点点运行计算，墨墨整理为论文。题意、方案与最终成果由你确认。
+
+```mermaid
+flowchart TB
+    U[题面 · 数据 · 用户要求] --> C[团团 · 协调手]
+    C --> M[灵灵 · 建模手]
+    M --> P[点点 · 代码手]
+    P --> V[结果校验与检查点]
+    V --> W[墨墨 · 论文手]
+    V -->|需要修复| P
+    W --> O[论文工作区 · LaTeX · PDF]
+    H[用户确认与验收] -.-> C
+    H -.-> M
+    O --> H
+    classDef agent fill:#f7fee7,stroke:#a3b629,color:#20251b;
+    classDef artifact fill:#f6f7f8,stroke:#9aa2a9,color:#20251b;
+    class C,M,P,W agent;
+    class U,V,O,H artifact;
+```
 
 ## 2.0 升级
 
