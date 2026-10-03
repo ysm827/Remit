@@ -33,3 +33,7 @@ bash tools/start_services.sh
 当前 CI 在 Linux 执行后端测试、前端测试与生产构建。Windows 启动检查和本机验证范围见 release-validation.md。未配置自动镜像发布或安装包上传；需要分发时按 distribution.md 构建。
 
 不要提交 `.env.dev`、`.env.user`、运行目录、私人论文库、日志或真实赛题数据。保留第三方许可与来源锁文件。
+
+### Linux 集成测试依赖
+
+测试包含真实 Pandoc 转换、中文绘图和桌面启动。Ubuntu 需先安装 `fonts-noto-cjk`、`redis-server` 和 `xvfb`；`pypandoc-binary` 由锁定的 Python 依赖提供。缺少中文字体时，绘图会明确失败，避免生成缺字图片。

@@ -461,7 +461,8 @@ def _markdown_fragment_to_latex(markdown: str, resource_path: Path) -> str:
             extra_args=[
                 f"--resource-path={resource_path}",
                 "--wrap=none",
-                "--syntax-highlighting=none",
+                # Supported by both older system Pandoc and the bundled version.
+                "--no-highlight",
             ],
         )
     except WorkCancelled:

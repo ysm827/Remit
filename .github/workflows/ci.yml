@@ -28,6 +28,8 @@ jobs:
         with:
           version: '0.12.10'
           python-version: '3.12'
+      - name: Install runtime dependencies for integration tests
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk redis-server xvfb
       - run: uv sync --locked
         working-directory: backend
       - run: python tools/check_public_tree.py
@@ -39,7 +41,6 @@ jobs:
       - run: npm install -g pnpm@10.6.3
       - run: pnpm install --frozen-lockfile
         working-directory: frontend
-      - run: sudo apt-get update && sudo apt-get install -y redis-server xvfb
       - run: xvfb-run -a uv run --project backend pytest tests -q
   backend-and-launchers-status:
     name: backend-and-launchers
