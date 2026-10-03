@@ -62,14 +62,19 @@ class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
             patch.object(workflow, "_start_node", new=AsyncMock()),
             patch.object(workflow, "_check_cancelled", new=AsyncMock()),
             patch.object(workflow_module, "publish_activity", new=AsyncMock()),
-            patch.object(workflow_module.redis_manager, "publish_message", new=AsyncMock()),
+            patch.object(
+                workflow_module.redis_manager, "publish_message", new=AsyncMock()
+            ),
         ):
             with self.assertRaises(workflow_module.NonRetryableLLMError):
-                await workflow._pilot_node(state, modeler, coder,
-                    ModelerToCoder(questions_solution={"ques1":"plan"}))
+                await workflow._pilot_node(
+                    state,
+                    modeler,
+                    coder,
+                    ModelerToCoder(questions_solution={"ques1": "plan"}),
+                )
         self.assertNotIn("pilot_skipped", state)
         coder.run.assert_not_awaited()
-
 
     async def test_review_revision_reexecutes_solver_then_can_be_approved(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -509,7 +514,9 @@ class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(expected, question_call["value"]["coder_prompt"])
             persisted = checkpoint.load()
             if pilot_fails:
-                self.assertEqual(persisted["node_outcomes"]["pilot"]["status"], "skipped")
+                self.assertEqual(
+                    persisted["node_outcomes"]["pilot"]["status"], "skipped"
+                )
             self.assertEqual(
                 persisted["modeler_response"]["questions_solution"]["ques1"], expected
             )

@@ -7,7 +7,11 @@ import json
 import re
 import shutil
 import subprocess
+from uuid import uuid4
+
+from app.services.async_io import check_cancelled, WorkCancelled
 from app.utils.tex_process import run_xelatex
+from app.utils.pandoc_process import convert_text
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,31 +45,81 @@ FOOTNOTE_REF_RE = re.compile(r"\[\^(\d+)\]")
 # 写作手常直接输入 Unicode 希腊字母；正文字体不含这些字形时 XeLaTeX 会静默丢字，
 # 统一换成数学命令交给数学字体渲染。
 GREEK_UNICODE_MAP = {
-    "α": r"\alpha", "β": r"\beta", "γ": r"\gamma", "δ": r"\delta",
-    "ε": r"\varepsilon", "ζ": r"\zeta", "η": r"\eta", "θ": r"\theta",
-    "ι": r"\iota", "κ": r"\kappa", "λ": r"\lambda", "μ": r"\mu",
-    "ν": r"\nu", "ξ": r"\xi", "π": r"\pi", "ρ": r"\rho",
-    "σ": r"\sigma", "τ": r"\tau", "υ": r"\upsilon", "φ": r"\varphi",
-    "χ": r"\chi", "ψ": r"\psi", "ω": r"\omega",
-    "Γ": r"\Gamma", "Δ": r"\Delta", "Θ": r"\Theta", "Λ": r"\Lambda",
-    "Ξ": r"\Xi", "Π": r"\Pi", "Σ": r"\Sigma", "Φ": r"\Phi",
-    "Ψ": r"\Psi", "Ω": r"\Omega",
-    "ϵ": r"\epsilon", "ϑ": r"\vartheta", "ϕ": r"\phi",
-    "ς": r"\varsigma", "ϱ": r"\varrho", "ϖ": r"\varpi",
+    "α": r"\alpha",
+    "β": r"\beta",
+    "γ": r"\gamma",
+    "δ": r"\delta",
+    "ε": r"\varepsilon",
+    "ζ": r"\zeta",
+    "η": r"\eta",
+    "θ": r"\theta",
+    "ι": r"\iota",
+    "κ": r"\kappa",
+    "λ": r"\lambda",
+    "μ": r"\mu",
+    "ν": r"\nu",
+    "ξ": r"\xi",
+    "π": r"\pi",
+    "ρ": r"\rho",
+    "σ": r"\sigma",
+    "τ": r"\tau",
+    "υ": r"\upsilon",
+    "φ": r"\varphi",
+    "χ": r"\chi",
+    "ψ": r"\psi",
+    "ω": r"\omega",
+    "Γ": r"\Gamma",
+    "Δ": r"\Delta",
+    "Θ": r"\Theta",
+    "Λ": r"\Lambda",
+    "Ξ": r"\Xi",
+    "Π": r"\Pi",
+    "Σ": r"\Sigma",
+    "Φ": r"\Phi",
+    "Ψ": r"\Psi",
+    "Ω": r"\Omega",
+    "ϵ": r"\epsilon",
+    "ϑ": r"\vartheta",
+    "ϕ": r"\phi",
+    "ς": r"\varsigma",
+    "ϱ": r"\varrho",
+    "ϖ": r"\varpi",
     # 微符号与上/下标：宋体没有这些字形，文本模式会静默丢字（豆腐块）。
     "µ": r"\mu",
     "−": r"-",
-    "⁰": r"{}^{0}", "¹": r"{}^{1}", "²": r"{}^{2}", "³": r"{}^{3}",
-    "⁴": r"{}^{4}", "⁵": r"{}^{5}", "⁶": r"{}^{6}", "⁷": r"{}^{7}",
-    "⁸": r"{}^{8}", "⁹": r"{}^{9}", "⁺": r"{}^{+}", "⁻": r"{}^{-}",
-    "₀": r"{}_{0}", "₁": r"{}_{1}", "₂": r"{}_{2}", "₃": r"{}_{3}",
-    "₄": r"{}_{4}", "₅": r"{}_{5}", "₆": r"{}_{6}", "₇": r"{}_{7}",
-    "₈": r"{}_{8}", "₉": r"{}_{9}", "₊": r"{}_{+}", "₋": r"{}_{-}",
+    "⁰": r"{}^{0}",
+    "¹": r"{}^{1}",
+    "²": r"{}^{2}",
+    "³": r"{}^{3}",
+    "⁴": r"{}^{4}",
+    "⁵": r"{}^{5}",
+    "⁶": r"{}^{6}",
+    "⁷": r"{}^{7}",
+    "⁸": r"{}^{8}",
+    "⁹": r"{}^{9}",
+    "⁺": r"{}^{+}",
+    "⁻": r"{}^{-}",
+    "₀": r"{}_{0}",
+    "₁": r"{}_{1}",
+    "₂": r"{}_{2}",
+    "₃": r"{}_{3}",
+    "₄": r"{}_{4}",
+    "₅": r"{}_{5}",
+    "₆": r"{}_{6}",
+    "₇": r"{}_{7}",
+    "₈": r"{}_{8}",
+    "₉": r"{}_{9}",
+    "₊": r"{}_{+}",
+    "₋": r"{}_{-}",
+    "≤": r"\leq",
+    "≥": r"\geq",
+    "≠": r"\neq",
+    "≈": r"\approx",
+    "∈": r"\in",
+    "∞": r"\infty",
 }
 GREEK_CHAR_RE = re.compile("[" + "".join(GREEK_UNICODE_MAP) + "]")
-MATH_SPAN_RE = re.compile(
-    r"(\$\$.+?\$\$|\$[^$\n]+\$|\\\(.+?\\\)|\\\[.+?\\\])", re.S
-)
+MATH_SPAN_RE = re.compile(r"(\$\$.+?\$\$|\$[^$\n]+\$|\\\(.+?\\\)|\\\[.+?\\\])", re.S)
 MD_HEADING_LINE_RE = re.compile(r"^(\s{0,3}#{1,6})\s+(.*)$")
 VERBATIM_BLOCK_RE = re.compile(r"\\begin\{verbatim\}.*?\\end\{verbatim\}", re.DOTALL)
 DISPLAY_MATH_RE = re.compile(r"\\\[(.*?)\\\]", re.DOTALL)
@@ -105,23 +159,22 @@ def render_paper_deliverables(
     """将已校验终稿转换为 LaTeX，并由该源码编译、复核 PDF。"""
     root = Path(work_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    build_dir = root / ".remit" / "latex-build"
+    build_dir = root / ".remit" / "latex-build" / uuid4().hex
     build_dir.mkdir(parents=True, exist_ok=True)
     tex_path = root / "res.tex"
     pdf_path = root / "res.pdf"
     report_path = root / "paper_delivery_report.json"
-    pdf_path.unlink(missing_ok=True)
-    report_path.unlink(missing_ok=True)
-
-    _convert_markdown_to_latex(markdown, tex_path, root, build_dir, comp_template)
-    _validate_latex_source(tex_path)
-    engine = _compile_latex(tex_path, build_dir)
+    candidate_tex = build_dir / "res.tex"
+    check_cancelled()
+    _convert_markdown_to_latex(markdown, candidate_tex, root, build_dir, comp_template)
+    check_cancelled()
+    _validate_latex_source(candidate_tex)
+    engine = _compile_latex(candidate_tex, build_dir, resource_path=root)
     built_pdf = build_dir / "res.pdf"
     if not built_pdf.is_file():
         raise PaperRenderError("LaTeX 编译命令成功退出，但没有生成 res.pdf")
-    shutil.copy2(built_pdf, pdf_path)
     pdf_metrics = inspect_pdf_artifact(
-        pdf_path,
+        built_pdf,
         comp_template=comp_template,
         minimum_pages=settings.PAPER_MIN_PDF_PAGES,
     )
@@ -131,13 +184,42 @@ def render_paper_deliverables(
         "pdf": pdf_path.name,
         "compiler": engine,
         "compile_passes": 2,
-        "tex_sha256": _sha256(tex_path),
-        "pdf_sha256": _sha256(pdf_path),
+        "tex_sha256": _sha256(candidate_tex),
+        "pdf_sha256": _sha256(built_pdf),
         **pdf_metrics,
     }
-    report_path.write_text(
+    candidate_report = build_dir / report_path.name
+    candidate_report.write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    check_cancelled()
+    # Compile and inspect completely before replacing any previous deliverable.
+    # Keep rollback copies in this build if a final replacement fails (e.g. PDF locked).
+    replacements = [
+        (candidate_tex, tex_path),
+        (built_pdf, pdf_path),
+        (candidate_report, report_path),
+    ]
+    originals = {}
+    for _, target in replacements:
+        if target.exists():
+            backup = build_dir / (target.name + ".previous")
+            shutil.copy2(target, backup)
+            originals[target] = backup
+    published = []
+    try:
+        for candidate, target in replacements:
+            temporary = target.with_name(f".{target.name}.{build_dir.name}.tmp")
+            shutil.copy2(candidate, temporary)
+            temporary.replace(target)
+            published.append(target)
+    except OSError:
+        for target in reversed(published):
+            if target in originals:
+                shutil.copy2(originals[target], target)
+            else:
+                target.unlink(missing_ok=True)
+        raise
     _remove_legacy_paper_outputs(root)
     return PaperDeliverables(
         tex_path=tex_path,
@@ -153,12 +235,12 @@ def _convert_markdown_to_latex(
     resource_path: Path,
     build_dir: Path,
     comp_template: CompTemplate,
+    *,
+    mode: str = "full_paper",
 ) -> None:
     if comp_template == CompTemplate.CHINA:
-        _assemble_china_paper(markdown, output_path, resource_path)
+        _assemble_china_paper(markdown, output_path, resource_path, mode=mode)
         return
-
-    import pypandoc  # type: ignore[import-unresolved]
 
     markdown = _extract_inline_images(markdown)
     header_path = build_dir / "paper_header.tex"
@@ -166,7 +248,7 @@ def _convert_markdown_to_latex(
         build_pdf_header(resource_path, comp_template), encoding="utf-8"
     )
     try:
-        pypandoc.convert_text(
+        convert_text(
             markdown,
             to="latex",
             format="markdown+tex_math_dollars+tex_math_single_backslash+pipe_tables+raw_html",
@@ -178,6 +260,8 @@ def _convert_markdown_to_latex(
                 "--wrap=none",
             ],
         )
+    except WorkCancelled:
+        raise
     except Exception as exc:
         raise PaperRenderError(f"Pandoc 生成 LaTeX 失败: {exc}") from exc
 
@@ -230,7 +314,9 @@ def _split_china_paper(
     这里只拆分结构，不改动任何句子内容。索引先定位后一次性切片，
     避免边删边改导致的下标漂移。
     """
-    markdown = re.sub(r"(?m)^[ \t]*(?:\*\*)?摘[ \t]*要(?:\*\*)?[ \t]*$", "## 摘要", markdown)
+    markdown = re.sub(
+        r"(?m)^[ \t]*(?:\*\*)?摘[ \t]*要(?:\*\*)?[ \t]*$", "## 摘要", markdown
+    )
     lines = markdown.splitlines()
     headings = [
         (idx, line)
@@ -333,7 +419,13 @@ def _split_china_paper(
             )
         normalized.append(line)
 
-    return title, "\n".join(abstract_lines).strip(), keywords, refs, "\n".join(normalized)
+    return (
+        title,
+        "\n".join(abstract_lines).strip(),
+        keywords,
+        refs,
+        "\n".join(normalized),
+    )
 
 
 def _normalize_unicode_greek(markdown: str) -> str:
@@ -341,7 +433,12 @@ def _normalize_unicode_greek(markdown: str) -> str:
     parts = MATH_SPAN_RE.split(markdown)
     for index in range(0, len(parts), 2):
         parts[index] = GREEK_CHAR_RE.sub(
-            lambda match: "`\\(" + GREEK_UNICODE_MAP[match.group(0)] + "\\)`{=latex}", parts[index]
+            lambda match: "`\\(" + GREEK_UNICODE_MAP[match.group(0)] + "\\)`{=latex}",
+            parts[index],
+        )
+        # Enumeration symbols are often absent from the Latin body font.
+        parts[index] = re.sub(
+            "[①-⑳]", lambda m: f"({ord(m[0]) - ord('①') + 1})", parts[index]
         )
     return "".join(parts)
 
@@ -352,34 +449,114 @@ def _markdown_fragment_to_latex(markdown: str, resource_path: Path) -> str:
     pandoc 在 Windows 返回 CRLF，文本模式写文件会二次转换成 \\r\\r\\n，
     多余空行会让 longtable 列声明解析失败。
     """
-    import pypandoc  # type: ignore[import-unresolved]
-
     markdown = _normalize_unicode_greek(markdown)
     markdown = FOOTNOTE_REF_RE.sub(
         lambda match: f"`\\textsuperscript{{[{match.group(1)}]}}`{{=latex}}", markdown
     )
     try:
-        fragment = pypandoc.convert_text(
+        fragment = convert_text(
             markdown,
             to="latex",
             format="markdown-auto_identifiers+tex_math_dollars+tex_math_single_backslash+pipe_tables+raw_html",
             extra_args=[
                 f"--resource-path={resource_path}",
                 "--wrap=none",
-                # Also supported by Pandoc 3.6 bundled with pypandoc-binary 1.15.
-                "--no-highlight",
+                "--syntax-highlighting=none",
             ],
         )
+    except WorkCancelled:
+        raise
     except Exception as exc:
         raise PaperRenderError(f"Pandoc 生成 LaTeX 失败: {exc}") from exc
-    return _normalize_vector_math(fragment.replace("\r\n", "\n").replace("\r", "\n"))
+    fragment = _normalize_vector_math(
+        fragment.replace("\r\n", "\n").replace("\r", "\n")
+    )
+    return _normalize_inline_literals(fragment)
+
+
+def _normalize_inline_literals(fragment: str) -> str:
+    """Wrap inline identifiers at separators; keep full numeric values intact."""
+
+    def render(match: re.Match[str]) -> str:
+        if match[1] is None:
+            return match[0]  # Never rewrite a verbatim source listing.
+        value = match[1]
+        if re.fullmatch(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", value):
+            # Numeric quantities use math rather than the wider code font.
+            return (
+                r"\("
+                + re.sub(r"[eE]", lambda e: r"\mathrm{" + e[0] + "}", value)
+                + r"\)"
+            )
+        if re.fullmatch(r"[0-9a-fA-F]{12,}", value) and re.search(r"[a-fA-F]", value):
+            # Hash prefixes have no separators, but must remain copyable in full.
+            return (
+                r"\texttt{"
+                + r"\allowbreak{}".join(
+                    value[start : start + 4] for start in range(0, len(value), 4)
+                )
+                + "}"
+            )
+
+        def break_after(token: re.Match[str]) -> str:
+            # Consume TeX escapes as whole tokens: punctuation in command names
+            # or empty arguments must never become a break inside that command.
+            if token[0] in {
+                r"\_",
+                r"\{",
+                r"\}",
+                ".",
+                "/",
+                "=",
+                ",",
+                ";",
+                ":",
+                "(",
+                ")",
+                "[",
+                "]",
+            } and not value.startswith(r"\allowbreak{}", token.end()):
+                return token[0] + r"\allowbreak{}"
+            return token[0]
+
+        return (
+            r"\texttt{"
+            + re.sub(
+                r"\\[A-Za-z]+(?:\{\})?|\\.(?:\{\})?|[./=,;:()\[\]]",
+                break_after,
+                value,
+            )
+            + "}"
+        )
+
+    fragment = re.sub(
+        # Pandoc emits quotes as \textquotesingle{} and dictionary braces as
+        # \{ / \}. Match these atoms too, while leaving arbitrary nested TeX alone.
+        r"\\begin\{verbatim\}.*?\\end\{verbatim\}|"
+        r"\\texttt\{((?:\\(?:[A-Za-z]+\{\}|[^A-Za-z](?:\{\})?)|[^\\{}])*)\}",
+        render,
+        fragment,
+        flags=re.S,
+    )
+    # Permit a break between a math label (e.g. beta=) and its numeric value.
+    return re.sub(
+        r"\\begin\{verbatim\}.*?\\end\{verbatim\}|\\\)\\\(",
+        lambda m: m[0] if m[0].startswith(r"\begin") else r"\)\allowbreak{}\(",
+        fragment,
+        flags=re.S,
+    )
 
 
 def _normalize_vector_math(latex: str) -> str:
     """Use bold italic math for vector glyphs, without changing operators or text."""
-    return re.sub(r"\\\(.*?\\\)|\\\[.*?\\\]", lambda span: re.sub(
-        r"\\(?:mathbf|boldsymbol)\s*\{", lambda _: r"\bm{", span[0]
-    ), latex, flags=re.S)
+    return re.sub(
+        r"\\\(.*?\\\)|\\\[.*?\\\]",
+        lambda span: re.sub(
+            r"\\(?:mathbf|boldsymbol)\s*\{", lambda _: r"\bm{", span[0]
+        ),
+        latex,
+        flags=re.S,
+    )
 
 
 def _number_display_equations(latex: str) -> str:
@@ -409,7 +586,9 @@ def _number_display_equations(latex: str) -> str:
                     rows.append(content[start:end].strip())
                     start = following
                 rows.append(content[start:].strip())
-                content = "\\begin{gathered}\n" + " \\\\\n".join(rows) + "\n\\end{gathered}"
+                content = (
+                    "\\begin{gathered}\n" + " \\\\\n".join(rows) + "\n\\end{gathered}"
+                )
         return "\\begin{equation}" + content.strip() + "\\end{equation}"
 
     return DISPLAY_MATH_RE.sub(repl, latex)
@@ -446,6 +625,10 @@ def build_china_paper_preamble() -> str:
 \usepackage{etoolbox}
 \makeatletter
 \patchcmd\longtable{\par}{\if@noskipsec\mbox{}\fi\par}{}{}
+% longtable continuation boxes can be split by the current LaTeX output routine.
+% Stretch-only glue preserves bottom alignment without infinite shrink errors.
+\patchcmd\LT@output{\vss}{\vfil}{}{}
+\patchcmd\LT@output{\vss}{\vfil}{}{}
 \makeatother
 \IfFileExists{footnotehyper.sty}{\usepackage{footnotehyper}}{\usepackage{footnote}}
 \makesavenoteenv{longtable}
@@ -477,8 +660,8 @@ def build_china_paper_preamble() -> str:
 \def\fps@figure{htb}
 \makeatother
 \providecommand{\tightlist}{\setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
-\usepackage{fancyvrb}
-\RecustomVerbatimEnvironment{verbatim}{Verbatim}{fontsize=\small}
+\usepackage{fvextra}
+\RecustomVerbatimEnvironment{verbatim}{Verbatim}{fontsize=\small,breaklines=true,breakanywhere=true}
 \ctexset{
   section = {numbering=false, format=\centering\heiti\zihao{4}},
   subsection = {numbering=false, format=\heiti\zihao{-4}},
@@ -636,8 +819,11 @@ def _merge_symbol_section_tables(body_tex: str) -> str:
             header = re.split(r"\\endfirsthead|\\endhead", merged_body, maxsplit=1)[0]
             merged = (
                 "\\begin{table}[!htbp]\n\\centering\n\\caption{主要符号说明}\n"
-                + f"\\begin{{tabular}}{{{spec}}}\n" + header.strip() + "\n"
-                + data_rows + "\n\\bottomrule\n\\end{tabular}\n\\end{table}\n"
+                + f"\\begin{{tabular}}{{{spec}}}\n"
+                + header.strip()
+                + "\n"
+                + data_rows
+                + "\n\\bottomrule\n\\end{tabular}\n\\end{table}\n"
             )
 
     span_start, span_end = tables[0][0], tables[-1][1]
@@ -725,11 +911,7 @@ def _extract_inline_images(markdown: str) -> str:
     out: list[str] = []
     for line in markdown.splitlines():
         stripped = line.lstrip()
-        if (
-            "![" not in line
-            or stripped.startswith("|")
-            or stripped.startswith("#")
-        ):
+        if "![" not in line or stripped.startswith("|") or stripped.startswith("#"):
             out.append(line)
             continue
         pending: list[str] = []
@@ -752,11 +934,16 @@ def _extract_inline_images(markdown: str) -> str:
 def _center_longtables(body_tex: str) -> str:
     """pandoc 生成的 longtable 默认贴左，比赛惯例是三线表整体居中。"""
     body_tex = body_tex.replace("\\begin{longtable}[]", "\\begin{longtable}[c]")
-    body_tex = body_tex.replace(r"\raggedright\arraybackslash", r"\centering\arraybackslash")
+    body_tex = body_tex.replace(
+        r"\raggedright\arraybackslash", r"\centering\arraybackslash"
+    )
     body_tex = body_tex.replace(r"\raggedright", r"\centering")
     # Compact Pandoc column specs (l/r/c) need centering as well.
-    return re.sub(r"(\\begin\{longtable\}\[c\]\{)([@{}lrc ]+)(\})",
-                  lambda m: m[1] + re.sub("[lr]", "c", m[2]) + m[3], body_tex)
+    return re.sub(
+        r"(\\begin\{longtable\}\[c\]\{)([@{}lrc ]+)(\})",
+        lambda m: m[1] + re.sub("[lr]", "c", m[2]) + m[3],
+        body_tex,
+    )
 
 
 def _normalize_numeric_tables(body_tex: str) -> str:
@@ -775,33 +962,90 @@ def _normalize_numeric_tables(body_tex: str) -> str:
         if not 2 <= count <= 9 or not 1 <= len(rows) <= 24:
             continue
         cells = [cell.strip() for row in rows for cell in row.split("&")]
-        numeric = sum(bool(re.fullmatch(r"[-+\d.,eE%\\(){} ]+|是|否|—|-", cell)) for cell in cells)
-        compact_text_table = count <= 5 and "\\real{" not in spec and all(len(cell) <= 60 for cell in cells)
-        if numeric < len(cells) * .7 and not compact_text_table:
+        numeric = sum(
+            bool(re.fullmatch(r"[-+\d.,eE%\\(){} ]+|是|否|—|-", cell)) for cell in cells
+        )
+        compact_text_table = (
+            count <= 5
+            and "\\real{" not in spec
+            and all(len(cell) <= 60 for cell in cells)
+        )
+        if numeric < len(cells) * 0.7 and not compact_text_table:
             continue
-        header_match = re.search(r"\\toprule(?:\\noalign\{\})?\s*(.*?)\\midrule", body, re.S)
+        header_match = re.search(
+            r"\\toprule(?:\\noalign\{\})?\s*(.*?)\\midrule", body, re.S
+        )
         if not header_match:
             continue
-        header = MINIPAGE_CELL_RE.sub(lambda m: m.group(1).strip(), header_match.group(1)).strip()
+        header = MINIPAGE_CELL_RE.sub(
+            lambda m: m.group(1).strip(), header_match.group(1)
+        ).strip()
         header = re.sub(r"\\\\\s*$", "", header)
         headers = header.split("&")
         if len(headers) != count:
             continue
         formatted = [" ".join(cell.split()) for cell in headers]
-        title = re.search(r"(?:^|\n\n)(表\s*\d+(?:[-–.]\d+)?[　 \t]+[^\n]{1,120})\s*\n\n$", body_tex[:start])
+        title = re.search(
+            r"(?:^|\n\n)(表\s*\d+(?:[-–.]\d+)?[　 \t]+[^\n]{1,120})\s*\n\n$",
+            body_tex[:start],
+        )
         caption = ""
         if title and "。" not in title[1]:
             caption = "\\caption*{" + title[1].strip() + "}\n"
             start = title.start()
-        replacement = (
-            "\\begin{table}[!htbp]\n\\centering\n\\small\n"
-            + caption
-            + "\\begin{tabular*}{\\linewidth}{@{\\extracolsep{\\fill}}" + "c" * count + "@{}}\n\\toprule\n"
-            + " & ".join(formatted) + " \\\\\n\\midrule\n"
-            + data + "\n\\bottomrule\n\\end{tabular*}\n\\end{table}\n"
-        )
+        parsed_rows = [re.split(r"(?<!\\)&", row) for row in rows]
+        if any(len(row) != count for row in parsed_rows):
+            continue
+        # Natural-width columns do not shrink to tabular*'s requested width.
+        # Split wide numeric tables, repeating their row key, instead of scaling
+        # the font or rounding any scientific value. The PDF gate still checks
+        # actual geometry: this conservative estimate is not an acceptance test.
+        widths = []
+        for col in range(count):
+            values = [formatted[col], *(row[col].strip() for row in parsed_rows)]
+            widths.append(max(_table_text_width(value) for value in values) + 2)
+        groups = [list(range(count))]
+        if sum(widths) > 72:
+            groups = []
+            group = [0]
+            for col in range(1, count):
+                if len(group) > 1 and sum(widths[i] for i in group) + widths[col] > 72:
+                    groups.append(group)
+                    group = [0]
+                group.append(col)
+            groups.append(group)
+        tables = []
+        for group_index, group in enumerate(groups):
+            group_caption = caption
+            if len(groups) > 1:
+                group_caption += f"\\caption*{{列分组 {group_index + 1}/{len(groups)}（首列对应同一行）}}\n"
+            group_data = (
+                " \\\\\n".join(
+                    " & ".join(row[col].strip() for col in group) for row in parsed_rows
+                )
+                + r" \\"
+            )
+            tables.append(
+                "\\begin{table}[!htbp]\n\\centering\n\\small\n"
+                + group_caption
+                + "\\begin{tabular*}{\\linewidth}{@{\\extracolsep{\\fill}}"
+                + "c" * len(group)
+                + "@{}}\n\\toprule\n"
+                + " & ".join(formatted[col] for col in group)
+                + " \\\\\n\\midrule\n"
+                + group_data
+                + "\n\\bottomrule\n\\end{tabular*}\n\\end{table}\n"
+            )
+        replacement = "\n".join(tables)
         body_tex = body_tex[:start] + replacement + body_tex[end:]
     return body_tex
+
+
+def _table_text_width(value: str) -> int:
+    """Estimate a cell width in Latin characters, allowing two for CJK."""
+    visible = re.sub(r"\\[a-zA-Z]+\s*|[{}]", "", value)
+    visible = visible.replace(r"\_", "_")
+    return sum(2 if "\u4e00" <= char <= "\u9fff" else 1 for char in visible)
 
 
 def _china_section_number(title: str) -> int | None:
@@ -835,9 +1079,7 @@ def _normalize_figures(body_tex: str) -> str:
         if not text.startswith("\\begin{figure}"):
             title = text[text.index("{") + 1 : -1]
             number = _china_section_number(title)
-            if number is not None and (
-                text.startswith("\\section{") or section == 0
-            ):
+            if number is not None and (text.startswith("\\section{") or section == 0):
                 section = number
                 counter = 0
             continue
@@ -854,12 +1096,22 @@ def _normalize_figures(body_tex: str) -> str:
         if caption_match:
             close = _match_braces(block, caption_match.end() - 1)
             if close >= 0:
-                caption_text = " ".join(block[caption_match.end():close].split())
+                caption_text = " ".join(block[caption_match.end() : close].split())
         # Some writers put the real caption in a separate paragraph after an
         # image whose alt text is just its filename. Move that title into the
         # figure so it cannot be duplicated or stranded by float placement.
-        following = re.match(r"\s*\n(图\s*\d+(?:[-–.]\d+)?(?:[（(][a-zA-Z][）)])?[　 \t]+[^\n]{1,160})\n", body_tex[cursor:])
-        if not caption_text and following and "。" not in following[1] and not re.match(r"图\s*\d+(?:[-–.]\d+)?\s+(?:给出|显示|表明|可见|中)", following[1]):
+        following = re.match(
+            r"\s*\n(图\s*\d+(?:[-–.]\d+)?(?:[（(][a-zA-Z][）)])?[　 \t]+[^\n]{1,160})\n",
+            body_tex[cursor:],
+        )
+        if (
+            not caption_text
+            and following
+            and "。" not in following[1]
+            and not re.match(
+                r"图\s*\d+(?:[-–.]\d+)?\s+(?:给出|显示|表明|可见|中)", following[1]
+            )
+        ):
             caption_text = following[1].strip()
             cursor += following.end()
         manual = MANUAL_FIGNO_RE.match(caption_text)
@@ -888,14 +1140,40 @@ def _normalize_figures(body_tex: str) -> str:
 def _resolve_figure_callouts(body_tex: str) -> str:
     """Resolve file-based citations only after actual figure selection/numbering."""
     labels = {}
-    for block in FIGURE_ENV_RE.findall(body_tex):
+    graphics = {}
+    prose = FIGURE_ENV_RE.sub("", body_tex)
+
+    def reuse_figure(match: re.Match[str]) -> str:
+        block = match[0]
         graphic = FIGURE_GRAPHICS_RE.search(block)
-        caption = re.search(r"\\caption\*?\{(图\s*\d+(?:[-–.]\d+)?(?:[（(][a-zA-Z][）)])?)", block)
+        caption = re.search(
+            r"\\caption\*?\{(图\s*\d+(?:[-–.]\d+)?(?:[（(][a-zA-Z][）)])?)", block
+        )
         if graphic and caption:
             name = Path(graphic[1]).name
-            if name in labels and labels[name] != caption[1]:
-                raise PaperRenderError(f"图片重复插入，图号无法唯一确定：{name}")
+            if name in labels:
+                if graphics[name] != graphic[0]:
+                    raise PaperRenderError(f"图片重复插入，图号无法唯一确定：{name}")
+                if caption[1] != labels[name] and re.search(
+                    re.escape(caption[1]).replace(r"\ ", r"\s*") + r"(?![\d.−–-])",
+                    prose,
+                ):
+                    raise PaperRenderError(
+                        f"重复图片 {name} 还有手写图号引用，请改为 @fig:{name}@ 后重试"
+                    )
+                # The same asset may support multiple chapters. Render it once
+                # and retain the later caption's explanation beside a callout.
+                opening = block.index("{", caption.start())
+                closing = _match_braces(block, opening)
+                if closing < 0:
+                    raise PaperRenderError(f"图片题注不完整：{name}")
+                explanation = block[caption.end() : closing].strip()
+                return labels[name] + "（前文已列图）：" + explanation + "\n"
             labels[name] = caption[1]
+            graphics[name] = graphic[0]
+        return block
+
+    body_tex = FIGURE_ENV_RE.sub(reuse_figure, body_tex)
 
     def resolve(match):
         name = Path(match[1].replace(r"\_", "_")).name
@@ -903,11 +1181,11 @@ def _resolve_figure_callouts(body_tex: str) -> str:
             raise PaperRenderError(f"正文引用了未插入的图片：{name}")
         return labels[name]
 
-    return re.sub(r"@fig:([^@\n]+)@", resolve, body_tex)
+    return re.sub(r"(?:图\s*)?@fig:([^@\n]+)@", resolve, body_tex)
 
 
 def _assemble_china_paper(
-    markdown: str, output_path: Path, resource_path: Path
+    markdown: str, output_path: Path, resource_path: Path, *, mode: str = "full_paper"
 ) -> None:
     """中文赛事论文：摘要专用页 + 正文片段 + 参考文献，组装为完整 LaTeX。
 
@@ -917,6 +1195,8 @@ def _assemble_china_paper(
     """
     markdown = _convert_brace_footnotes(markdown)
     title, abstract_md, keywords, refs, body_md = _split_china_paper(markdown)
+    if mode == "short_report" and "短报告" not in title:
+        title = (title or "计算结果") + "（短报告）"
     body_md = _extract_inline_images(body_md)
     parts = [build_china_paper_preamble(), "\\begin{document}\n"]
     title_tex = _escape_latex_text(title) if title else "数学建模论文"
@@ -929,14 +1209,18 @@ def _assemble_china_paper(
         )
         # A center environment suppresses indentation of the following paragraph.
         # Explicit horizontal space is stable across ctex/platform font choices.
-        parts.append("\\noindent\\hspace*{2em}%\n" + _markdown_fragment_to_latex(abstract_md, resource_path).lstrip())
+        parts.append(
+            "\\noindent\\hspace*{2em}%\n"
+            + _markdown_fragment_to_latex(abstract_md, resource_path).lstrip()
+        )
         if keywords:
             parts.append(
                 "\\par\\vspace{1em}\n\\noindent{\\heiti\\bfseries 关键词："
                 + _escape_latex_text(_normalize_keywords(keywords))
                 + "}\n"
             )
-        parts.append("\\newpage\n")
+        if mode != "short_report":
+            parts.append("\\newpage\n")
     else:
         parts.append(
             "\\begin{center}{\\heiti\\zihao{3} " + title_tex + "}\\end{center}\n"
@@ -946,7 +1230,9 @@ def _assemble_china_paper(
     )
     body_tex = _merge_symbol_section_tables(body_tex)
     body_tex = _normalize_numeric_tables(body_tex)
-    body_tex = _resolve_figure_callouts(_normalize_figures(_center_longtables(body_tex)))
+    body_tex = _resolve_figure_callouts(
+        _normalize_figures(_center_longtables(body_tex))
+    )
     refs_tex = _build_references_latex(refs)
     if REFS_PLACEHOLDER in body_tex:
         body_tex = body_tex.replace(
@@ -976,7 +1262,9 @@ def _validate_latex_source(tex_path: Path) -> None:
         raise PaperRenderError("res.tex 仍包含未转换的 Markdown 块标记")
 
 
-def _compile_latex(tex_path: Path, build_dir: Path) -> str:
+def _compile_latex(
+    tex_path: Path, build_dir: Path, *, resource_path: Path | None = None
+) -> str:
     configured = settings.LATEX_ENGINE.strip() or "xelatex"
     engine = shutil.which(configured)
     if not engine:
@@ -991,7 +1279,7 @@ def _compile_latex(tex_path: Path, build_dir: Path) -> str:
         "-halt-on-error",
         "-file-line-error",
         f"-output-directory={build_dir}",
-        tex_path.name,
+        str(tex_path.resolve()) if resource_path is not None else tex_path.name,
     ]
     logs: list[str] = []
     for compile_pass in range(1, 3):
@@ -999,7 +1287,7 @@ def _compile_latex(tex_path: Path, build_dir: Path) -> str:
             completed = run_xelatex(
                 command,
                 pdf_path=build_dir / (tex_path.stem + ".pdf"),
-                cwd=tex_path.parent,
+                cwd=resource_path or tex_path.parent,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -1070,7 +1358,7 @@ def inspect_pdf_artifact(
             total_text_chars += len(page_text)
             if not page_text and not page.get_images() and not page.get_drawings():
                 blank_pages.append(index + 1)
-            for block in page.get_text("blocks"):
+            for block in page.get_text("blocks", clip=pymupdf.INFINITE_RECT()):
                 x0, y0, x1, y1 = block[:4]
                 if (
                     x0 < -2
@@ -1151,6 +1439,8 @@ def render_paper_docx(task_id: str) -> Path:
             output_path=work_dir / "res_polished.pdf",
             resource_path=work_dir,
         )
+    except WorkCancelled:
+        raise
     except Exception as exc:  # pragma: no cover - best effort export
         logger.warning("pdf export skipped: %s", exc)
     logger.info("paper docx generated: %s", docx_path)
@@ -1158,13 +1448,14 @@ def render_paper_docx(task_id: str) -> Path:
     return docx_path
 
 
-def polish_markdown(markdown: str, work_dir: Path) -> str:
+def polish_markdown(markdown: str, work_dir: Path, *, mode: str = "full_paper") -> str:
     """Apply paper-level Markdown cleanup."""
     markdown = markdown.replace("\r\n", "\n")
     markdown = normalize_common_math(markdown)
     markdown = compact_abstract(markdown)
     markdown = merge_image_blocks(markdown, work_dir)
-    markdown = append_source_code_appendix(markdown, work_dir)
+    if mode != "short_report":
+        markdown = append_source_code_appendix(markdown, work_dir)
     markdown = ensure_blank_lines_around_headings(markdown)
     markdown = enforce_em_dash_budget(markdown)
     return markdown.strip() + "\n"
@@ -1267,7 +1558,9 @@ def compact_abstract(markdown: str) -> str:
     for paragraph in paragraphs:
         if KEYWORD_RE.match(paragraph):
             keyword_lines.append(
-                "**关键词：" + KEYWORD_RE.sub("", paragraph).replace("**", "").strip() + "**"
+                "**关键词："
+                + KEYWORD_RE.sub("", paragraph).replace("**", "").strip()
+                + "**"
             )
             continue
         abstract_blocks.append(paragraph)
@@ -1556,9 +1849,7 @@ def convert_markdown_to_docx(
     resource_path: Path,
 ) -> None:
     """Convert Markdown to DOCX using pandoc."""
-    import pypandoc  # type: ignore[import-unresolved]
-
-    pypandoc.convert_text(
+    convert_text(
         markdown,
         to="docx",
         format="markdown+tex_math_dollars+tex_math_single_backslash+pipe_tables+raw_html",
@@ -1578,13 +1869,11 @@ def convert_markdown_to_pdf(
     resource_path: Path,
 ) -> None:
     """Convert Markdown to PDF as a best-effort deliverable."""
-    import pypandoc  # type: ignore[import-unresolved]
-
     header_path = resource_path / "paper_pdf_header.tex"
     header_path.write_text(build_pdf_header(resource_path), encoding="utf-8")
 
     try:
-        pypandoc.convert_text(
+        convert_text(
             markdown,
             to="pdf",
             format="markdown+tex_math_dollars+tex_math_single_backslash+pipe_tables+raw_html",
@@ -1598,12 +1887,14 @@ def convert_markdown_to_pdf(
             ],
         )
         return
+    except WorkCancelled:
+        raise
     except Exception as exc:
         logger.warning(
             "pandoc pdf export failed, falling back to HTML/WeasyPrint: %s", exc
         )
 
-    html = pypandoc.convert_text(
+    html = convert_text(
         markdown,
         to="html5",
         format="markdown+tex_math_dollars+tex_math_single_backslash+pipe_tables+raw_html",

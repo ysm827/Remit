@@ -3,9 +3,17 @@ from app.services.team_state import events, record
 
 def test_repeated_streaming_activity_does_not_grow_history(tmp_path):
     for i in range(100):
-        record(tmp_path, "coder", "activity", "代码手正在输出…", {"created_at": str(i), "category": "llm"})
+        record(
+            tmp_path,
+            "coder",
+            "activity",
+            "代码手正在输出…",
+            {"created_at": str(i), "category": "llm"},
+        )
     assert len(events(tmp_path)) == 1
-    record(tmp_path, "coder", "activity", "代码报错，正在自动修复", {"category": "repair"})
+    record(
+        tmp_path, "coder", "activity", "代码报错，正在自动修复", {"category": "repair"}
+    )
     record(tmp_path, "coder", "activity", "代码手正在输出…", {"category": "llm"})
     assert len(events(tmp_path)) == 3
 

@@ -3,22 +3,77 @@
 from pathlib import Path
 
 
-DATA_FILE_SUFFIXES = frozenset({
-    ".blocks", ".nets", ".pl", ".csv", ".tsv", ".tab", ".txt", ".dat",
-    ".xls", ".xlsx", ".xlsm", ".ods", ".json", ".jsonl", ".ndjson",
-    ".xml", ".yaml", ".yml", ".mat", ".npy", ".npz", ".parquet",
-    ".feather", ".h5", ".hdf5", ".hdf", ".nc", ".sqlite", ".db",
-    ".geojson", ".shp", ".shx", ".dbf", ".prj", ".gpkg", ".kml",
-    ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp",
-    ".wav", ".mp3", ".mp4", ".avi", ".zip", ".7z", ".rar", ".gz",
-    ".tar", ".pdf", ".docx", ".doc", ".rtf", ".md",
-})
+DATA_FILE_SUFFIXES = frozenset(
+    {
+        ".blocks",
+        ".nets",
+        ".pl",
+        ".csv",
+        ".tsv",
+        ".tab",
+        ".txt",
+        ".dat",
+        ".xls",
+        ".xlsx",
+        ".xlsm",
+        ".ods",
+        ".json",
+        ".jsonl",
+        ".ndjson",
+        ".xml",
+        ".yaml",
+        ".yml",
+        ".mat",
+        ".npy",
+        ".npz",
+        ".parquet",
+        ".feather",
+        ".h5",
+        ".hdf5",
+        ".hdf",
+        ".nc",
+        ".sqlite",
+        ".db",
+        ".geojson",
+        ".shp",
+        ".shx",
+        ".dbf",
+        ".prj",
+        ".gpkg",
+        ".kml",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".tif",
+        ".tiff",
+        ".bmp",
+        ".webp",
+        ".wav",
+        ".mp3",
+        ".mp4",
+        ".avi",
+        ".zip",
+        ".7z",
+        ".rar",
+        ".gz",
+        ".tar",
+        ".pdf",
+        ".docx",
+        ".doc",
+        ".rtf",
+        ".md",
+    }
+)
 FONT_FILE_SUFFIXES = frozenset({".otf", ".ttc", ".ttf"})
 
 
 def is_data_file(filename: str) -> bool:
     """Return whether a filename is a supported modeling dataset."""
-    if Path(filename).name.startswith(".") or Path(filename).name in {"workflow_state.json", "paper_delivery_report.json", "all.zip"}:
+    if Path(filename).name.startswith(".") or Path(filename).name in {
+        "workflow_state.json",
+        "paper_delivery_report.json",
+        "all.zip",
+    }:
         return False
     return Path(filename).suffix.lower() in DATA_FILE_SUFFIXES
 

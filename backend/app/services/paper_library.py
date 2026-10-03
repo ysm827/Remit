@@ -6,6 +6,11 @@ import json
 import re
 from pathlib import Path
 
+from app.config.setting import USER_CONFIG_PATH
+
+LOCAL_LIBRARY_PATH = (
+    USER_CONFIG_PATH.parent / "project" / "paper_library" / "library.json"
+)
 LIBRARY_ROOT = Path(__file__).resolve().parents[1] / "competition_skills" / "writing"
 
 
@@ -243,7 +248,7 @@ def export_library(source: Path, cards_dir: Path, destination: Path) -> dict:
 
 
 def context(competition_id: str, max_cards: int = 3, topic: str = "") -> str:
-    """Load bundled lessons; raw PDFs and local source paths are never required."""
+    """Load writing guidance and optional local cards without exposing source paths."""
     common = LIBRARY_ROOT / "SKILL.md"
     if not common.is_file():
         return ""
@@ -251,7 +256,11 @@ def context(competition_id: str, max_cards: int = 3, topic: str = "") -> str:
     selected = LIBRARY_ROOT / "contests" / f"{competition_id}.md"
     if selected.is_file():
         chunks.append(selected.read_text(encoding="utf-8"))
-    manifest = LIBRARY_ROOT / "library.json"
+    manifest = (
+        LOCAL_LIBRARY_PATH
+        if LOCAL_LIBRARY_PATH.is_file()
+        else LIBRARY_ROOT / "library.json"
+    )
     if manifest.is_file():
         library = json.loads(manifest.read_text(encoding="utf-8"))
         cards = [

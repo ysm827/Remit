@@ -13,6 +13,7 @@ from app.config.setting import settings
 from app.core.agents.coder_agent import CoderAgent
 from app.core.agents.coordinator_agent import CoordinatorAgent
 from app.core.agents.modeler_agent import ModelerAgent
+from app.core.prompts.modeler import get_modeler_prompt
 from app.core.agents.writer_agent import WriterAgent
 from app.core.deliverable_contract import (
     DeliverableValidationReport,
@@ -284,6 +285,13 @@ class RemitWorkFlow(WorkFlow):
         else:
             state = self.checkpoint.initialize(problem)
         state = self.checkpoint.upgrade_problem_analysis(state)
+        from uuid import uuid4
+
+        state["execution_id"] = uuid4().hex
+        self.checkpoint.save(state)
+        # The durable problem includes creation-only settings absent from the
+        # legacy background runner's arguments. Reuse it on start and resume.
+        problem = Problem.model_validate(state["problem"])
         await self._publish_progress(state)
 
         llm_factory = LLMFactory(self.task_id)
@@ -296,7 +304,10 @@ class RemitWorkFlow(WorkFlow):
                 llm_factory.get_all_llms()
             )
         model_council: ModelCouncil | None = None
-        if settings.MODEL_COUNCIL_ENABLED:
+        if (
+            settings.MODEL_COUNCIL_ENABLED
+            and problem.task_purpose != "numerical_verification"
+        ):
             scout_llm, critic_llm = llm_factory.get_model_council_llms()
             if (
                 settings.MODEL_COUNCIL_REQUIRE_DIVERSE_BACKENDS
@@ -334,6 +345,7 @@ class RemitWorkFlow(WorkFlow):
             modeler_llm,
             context_window=settings.MODELER_CONTEXT_WINDOW,
             cancel_event=self.cancel_event,
+            system_prompt=get_modeler_prompt(problem.task_purpose),
         )
 
         coordinator_response = await self._coordinator_node(
@@ -360,6 +372,17 @@ class RemitWorkFlow(WorkFlow):
             coordinator_agent,
         )
 
+        if problem.task_purpose == "numerical_verification":
+            from app.core.task_purpose import NUMERICAL_VERIFICATION_SCOPE
+
+            coordinator_response = coordinator_response.model_copy(
+                update={
+                    "task_purpose": problem.task_purpose,
+                    "user_requirements": coordinator_response.user_requirements
+                    + "\n"
+                    + NUMERICAL_VERIFICATION_SCOPE,
+                }
+            )
         modeler_response = await self._modeler_node(
             state,
             coordinator_response,
@@ -373,6 +396,7 @@ class RemitWorkFlow(WorkFlow):
         flows = Flows(
             self.questions,
             user_requirements=problem.user_requirements,
+            task_purpose=problem.task_purpose,
         )
         self._refresh_citation_brief(flows, state)
         config_template = get_config_template(
@@ -514,7 +538,9 @@ class RemitWorkFlow(WorkFlow):
             ledger = load_citation_ledger(self.work_dir)
         from app.core.project_audit import pilot_evidence_notice
 
-        flows.citation_brief = (build_citation_brief(ledger) + "\n" + pilot_evidence_notice(state)).strip()
+        flows.citation_brief = (
+            build_citation_brief(ledger) + "\n" + pilot_evidence_notice(state)
+        ).strip()
 
     async def _publish_progress(self, state: dict[str, Any]) -> None:
         """推送实时进度快照；失败只记日志，不阻断工作流。"""
@@ -753,18 +779,25 @@ class RemitWorkFlow(WorkFlow):
         )
         await self._check_cancelled()
         revision_feedback = self.checkpoint.consume_revision_feedback(state, "modeler")
-        if revision_feedback:
+        cumulative_feedback = self.checkpoint.cumulative_revision_feedback(
+            state, "modeler"
+        )
+        if cumulative_feedback:
             coordinator_response = coordinator_response.model_copy(
                 update={
                     "user_requirements": (
                         f"{coordinator_response.user_requirements}\n\n"
-                        "【人工审核退回意见，必须重做总体建模方案并逐条落实】\n"
-                        f"{revision_feedback}"
+                        "【本节点历次审核意见，按时间顺序逐条落实；"
+                        "只有较新意见明确改变的部分才替代旧要求】\n"
+                        + "\n\n".join(cumulative_feedback)
                     ).strip()
                 }
             )
         method_artifacts: list[str] = []
-        if settings.METHOD_RETRIEVAL_ENABLED:
+        if (
+            settings.METHOD_RETRIEVAL_ENABLED
+            and coordinator_response.task_purpose != "numerical_verification"
+        ):
             cached_methods = (
                 None if revision_feedback else state.get("method_recommendations")
             )
@@ -960,7 +993,7 @@ class RemitWorkFlow(WorkFlow):
             explain={
                 "what_happened": (
                     f"建模手为 {'、'.join(plan_keys) or '每个小问'} 各定了一套数学方法"
-                    + ("，评审组还提出了备选候选（见下方列表）" if candidates else "")
+                    + ("，可供参考的方法见下方列表" if candidates else "")
                 ),
                 "next_step": self._next_step_plain(state, "modeler"),
                 "revise_hint": (
@@ -1117,11 +1150,16 @@ class RemitWorkFlow(WorkFlow):
 
         await self._start_node(state, "research")
         await self._check_cancelled()
+        literature_enabled = (state.get("problem") or {}).get(
+            "literature_enabled", True
+        )
         revision_feedback = self.checkpoint.consume_revision_feedback(state, "research")
         await redis_manager.publish_message(
             self.task_id,
             SystemMessage(
                 content="开始数据侦察与文献调研：先摸清数据底细和领域方法，再定方案"
+                if literature_enabled
+                else "开始附件数据核验；本项目未启用建模前文献检索。"
             ),
         )
         await publish_activity(
@@ -1141,6 +1179,7 @@ class RemitWorkFlow(WorkFlow):
             work_dir=self.work_dir,
             extra_guidance=revision_feedback,
             openalex_email=settings.OPENALEX_EMAIL or "",
+            enabled=literature_enabled,
         )
         literature_brief = build_literature_brief(literature_review)
         method_cards = build_method_cards(literature_review)
@@ -1170,7 +1209,9 @@ class RemitWorkFlow(WorkFlow):
                 content=(
                     f"调研结果：画像 {profiled_files} 个数据文件，"
                     + (
-                        f"检索 {paper_count} 篇文献，精读 {full_read} 篇全文，"
+                        "未启用建模前文献检索，没有新增文献证据。"
+                        if not literature_enabled
+                        else f"检索 {paper_count} 篇文献，精读 {full_read} 篇全文，"
                         f"产出 {card_count} 张方法卡，已注入建模选型"
                         if card_count
                         else "文献调研未完成，原因已记录；不得显示为绿色完成"
@@ -1192,8 +1233,12 @@ class RemitWorkFlow(WorkFlow):
         )
 
     async def _run_pilot_questions(
-        self, state: dict[str, Any], coder_agent: CoderAgent,
-        modeler_response: ModelerToCoder, plan: PilotPlan, feedback: str = "",
+        self,
+        state: dict[str, Any],
+        coder_agent: CoderAgent,
+        modeler_response: ModelerToCoder,
+        plan: PilotPlan,
+        feedback: str = "",
     ) -> dict[str, Any]:
         """逐问交付与校验；重试、续跑仅重做尚未通过且输入未变化的部分。"""
         root = Path(self.work_dir)
@@ -1205,14 +1250,19 @@ class RemitWorkFlow(WorkFlow):
             filename = pilot_question_filename(key)
             path = root / filename
             scoped = PilotPlan(questions={key: question})
-            context = {"question": self.questions[key],
-                       "approved_strategy": modeler_response.questions_solution.get(key, ""),
-                       "protocol": scoped.model_dump(mode="json"), "feedback": feedback}
+            context = {
+                "question": self.questions[key],
+                "approved_strategy": modeler_response.questions_solution.get(key, ""),
+                "protocol": scoped.model_dump(mode="json"),
+                "feedback": feedback,
+            }
             signature = await asyncio.to_thread(pilot_input_fingerprint, root, context)
             cached = progress.get(key, {})
             reusable = (
-                cached.get("input_signature") == signature and path.is_file()
-                and cached.get("result_hash") == hashlib.sha256(path.read_bytes()).hexdigest()
+                cached.get("input_signature") == signature
+                and path.is_file()
+                and cached.get("result_hash")
+                == hashlib.sha256(path.read_bytes()).hexdigest()
             )
             result = None
             if reusable:
@@ -1222,12 +1272,15 @@ class RemitWorkFlow(WorkFlow):
                     pass
             if result is None:
                 task_context = (
-                    "【当前小问与已批准方案】\n" + json.dumps(context, ensure_ascii=False)
-                    + "\n" + table_context
+                    "【当前小问与已批准方案】\n"
+                    + json.dumps(context, ensure_ascii=False)
+                    + "\n"
+                    + table_context
                 )
                 prompt = build_pilot_coder_prompt(
                     scoped, filename=filename, task_context=task_context
                 )
+
                 def completion_check() -> bool:
                     try:
                         validate_pilot_results(root, scoped, filename=filename)
@@ -1237,20 +1290,33 @@ class RemitWorkFlow(WorkFlow):
 
                 for attempt in range(2):
                     await publish_activity(
-                        self.task_id, f"候选实验 {index}/{len(plan.questions)}：{key}，"
-                        + ("修复未通过的产物" if attempt else "先验证基线，再逐个比较候选"),
+                        self.task_id,
+                        f"候选实验 {index}/{len(plan.questions)}：{key}，"
+                        + (
+                            "修复未通过的产物"
+                            if attempt
+                            else "先验证基线，再逐个比较候选"
+                        ),
                         category="code",
                     )
-                    before = (path.stat().st_mtime_ns, path.stat().st_size) if path.is_file() else None
+                    before = (
+                        (path.stat().st_mtime_ns, path.stat().st_size)
+                        if path.is_file()
+                        else None
+                    )
                     await coder_agent.run(
-                        prompt=prompt, subtask_title=f"pilot:{key}",
+                        prompt=prompt,
+                        subtask_title=f"pilot:{key}",
                         max_code_executions=3 if attempt else 6,
                         required_files=(filename,),
                         completion_check=completion_check,
                     )
                     try:
                         # 未执行本轮交付的旧文件不能冒充新输入的实验。
-                        if not path.is_file() or (path.stat().st_mtime_ns, path.stat().st_size) == before:
+                        if (
+                            not path.is_file()
+                            or (path.stat().st_mtime_ns, path.stat().st_size) == before
+                        ):
                             raise PilotValidationError(f"{filename} 尚未生成或更新")
                         result = validate_pilot_results(root, scoped, filename=filename)
                         break
@@ -1259,22 +1325,35 @@ class RemitWorkFlow(WorkFlow):
                             raise
                         prompt = (
                             f"当前小问产物校验失败：{error}。仅修复此小问，复用已验证结果。\n"
-                            + build_pilot_coder_prompt(scoped, filename=filename, task_context=task_context)
+                            + build_pilot_coder_prompt(
+                                scoped, filename=filename, task_context=task_context
+                            )
                         )
-                if await asyncio.to_thread(pilot_input_fingerprint, root, context) != signature:
-                    raise PilotValidationError("实验期间输入发生变化，当前结果不能作为新输入的证据")
-                progress[key] = {"input_signature": signature,
-                                 "result_hash": hashlib.sha256(path.read_bytes()).hexdigest()}
+                if (
+                    await asyncio.to_thread(pilot_input_fingerprint, root, context)
+                    != signature
+                ):
+                    raise PilotValidationError(
+                        "实验期间输入发生变化，当前结果不能作为新输入的证据"
+                    )
+                progress[key] = {
+                    "input_signature": signature,
+                    "result_hash": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
                 self.checkpoint.save(state)
             combined["questions"].update(result["questions"])
             await publish_activity(
-                self.task_id, f"{key} 候选实验记录已校验并保存（{index}/{len(plan.questions)}）",
+                self.task_id,
+                f"{key} 候选实验记录已校验并保存（{index}/{len(plan.questions)}）",
                 category="gate",
             )
         # 仅汇总 Agent 已实际写入并通过结构校验的指标。
         target = root / PILOT_RESULTS_FILENAME
         temporary = target.with_suffix(".json.tmp")
-        temporary.write_text(json.dumps(combined, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
+        temporary.write_text(
+            json.dumps(combined, ensure_ascii=False, indent=2, allow_nan=False),
+            encoding="utf-8",
+        )
         temporary.replace(target)
         return validate_pilot_results(root, plan)
 
@@ -1301,7 +1380,7 @@ class RemitWorkFlow(WorkFlow):
         await self._check_cancelled()
         await redis_manager.publish_message(
             self.task_id,
-            SystemMessage(content="探索实验开始：候选方案先在小样本上真实 PK"),
+            SystemMessage(content="开始核对探索实验范围；适用时再执行小样本候选比较"),
         )
         revision_feedback = self.checkpoint.consume_revision_feedback(state, node_id)
         literature_brief = str(state.get("literature_brief", ""))
@@ -1315,18 +1394,32 @@ class RemitWorkFlow(WorkFlow):
             profile_summary = summarize_data_profile(state.get("data_profile") or {})
             await publish_activity(
                 self.task_id,
-                "建模手正在根据文献方法卡生成候选方案…",
+                "建模手正在核对任务约束与探索实验适用性…",
                 category="llm",
             )
             plan_signature = await asyncio.to_thread(
-                pilot_input_fingerprint, self.work_dir,
-                {"questions": self.questions, "solution": modeler_response.questions_solution,
-                 "literature": literature_brief,
-                 "cards": {key: [card.model_dump(mode="json") for card in cards]
-                           for key, cards in method_cards.items()}},
+                pilot_input_fingerprint,
+                self.work_dir,
+                {
+                    "questions": self.questions,
+                    "solution": modeler_response.questions_solution,
+                    "literature": literature_brief,
+                    "cards": {
+                        key: [card.model_dump(mode="json") for card in cards]
+                        for key, cards in method_cards.items()
+                    },
+                    "task_constraints": state.get("problem") or {},
+                },
             )
-            if (
-                state.get("pilot_plan") and not revision_feedback
+            if (state.get("problem") or {}).get(
+                "task_purpose"
+            ) == "numerical_verification":
+                plan = PilotPlan(
+                    not_applicable_reason="用户明确选择指定计算与数值核验；不进行候选选型，按已批准方法执行独立复算。"
+                )
+            elif (
+                state.get("pilot_plan")
+                and not revision_feedback
                 and state.get("pilot_plan_signature") in {None, plan_signature}
             ):
                 # 旧检查点可保留实验协议；没有输入签名的旧结果仍必须重新核验/执行。
@@ -1339,8 +1432,36 @@ class RemitWorkFlow(WorkFlow):
                     data_profile_summary=profile_summary,
                     backend_language=self.code_interpreter.language,
                     method_cards=method_cards,
+                    task_constraints=json.dumps(
+                        {
+                            "problem": state.get("problem") or {},
+                            "modeler_revision_feedback": (
+                                state.get("revision_feedback") or {}
+                            ).get("modeler", ""),
+                            "pilot_revision_feedback": revision_feedback or "",
+                        },
+                        ensure_ascii=False,
+                    ),
                 )
-            expected_keys = {key for key in self.questions if re.fullmatch(r"ques\d+", key)}
+            if plan.not_applicable_reason:
+                self.checkpoint.retire_pilot_outputs(state)
+                state["pilot_plan"] = plan.model_dump(mode="json")
+                state["pilot_plan_signature"] = plan_signature
+                state["pilot_skipped"] = "不适用：" + plan.not_applicable_reason
+                state.setdefault("node_outcomes", {})["pilot"] = {
+                    "status": "skipped",
+                    "issues": [state["pilot_skipped"]],
+                    "summary": "未运行候选比较；按已批准方案继续正式计算与验证",
+                }
+                await self._complete_node(state, node_id)
+                await redis_manager.publish_message(
+                    self.task_id,
+                    SystemMessage(content=state["pilot_skipped"], type="warning"),
+                )
+                return
+            expected_keys = {
+                key for key in self.questions if re.fullmatch(r"ques\d+", key)
+            }
             if not plan.questions or set(plan.questions) != expected_keys:
                 raise PilotValidationError("探索实验协议的小问范围与当前任务不一致")
             state["pilot_plan"] = plan.model_dump(mode="json")
@@ -1375,7 +1496,8 @@ class RemitWorkFlow(WorkFlow):
         except Exception as exc:
             if not isinstance(exc, PilotValidationError):
                 state.setdefault("node_outcomes", {})["pilot"] = {
-                    "status": "failed", "issues": [f"探索实验技术故障：{exc}"],
+                    "status": "failed",
+                    "issues": [f"探索实验技术故障：{exc}"],
                     "summary": "已保留探索进度，需修复技术故障后继续",
                 }
                 self.checkpoint.save(state)
@@ -1551,6 +1673,9 @@ class RemitWorkFlow(WorkFlow):
 
         code_files_before = snapshot_code_files(self.work_dir)
         coder_prompt = value["coder_prompt"]
+        from app.core.project_audit import pilot_evidence_notice
+
+        coder_prompt += "\n" + pilot_evidence_notice(state)
         question_text = str(value.get("question_text", key))
         model_plan = str(value.get("model_plan", ""))
         revision_feedback = self.checkpoint.consume_revision_feedback(state, node_id)
@@ -1559,6 +1684,15 @@ class RemitWorkFlow(WorkFlow):
                 f"{coder_prompt}\n\n【人工审核退回意见，必须重新运行并逐条落实】\n"
                 f"{revision_feedback}"
             )
+            backup = state.get("revision_artifact_backups", {}).get(key, {})
+            if backup.get("directory"):
+                coder_prompt += (
+                    "\n【返修旧文件归档】旧源码和结果位于任务内 "
+                    f"{backup['directory']}。可读取其中源码作局部修改，"
+                    "无需在项目外搜索。该目录中的旧报告、图表与数值已失效，"
+                    "不能直接恢复为本轮证据；修改后的脚本须保存到当前任务目录，"
+                    "重新运行相关步骤并生成当前报告。"
+                )
         contract = value.get("contract")
         recovered_gate_report = None
         repair_execution_limit: int | None = None
@@ -1640,7 +1774,6 @@ class RemitWorkFlow(WorkFlow):
         gate_report = None
         execution_review: ModelExecutionReview | None = None
         final_evidence: dict[str, Any] = {}
-        recovered_requires_fresh_review = False
         history_by_key = state.setdefault("model_revision_history", {})
         revision_history = history_by_key.setdefault(key, [])
         reviews_by_key = state.setdefault("model_execution_reviews", {})
@@ -1687,7 +1820,6 @@ class RemitWorkFlow(WorkFlow):
                 if previous_plan:
                     # 恢复的旧产物虽通过确定性门禁，但对应的建模手审核曾要求换模；
                     # 未落地的换模被回滚后，必须重新审核旧方案，不能静默自动接收。
-                    recovered_requires_fresh_review = True
                     model_plan = previous_plan
                     revision_history.pop()
                     if execution_reviews:
@@ -1949,48 +2081,22 @@ class RemitWorkFlow(WorkFlow):
                 if isinstance(item, dict) and str(item.get("failed_model", "")).strip()
             ]
             review_rejected_models = list(dict.fromkeys(rejected_models))
-            if (
-                gate_attempt == 1
-                and recovered_gate_report is not None
-                and not recovered_requires_fresh_review
-            ):
-                recovered_limitations = (
-                    quality_report_for_review.get("limitations", [])
-                    if isinstance(quality_report_for_review, dict)
-                    else []
-                )
-                execution_review = ModelExecutionReview(
-                    verdict="accept",
-                    summary=(
-                        f"{key} 从持久化检查点恢复的产物已通过确定性质量门禁。"
-                        "续跑仅恢复已验收证据，不在看到结果后新增验收约束或重复执行计算。"
-                    ),
-                    evidence=[
-                        f"{contract.quality_filename} status="
-                        f"{quality_report_for_review.get('status', 'pass')}",
-                        f"selected_model={current_model or 'reported_in_quality_file'}",
-                        "recovered_artifacts_passed_validate_question_deliverables",
-                    ],
-                    strengths=[
-                        "持久化产物已通过结构、泄漏、可行性和稳健性门禁。",
-                        "续跑保留冻结的验证口径和可复现结果。",
-                    ],
-                    weaknesses=[str(item) for item in recovered_limitations],
-                    writer_guidance=(
-                        "仅使用质量报告和落盘产物中可核对的数值，"
-                        "完整报告局限；不得采纳续跑时临时新增且未执行的后验分析。"
-                    ),
-                    revision_plan=None,
-                )
-            else:
-                execution_review = await modeler_agent.review_execution_result(
-                    question_key=key,
-                    question_text=question_text,
-                    current_plan=model_plan,
-                    evidence=final_evidence,
-                    rejected_models=review_rejected_models,
-                    remaining_runs=3 - gate_attempt,
-                )
+            # 恢复磁盘产物仅能省掉重复计算，不能凭结构检查捏造建模手 accept。
+            # 完整完成的节点由外层检查点跳过；走到这里的未完成节点仍须实际复核。
+            execution_review = await modeler_agent.review_execution_result(
+                question_key=key,
+                question_text=question_text,
+                current_plan=model_plan,
+                evidence=final_evidence,
+                rejected_models=review_rejected_models,
+                remaining_runs=3 - gate_attempt,
+                task_purpose=(state.get("problem") or {}).get(
+                    "task_purpose", "modeling"
+                ),
+                task_constraints=str(
+                    (state.get("problem") or {}).get("user_requirements", "")
+                ),
+            )
             execution_reviews.append(
                 {
                     "attempt": gate_attempt,
@@ -2309,6 +2415,7 @@ class RemitWorkFlow(WorkFlow):
             max_retries=settings.MAX_RETRIES,
             max_chat_turns=settings.MAX_CHAT_TURNS,
             max_code_executions=settings.MAX_CODE_EXECUTIONS_PER_RUN,
+            task_purpose=problem.task_purpose,
         )
 
     async def _write_chapters_parallel(
@@ -2580,6 +2687,9 @@ class RemitWorkFlow(WorkFlow):
                         user_requirements=str(
                             (state.get("problem") or {}).get("user_requirements", "")
                         ),
+                        task_purpose=(state.get("problem") or {}).get(
+                            "task_purpose", "modeling"
+                        ),
                     )
                     evidence = collect_model_quality_evidence(self.work_dir, contract)
                     grounding = collect_grounding_values(evidence)
@@ -2688,13 +2798,26 @@ class RemitWorkFlow(WorkFlow):
             comp_template = CompTemplate(
                 str((state.get("problem") or {}).get("comp_template", "CHINA"))
             )
-            delivery = render_paper_deliverables(
-                paper_markdown,
-                self.work_dir,
-                comp_template,
-            )
+            from app.services.async_io import run_cancellable
+            from app.services.call_ledger import scope as call_scope
+
+            with call_scope(
+                self.task_id, run_id=state.get("execution_id"), stage_id="finalize"
+            ):
+                delivery = await run_cancellable(
+                    render_paper_deliverables,
+                    paper_markdown,
+                    self.work_dir,
+                    comp_template,
+                )
         except (DeliverableValidationError, PaperRenderError, ValueError) as error:
             # 此时全部计算与写作已完成，损失最大，绝不作废任务。
+            # 以前的终稿批准只覆盖当时的有效产物；本次检查失败后不可复用。
+            for field in ("approved_nodes", "completed_nodes"):
+                state[field] = [
+                    node for node in state.get(field, []) if node != "finalize"
+                ]
+            self.checkpoint.save(state)
             await redis_manager.publish_message(
                 self.task_id,
                 SystemMessage(

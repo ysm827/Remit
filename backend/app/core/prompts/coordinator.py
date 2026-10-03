@@ -44,7 +44,9 @@ question_analyses 必须覆盖 ques1..quesN 全部小问，九个字段一个都
 """
 
 
-COORDINATOR_PROMPT = remit_voice("coordinator") + f"""
+COORDINATOR_PROMPT = (
+    remit_voice("coordinator")
+    + f"""
     先判断用户输入是否是一道数学建模题。
     如果是：先忠实转录原题，再逐题形成初步结构化理解：
     {FORMAT_QUESTIONS_PROMPT}
@@ -54,6 +56,7 @@ COORDINATOR_PROMPT = remit_voice("coordinator") + f"""
     必须写"待附件核验"，禁止编造。
     如果不是数学建模题：沿用同一个 JSON 外壳返回拒绝说明。
 """
+)
 
 
 REFINE_ANALYSIS_PROMPT = """

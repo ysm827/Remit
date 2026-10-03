@@ -53,6 +53,46 @@ async def test_prepare_retries_incomplete_plan_once_without_starting(
 
 
 @pytest.mark.anyio
+async def test_preflight_calls_have_run_stage_and_repair_purpose(draft, monkeypatch):
+    from app.services import call_ledger
+
+    contexts = []
+
+    async def chat(**kwargs):
+        contexts.append(call_ledger.context(draft.name, agent_name="TeamCoordinator"))
+        return SimpleNamespace(
+            content="bad json"
+            if len(contexts) == 1
+            else json.dumps(
+                {
+                    "kind": "plan",
+                    "title": "核验",
+                    "understanding": "读取已有数据",
+                    "steps": ["独立复算"],
+                    "questions": [],
+                }
+            )
+        )
+
+    monkeypatch.setattr(
+        project_router.LLMFactory,
+        "get_modeling_llms",
+        lambda self: (SimpleNamespace(chat=chat), None, None),
+    )
+    await project_router.prepare(draft, "准备当前核验")
+    assert len(contexts) == 2
+    assert contexts[0]["run_id"] == contexts[1]["run_id"]
+    assert len(contexts[0]["run_id"]) == 32
+    assert [c["stage_id"] for c in contexts] == ["preflight", "preflight"]
+    assert [c["logical_purpose"] for c in contexts] == [
+        "normal_work",
+        "structure_repair",
+    ]
+    assert call_ledger.active_task_id() is None
+    assert not (draft / "workflow_state.json").exists()
+
+
+@pytest.mark.anyio
 async def test_prepare_repeated_bad_json_preserves_old_plan_and_files(
     draft, monkeypatch
 ):
@@ -198,6 +238,8 @@ async def test_create_records_actual_user_text(draft, monkeypatch):
         paper_language="",
         competition_requirements="",
         files=[],
+        literature_enabled=True,
+        task_purpose="modeling",
     )
     assert result["status"] == "chat"
     assert dispatch.await_args.args[1].content == "你好"
@@ -529,3 +571,92 @@ async def test_final_result_revision_returns_to_computation(draft, monkeypatch):
         BackgroundTasks(),
     )
     assert submit.await_args.args[1].target_node_id == "solve:ques1"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "change",
+    [
+        "state",
+        "artifact",
+        "snapshot",
+        "snapshot_asset",
+        "legacy",
+        "running",
+        "sync_time",
+    ],
+)
+async def test_proposal_binds_actual_evidence_and_preserves_source(
+    draft, monkeypatch, change
+):
+    root = writing_router._root(draft.name)
+    original = (root / "main.tex").read_text(encoding="utf-8")
+    state = {
+        "status": "completed",
+        "solution_results": {
+            "ques1": {"artifacts": ["metrics.csv"], "response_content": "slope=2"}
+        },
+    }
+    (draft / "metrics.csv").write_text("slope\n2\n", encoding="utf-8")
+    ws.write_json(draft / "workflow_state.json", state)
+    inputs = ws.sync_results(draft, state)
+    llm = SimpleNamespace(
+        chat=AsyncMock(
+            return_value=SimpleNamespace(
+                content=json.dumps(
+                    {"summary": "澄清措辞", "replacement": original + "% clarify\n"}
+                )
+            )
+        )
+    )
+    monkeypatch.setattr(paper_proposals.LLMFactory, "get_writer_llm", lambda self: llm)
+    compile_mock = AsyncMock(return_value={"status": "completed"})
+    monkeypatch.setattr(writing_router, "compile_source", compile_mock)
+    result = await paper_proposals.propose(draft.name, "只澄清措辞，保持数值", None)
+    sent = json.loads(llm.chat.call_args.kwargs["history"][1]["content"])
+    assert (
+        sent["fixed_facts"]["solution_results"]["ques1"]["response_content"]
+        == "slope=2"
+    )
+    assert sent["evidence_version"]["input_revision"] == inputs["revision"]
+    proposal_path = root / ".proposals" / (result["proposal_id"] + ".json")
+    snapshot = root / ".inputs" / inputs["revision"]
+    if change == "state":
+        state["solution_results"]["ques1"]["response_content"] = "slope=3"
+        ws.write_json(draft / "workflow_state.json", state)
+    elif change == "artifact":
+        (draft / "metrics.csv").write_text("slope\n3\n", encoding="utf-8")
+    elif change == "snapshot":
+        ws.write_json(snapshot / "evidence.json", {"solution_results": {}})
+    elif change == "snapshot_asset":
+        (snapshot / "assets" / "metrics.csv").write_text("tampered", encoding="utf-8")
+    elif change == "legacy":
+        proposal = ws.read_json(proposal_path)
+        proposal.pop("evidence_version")
+        ws.write_json(proposal_path, proposal)
+    elif change == "running":
+        state["status"] = "running"
+        ws.write_json(draft / "workflow_state.json", state)
+    else:
+        inputs["synced_at"] = "different metadata only"
+        ws.write_json(root / "input.json", inputs)
+        state["node_timings"] = [{"elapsed": 12}]
+        ws.write_json(draft / "workflow_state.json", state)
+        await paper_proposals.decide(
+            draft.name, result["proposal_id"], paper_proposals.Decision(accept=True)
+        )
+        compile_mock.assert_awaited_once()
+        assert ws.read_json(proposal_path)["status"] == "accepted"
+        return
+    with pytest.raises(HTTPException) as error:
+        await paper_proposals.decide(
+            draft.name, result["proposal_id"], paper_proposals.Decision(accept=True)
+        )
+    assert error.value.status_code == 409
+    assert (root / "main.tex").read_text(encoding="utf-8") == original
+    assert ws.read_json(proposal_path)["status"] == "pending"
+    compile_mock.assert_not_awaited()
+    await paper_proposals.decide(
+        draft.name, result["proposal_id"], paper_proposals.Decision(accept=False)
+    )
+    assert ws.read_json(proposal_path)["status"] == "rejected"

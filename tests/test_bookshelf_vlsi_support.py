@@ -21,12 +21,12 @@ class BookshelfBackendTests(unittest.TestCase):
     def test_discovery_and_sandbox_upload_include_bookshelf_files(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             folder = Path(temp_directory)
-            for filename in ("n100.blocks", "n100.nets", "n100.pl", "attachment.pdf"):
+            for filename in ("n100.blocks", "n100.nets", "n100.pl", "reference.pdf", ".hidden.csv", "workflow_state.json", "all.zip"):
                 (folder / filename).touch()
 
             discovered = set(get_current_files(str(folder), "data"))
 
-        self.assertEqual(discovered, {"n100.blocks", "n100.nets", "n100.pl", "attachment.pdf"})
+        self.assertEqual(discovered, {"n100.blocks", "n100.nets", "n100.pl", "reference.pdf"})
         for filename in discovered:
             self.assertTrue(is_sandbox_upload_file(filename))
 

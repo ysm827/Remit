@@ -84,7 +84,10 @@ class NotebookSerializer:
                 + html_content
             )
         self.nb["cells"][-1]["outputs"].append(
-            nbf.new_output(output_type="display_data", data={"text/html": html_content})
+            nbf.new_output(
+                output_type="display_data",
+                data={"text/plain": output, "text/html": html_content},
+            )
         )
         self.write_to_notebook()
 

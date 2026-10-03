@@ -44,11 +44,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/package_win.ps1
 ```
 
 默认输出 `%LOCALAPPDATA%\Remit\build\output\RemitSetup.exe`。
+构建需要 uv。脚本使用 `backend/uv.lock` 在 `<BuildRoot>\dependency-env` 创建独立生产环境，
+不复制开发环境中的测试工具或额外安装包，也不修改 `backend/.venv`。
+锁文件与项目声明不一致或依赖检查失败会中止构建；不会在打包时自动更新锁文件。
+默认从开发环境定位基础 Python；未创建开发环境时，可用 `-BasePython` 指定基础 Python 安装目录。
+`backend/build-info.json` 记录锁文件 SHA-256 和依赖构建方式。
+
 包中包含 Python、Redis、生产前端和后端源码；不包含本机模型密钥和历史任务。
 安装后在界面填写模型配置。Python 计算无需另装 MATLAB。
 
 安装包不捆绑 MiKTeX/TeX Live；需要导出最终 LaTeX/PDF 论文时，请在目标电脑安装
 XeLaTeX，并确保 `xelatex` 可从 PATH 调用。没有编译器时应用会给出明确提示。
+中文论文模板使用 `ctex`、`fvextra` 等宏包；`fvextra` 负责代码长行换行，避免附录文字被裁切。
+本机已验证安装的该宏包。应用不会在编译时自动安装缺失的 TeX 宏包。
 本机构建与隔离目录验证不能替代所有 Windows 版本上的安装兼容性测试。
 
 安装目录内可运行随包自检（无模型调用）：

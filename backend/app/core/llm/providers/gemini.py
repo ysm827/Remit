@@ -98,6 +98,7 @@ class GeminiProvider(BaseProvider):
             finish_reason=str(candidates[0].get("finishReason") or "") or None,
             tool_calls=tool_calls,
             usage=Usage(
+                known=bool(usage_metadata),
                 prompt_tokens=int(usage_metadata.get("promptTokenCount", 0)),
                 completion_tokens=completion_tokens,
             ),

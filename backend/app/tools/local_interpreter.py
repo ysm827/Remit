@@ -2,11 +2,15 @@
 
 import asyncio
 import os
+import queue
+import sys
 import threading
+import time
 from collections.abc import Iterator
 from typing import Any
 
 import jupyter_client
+import psutil
 
 from app.schemas.response import OutputItem, ResultModel, StdErrModel, SystemMessage
 from app.config.setting import settings
@@ -18,6 +22,9 @@ from app.utils.log_util import logger
 
 # iopub 消息分类：文本类输出
 _TEXT_MARKS = {"stdout", "execute_result_text", "display_text"}
+# A 1,000-character head/tail window hid the middle of ordinary file listings
+# and short scripts, causing repeated reads. Bound the whole tool result once.
+_TOOL_TEXT_LIMIT = 8000
 # iopub 消息分类：图片类输出
 _IMAGE_MARKS = {
     "execute_result_png": "png",
@@ -25,16 +32,20 @@ _IMAGE_MARKS = {
     "display_png": "png",
     "display_jpeg": "jpeg",
 }
-_MIME_BY_MARK = {
-    "execute_result_text": "text/plain",
-    "execute_result_html": "text/html",
-    "execute_result_png": "image/png",
-    "execute_result_jpeg": "image/jpeg",
-    "display_text": "text/plain",
-    "display_html": "text/html",
-    "display_png": "image/png",
-    "display_jpeg": "image/jpeg",
-}
+
+
+class _KernelInterrupted(RuntimeError):
+    """The caller stopped this execution before a complete result was received."""
+
+
+async def _settle_owned_task(task: asyncio.Task) -> Any:
+    """取消后的清理仍须等自身线程结束，重复停止不能把线程遗留在后台。"""
+    while True:
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                raise
 
 
 def _kernel_env() -> dict[str, str]:
@@ -69,109 +80,111 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
         )
         self.km = None
         self.kc = None
-        self.interrupt_signal = False
         self._execution_abort = threading.Event()
         self._execution_lock = asyncio.Lock()
+        self._owned_children: set[psutil.Process] = set()
 
     # ---- 生命周期 ----
 
     async def initialize(self) -> None:
         logger.info("初始化本地内核")
-        await asyncio.to_thread(self._start_kernel)
-        await asyncio.to_thread(self._pre_execute_code)
+        self._execution_abort.clear()
+        worker = asyncio.create_task(asyncio.to_thread(self._initialize_kernel))
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            self.send_interrupt_signal()
+            try:
+                await _settle_owned_task(worker)
+            except Exception:
+                pass
+            await self.cleanup()
+            raise
+
+    def _initialize_kernel(self) -> None:
+        try:
+            self._start_kernel()
+            self._pre_execute_code()
+        except BaseException:
+            self._shutdown_kernel(True)
+            raise
 
     def _start_kernel(self) -> None:
-        self.km, self.kc = jupyter_client.manager.start_new_kernel(
-            kernel_name="python3", env=_kernel_env()
-        )
+        os.makedirs(self.work_dir, exist_ok=True)
+        self.km = jupyter_client.KernelManager(kernel_name="python3")
+        # 必须使用产品当前运行时，不能被开发机的全局 kernelspec 指向其他 Python。
+        self.km.kernel_spec.argv = [
+            sys.executable,
+            "-m",
+            "ipykernel_launcher",
+            "-f",
+            "{connection_file}",
+        ]
+        self.km.start_kernel(env=_kernel_env(), cwd=os.path.abspath(self.work_dir))
+        self.kc = self.km.blocking_client()
+        self.kc.start_channels()
+        self.kc.wait_for_ready(timeout=25)
 
     def _pre_execute_code(self) -> None:
         """切到任务目录并装载中文字体，保证图表渲染正常。"""
-        bundled_font = os.path.normpath(
-            os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "..",
-                "..",
-                "fonts",
-                "simhei.ttf",
-            )
-        )
         bootstrap = (
             "import os\n"
-            f"work_dir = r'{self.work_dir}'\n"
+            f"work_dir = {os.path.abspath(self.work_dir)!r}\n"
             "os.makedirs(work_dir, exist_ok=True)\n"
             "os.chdir(work_dir)\n"
-            "print('当前工作目录:', os.getcwd())\n"
-            # 清掉 matplotlib 字体缓存，避免旧缓存让 addfont 失效
-            "import matplotlib\n"
-            "import matplotlib.pyplot as plt\n"
-            "from matplotlib import font_manager\n"
-            "import glob as _glob, pathlib as _pl\n"
-            "_cache_dir = _pl.Path(matplotlib.get_cachedir())\n"
-            "for _cache_file in _glob.glob(str(_cache_dir / 'fontlist*.json')):\n"
-            "    _pl.Path(_cache_file).unlink(missing_ok=True)\n"
-            "font_manager.fontManager.__init__()\n"
-            "_loaded = False\n"
-            # 随仓库分发的中文字体兜底，不依赖系统字体安装状态
-            f"_bundled_font = r'{bundled_font}'\n"
-            "if os.path.isfile(_bundled_font):\n"
-            "    font_manager.fontManager.addfont(_bundled_font)\n"
-            "    _loaded = True\n"
-            "for _f in os.listdir(work_dir):\n"
-            "    if _f.lower().endswith(('.ttf', '.otf', '.ttc')):\n"
-            "        font_manager.fontManager.addfont(os.path.join(work_dir, _f))\n"
-            "        _loaded = True\n"
-            "if _loaded:\n"
-            "    print(f'中文字体已加载，可用字体数: {len(font_manager.fontManager.ttflist)}')\n"
-            "plt.rcParams['font.sans-serif'] = ['SimHei', 'Heiti SC', 'STHeiti', "
-            "'PingFang SC', 'Noto Sans CJK SC', 'Noto Sans SC', "
-            "'WenQuanYi Micro Hei', 'Microsoft YaHei', 'sans-serif']\n"
-            "plt.rcParams['axes.unicode_minus'] = False\n"
-            "plt.rcParams['font.family'] = 'sans-serif'\n"
-            "print('图中文字体解析为:', font_manager.findfont('SimHei'))\n"
-            # SimHei/YaHei 缺上标字符（³²等），savefig 前改写成 mathtext，避免豆腐块
-            "import matplotlib.figure as _mf\n"
-            "_SUPER = {'¹': '$^1$', '²': '$^2$', '³': '$^3$', '⁴': '$^4$', '⁻': '$^-$', 'µ': r'$\\mu$'}\n"
-            "_orig_savefig = _mf.Figure.savefig\n"
-            "def _savefig_cjk_safe(self, *args, **kwargs):\n"
-            "    for _t in self.findobj(match=matplotlib.text.Text):\n"
-            "        _s = _t.get_text()\n"
-            "        _n = ''.join(_SUPER.get(_c, _c) for _c in _s)\n"
-            "        if _n != _s and '$' not in _s:\n"
-            "            _t.set_text(_n)\n"
-            "    return _orig_savefig(self, *args, **kwargs)\n"
-            "_mf.Figure.savefig = _savefig_cjk_safe\n"
         )
         from app.tools.plot_fonts import bootstrap as font_bootstrap
 
-        self._run_raw(bootstrap + "\n" + font_bootstrap(self.work_dir))
+        output = self._run_raw(
+            bootstrap + "\n" + font_bootstrap(os.path.abspath(self.work_dir)),
+            timeout=30,
+        )
+        if any(kind == "error" for kind, _ in output):
+            raise RuntimeError(
+                "Python 绘图环境初始化失败，请运行本地自检确认字体与依赖。"
+            )
 
     async def cleanup(self) -> None:
-        if self.kc is None or self.km is None:
-            return
-        await asyncio.to_thread(self._shutdown_kernel, False)
+        self._execution_abort.set()
+        worker = asyncio.create_task(asyncio.to_thread(self._shutdown_kernel, True))
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            await _settle_owned_task(worker)
+            raise
         logger.info("关闭内核")
 
     def _shutdown_kernel(self, now: bool) -> None:
-        if self.kc is not None:
-            try:
-                self.kc.stop_channels()
-            except Exception:
-                pass
         if self.km is not None:
-            self.km.shutdown_kernel(now=now)
-
-    def restart_jupyter_kernel(self) -> None:
-        """关掉旧内核、起新内核并重跑引导代码。"""
-        self._shutdown_kernel(True)
-        self._start_kernel()
-        self.interrupt_signal = False
-        self._execution_abort.clear()
-        os.makedirs(self.work_dir, exist_ok=True)
-        self._pre_execute_code()
+            pid = getattr(self.km.provisioner, "pid", None)
+            if pid:
+                try:
+                    self._owned_children.update(
+                        psutil.Process(pid).children(recursive=True)
+                    )
+                except psutil.NoSuchProcess:
+                    pass
+        # 保存进程对象（含创建时间），只回收此内核的后代，不按名称查杀。
+        try:
+            if self.km is not None:
+                self.km.shutdown_kernel(now=now)
+        finally:
+            try:
+                for child in self._owned_children:
+                    try:
+                        child.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+                _, alive = psutil.wait_procs(list(self._owned_children), timeout=3)
+                self._owned_children = set(alive)
+            finally:
+                if self.kc is not None:
+                    self.kc.stop_channels()
+        if self._owned_children:
+            raise RuntimeError("Python 子进程尚未停止，不能将任务标记为已停止。")
+        self.km = self.kc = None
 
     def send_interrupt_signal(self) -> None:
-        self.interrupt_signal = True
         self._execution_abort.set()
         if self.km is not None:
             try:
@@ -182,8 +195,17 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
     # ---- 代码执行 ----
 
     async def execute_code(self, code: str) -> tuple[str, bool, str]:
-        async with self._execution_lock:
+        from app.services.work_timing import ameasure
+
+        acquired = False
+        try:
+            async with ameasure(self.task_id, "queue"):
+                await self._execution_lock.acquire()
+                acquired = True
             return await self._execute_code_locked(code)
+        finally:
+            if acquired:
+                self._execution_lock.release()
 
     async def _execute_code_locked(self, code: str) -> tuple[str, bool, str]:
         logger.info(f"执行代码: {code}")
@@ -220,6 +242,13 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
             return error, True, error
         except asyncio.CancelledError:
             self.send_interrupt_signal()
+            try:
+                await self.cleanup()
+            finally:
+                try:
+                    await _settle_owned_task(worker)
+                except Exception:
+                    pass
             raise
 
         await redis_manager.publish_message(
@@ -233,7 +262,7 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
 
         for mark, payload in marks:
             if mark in _TEXT_MARKS:
-                text_parts.append(self._truncate_text(f"[{mark}]\n{payload}"))
+                text_parts.append(f"[{mark}]\n{payload}")
                 display.append(
                     ResultModel(res_type="result", format="text", msg=payload)
                 )
@@ -251,7 +280,7 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
                 self.notebook_serializer.add_code_cell_error_to_notebook(payload)
                 display.append(StdErrModel(msg=payload))
 
-        combined = "\n".join(text_parts)
+        combined = self._truncate_text("\n".join(text_parts), _TOOL_TEXT_LIMIT)
         if self.current_section and combined:
             self.add_content(self.current_section, combined)
 
@@ -276,37 +305,53 @@ class LocalCodeInterpreter(BaseCodeInterpreter):
         grace = max(float(settings.CODE_EXECUTION_CANCEL_GRACE_SECONDS), 0.01)
         try:
             await asyncio.wait_for(asyncio.shield(worker), timeout=grace)
+        except _KernelInterrupted:
+            pass
         except Exception as exc:
             logger.warning(f"Python 内核未在宽限期内停止，将强制重启: {exc}")
-        await asyncio.to_thread(self.restart_jupyter_kernel)
+        finally:
+            try:
+                await self.cleanup()
+            finally:
+                # 旧消息线程终止后才清除中断标记并创建新内核。
+                try:
+                    await _settle_owned_task(worker)
+                except Exception:
+                    pass
+        await self.initialize()
 
-    def _run_raw(self, code: str) -> list[tuple[str, str]]:
+    def _run_raw(
+        self, code: str, *, timeout: float | None = None
+    ) -> list[tuple[str, str]]:
         """把代码发给内核，收割 iopub 消息并归类为 ``(标记, 内容)``。"""
         if self.kc is None or self.km is None:
             raise RuntimeError("Jupyter kernel client is not initialized")
         kc, km = self.kc, self.km
-        kc.execute(code)
+        if self._execution_abort.is_set():
+            raise _KernelInterrupted("Python 执行已停止，部分输出不能视为完成。")
+        request_id = kc.execute(code, allow_stdin=False)
         collected: list[tuple[str, str]] = []
-        for msg in self._harvest_iopub(kc, km):
+        for msg in self._harvest_iopub(kc, km, request_id, timeout=timeout):
             collected.extend(self._classify(msg))
         return collected
 
-    def _harvest_iopub(self, kc: Any, km: Any) -> Iterator[dict]:
+    def _harvest_iopub(
+        self, kc: Any, km: Any, request_id: str, *, timeout: float | None = None
+    ) -> Iterator[dict]:
         """阻塞读取 iopub 直到内核回到 idle；收到中断信号时打断内核。"""
+        deadline = time.monotonic() + timeout if timeout is not None else None
         while True:
             if self._execution_abort.is_set():
-                return
-            if self.interrupt_signal:
-                km.interrupt_kernel()
-                self.interrupt_signal = False
+                raise _KernelInterrupted("Python 执行已停止，部分输出不能视为完成。")
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("Python 内核初始化执行超时")
             try:
                 msg = kc.get_iopub_msg(timeout=1)
-            except Exception:
-                if self._execution_abort.is_set():
-                    return
-                if self.interrupt_signal:
-                    km.interrupt_kernel()
-                    self.interrupt_signal = False
+            except queue.Empty:
+                if not km.is_alive():
+                    raise RuntimeError("Python 内核已退出，当前执行没有完整结果。")
+                continue
+            if msg.get("parent_header", {}).get("msg_id") != request_id:
                 continue
             yield msg
             if (

@@ -210,9 +210,13 @@ def _build_run_summary(
     metrics: list[ExecutionMetric],
     artifact_count: int,
     revision_count: int,
+    verdict: str,
 ) -> str:
     subject = selected_model or "当前建模方案"
-    prefix = f"{subject} 已完成真实运行与独立质量校验"
+    if verdict == "accept":
+        prefix = f"{subject} 已完成运行，通过自动检查和建模手复核"
+    else:
+        prefix = f"{subject} 已保存运行结果，仍需核验"
     if revision_count:
         prefix += f"，在建模手反馈后重跑 {revision_count} 轮"
     if metrics:
@@ -254,6 +258,7 @@ def build_execution_summary_message(
         metrics=metrics,
         artifact_count=len(artifact_list),
         revision_count=revision_count,
+        verdict=review.verdict,
     )
     status = "passed"
     if review.verdict == "manual_review":

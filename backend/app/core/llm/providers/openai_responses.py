@@ -72,7 +72,17 @@ class OpenAIResponsesProvider(BaseProvider):
                     raise
             return self._normalize(response)
         except APIError as exc:
-            if getattr(exc, "status_code", None) in {408, 429, 500, 502, 503, 504, 520, 522, 524}:
+            if getattr(exc, "status_code", None) in {
+                408,
+                429,
+                500,
+                502,
+                503,
+                504,
+                520,
+                522,
+                524,
+            }:
                 raise
             body = exc.body
             if isinstance(body, dict):
@@ -127,10 +137,16 @@ class OpenAIResponsesProvider(BaseProvider):
                 error = getattr(event, "error", None)
                 if isinstance(data, dict):
                     error = data.get("error", data)
-                code = (error.get("code") if isinstance(error, dict)
-                        else getattr(error, "code", None)) or getattr(event, "code", None)
-                message = (error.get("message") if isinstance(error, dict)
-                           else getattr(error, "message", None)) or getattr(event, "message", None)
+                code = (
+                    error.get("code")
+                    if isinstance(error, dict)
+                    else getattr(error, "code", None)
+                ) or getattr(event, "code", None)
+                message = (
+                    error.get("message")
+                    if isinstance(error, dict)
+                    else getattr(error, "message", None)
+                ) or getattr(event, "message", None)
                 if kind == "error" or (not kind and code):
                     try:
                         OpenAIResponsesProvider._raise_response_error(code, message)
@@ -139,7 +155,11 @@ class OpenAIResponsesProvider(BaseProvider):
                             raise _UntypedStreamError(str(exc)) from exc
                         raise
                 last_event = kind or "unknown"
-                if kind in {"response.completed", "response.incomplete", "response.failed"}:
+                if kind in {
+                    "response.completed",
+                    "response.incomplete",
+                    "response.failed",
+                }:
                     terminal = event.response
                     # The terminal event contains the authoritative full output,
                     # including tool calls. Partial argument deltas are never run.
@@ -159,17 +179,32 @@ class OpenAIResponsesProvider(BaseProvider):
     @staticmethod
     def _raise_response_error(code: str | None, message: str | None = None) -> None:
         code = str(code or "unknown_error")
-        safe_code = code if re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", code) else "unknown_error"
+        safe_code = (
+            code if re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", code) else "unknown_error"
+        )
         # Only surface the parameter name, never arbitrary upstream messages
         # which may contain credentials, request text or internal endpoints.
-        missing = re.search(r"Missing required parameter:\s*['\"]([A-Za-z0-9_.-]{1,64})['\"]", str(message or ""))
+        missing = re.search(
+            r"Missing required parameter:\s*['\"]([A-Za-z0-9_.-]{1,64})['\"]",
+            str(message or ""),
+        )
         if missing:
             raise NonRetryableLLMError(
                 f"模型接入服务缺少必需参数 {missing.group(1)}（{safe_code}）。"
                 "请检查该接入点的参数或联系服务提供方；重复运行无法修复这个配置错误。已有文件和进度已保留。"
             )
-        if code.lower() in {"server_error", "rate_limit_exceeded", "overloaded", "timeout", "internalerror", "serviceunavailable", "throttling"}:
-            raise TransientLLMError(f"模型服务暂时无法完成响应（{safe_code}），请稍后重试。")
+        if code.lower() in {
+            "server_error",
+            "rate_limit_exceeded",
+            "overloaded",
+            "timeout",
+            "internalerror",
+            "serviceunavailable",
+            "throttling",
+        }:
+            raise TransientLLMError(
+                f"模型服务暂时无法完成响应（{safe_code}），请稍后重试。"
+            )
         raise NonRetryableLLMError(
             f"模型服务返回失败（{safe_code}），请检查模型配置或请求内容。"
         )
@@ -177,10 +212,16 @@ class OpenAIResponsesProvider(BaseProvider):
     @staticmethod
     def _normalize(response: Any) -> StandardResponse:
         error = getattr(response, "error", None)
-        code = (error.get("code") if isinstance(error, dict)
-                else getattr(error, "code", None)) or getattr(response, "code", None)
-        message = (error.get("message") if isinstance(error, dict)
-                   else getattr(error, "message", None)) or getattr(response, "message", None)
+        code = (
+            error.get("code")
+            if isinstance(error, dict)
+            else getattr(error, "code", None)
+        ) or getattr(response, "code", None)
+        message = (
+            error.get("message")
+            if isinstance(error, dict)
+            else getattr(error, "message", None)
+        ) or getattr(response, "message", None)
         if getattr(response, "status", None) == "failed" or code:
             OpenAIResponsesProvider._raise_response_error(code, message)
         texts: list[str] = []
@@ -201,6 +242,7 @@ class OpenAIResponsesProvider(BaseProvider):
             finish_reason=incomplete_reason or getattr(response, "status", None),
             tool_calls=calls,
             usage=Usage(
+                known=response.usage is not None,
                 prompt_tokens=response.usage.input_tokens if response.usage else 0,
                 completion_tokens=response.usage.output_tokens if response.usage else 0,
             ),
@@ -278,9 +320,7 @@ class OpenAIResponsesProvider(BaseProvider):
     @staticmethod
     def _convert_tool_choice(tool_choice: str) -> str | dict:
         match tool_choice:
-            case "auto" | "none":
+            case "auto" | "none" | "required":
                 return tool_choice
-            case "required":
-                return {"type": "function"}
             case _:
                 return tool_choice

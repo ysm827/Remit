@@ -15,6 +15,7 @@ from app.core.llm.llm_factory import LLMFactory
 from app.core.prompts.persona import remit_voice
 from app.routers.files_router import _resolve_task_directory
 from app.services import team_state as team
+from app.services.call_ledger import scope as call_scope
 from app.services.task_intake import parse_upload_paths, persist_uploads
 from app.services.writing_workspace import now, write_json
 from app.utils.common_utils import create_task_id, create_work_dir
@@ -90,7 +91,8 @@ async def prepare(root: Path, request: str) -> dict:
         {
             "role": "system",
             "content": (
-                remit_voice() + "先判断最新消息的意图，普通聊天、问候、功能咨询、概念解释、讨论想法只需自然回答，"
+                remit_voice()
+                + "先判断最新消息的意图，普通聊天、问候、功能咨询、概念解释、讨论想法只需自然回答，"
                 "输出 JSON: kind='chat',reply(回答)。不要因为身处建模软件或存在赛题就主动派活。"
                 "只有用户提供具体建模任务要求处理、明确请求准备计划，或补充当前计划所缺信息时，才预读并制定计划。"
                 "这种情况输出 JSON: kind='plan',title(简短项目名),understanding(题意、数据检查结论),steps(执行步骤字符串数组),"
@@ -131,17 +133,24 @@ async def prepare(root: Path, request: str) -> dict:
         },
     ]
 
+    call_run_id = uuid4().hex
     for attempt in range(2):
-        response = await asyncio.wait_for(
-            llm.chat(
-                history=history,
-                agent_name="TeamCoordinator",
-                publish=False,
-                max_retries=1,
-                max_tokens=8000 if attempt == 0 else 12000,
-            ),
-            120,
-        )
+        with call_scope(
+            root.name,
+            run_id=call_run_id,
+            stage_id="preflight",
+            purpose="structure_repair" if attempt else "normal_work",
+        ):
+            response = await asyncio.wait_for(
+                llm.chat(
+                    history=history,
+                    agent_name="TeamCoordinator",
+                    publish=False,
+                    max_retries=1,
+                    max_tokens=8000 if attempt == 0 else 12000,
+                ),
+                120,
+            )
         try:
             if getattr(response, "finish_reason", None) in {
                 "length",
@@ -242,6 +251,8 @@ async def create_project(
     competition_requirements: str = Form("", max_length=12000),
     files: list[UploadFile] = File(default=[]),
     relative_paths: str | None = Form(None),
+    literature_enabled: bool = Form(True),
+    task_purpose: Literal["modeling", "numerical_verification"] = Form("modeling"),
 ) -> dict:
     from app.routers import team_router
     from app.services.competitions import select
@@ -278,6 +289,8 @@ async def create_project(
                 "ques_all": ques_all,
                 "user_requirements": user_requirements,
                 "execution_backend": execution_backend,
+                "literature_enabled": literature_enabled,
+                "task_purpose": task_purpose,
                 "comp_template": comp_template,
                 "format_output": "LaTeX",
             },

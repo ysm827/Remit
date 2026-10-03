@@ -15,4 +15,5 @@ export type ModelConfig = Readonly<{
 	baseUrl: string;
 	apiType: string;
 	contextWindow?: number;
+    maxTokens?: number;
 }>;

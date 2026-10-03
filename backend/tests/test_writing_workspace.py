@@ -209,8 +209,7 @@ def test_writer_failure_does_not_modify_modeling_checkpoint(writing_client):
     assert not redis_manager.archive.exists("paper-test")
 
 
-@pytest.mark.parametrize("edit_during_generation", [False, True])
-def test_writer_resume_reuses_validated_sections(writing_client, edit_during_generation):
+def test_writer_resume_reuses_validated_sections(writing_client):
     from app.schemas.A2A import WriterResponse
 
     client, task_root = writing_client
@@ -232,13 +231,10 @@ def test_writer_resume_reuses_validated_sections(writing_client, edit_during_gen
         ]
     )
 
-    def convert(markdown, path, *_args):
+    def convert(markdown, path, *_args, **_kwargs):
         path.write_text(markdown, encoding="utf-8")
-        if edit_during_generation:
-            (root / "main.tex").write_text("new manual edits", encoding="utf-8")
 
     with (
-        patch.object(writing_router, "compile_source", AsyncMock(return_value={"status": "completed"})) as compiler,
         patch(
             "app.models.user_output.UserOutput._section_order",
             return_value=["eda", "ques1"],
@@ -250,9 +246,20 @@ def test_writer_resume_reuses_validated_sections(writing_client, edit_during_gen
         patch("app.core.deliverable_contract.validate_writer_section"),
         patch("app.core.flows.Flows.get_write_flows", return_value={}),
         patch(
-            "app.utils.paper_polish.polish_markdown", side_effect=lambda text, *_: text
+            "app.utils.paper_polish.polish_markdown",
+            side_effect=lambda text, *_, **__: text,
         ),
         patch("app.utils.paper_polish._convert_markdown_to_latex", side_effect=convert),
+        # 本例转换器有意输出纯文本，仅检查章节复用。真实编译在编译测试中验证。
+        patch(
+            "app.routers.writing_router.compile_source",
+            new=AsyncMock(
+                return_value={
+                    "status": "completed",
+                    "layout_review": {"blocking_issues": []},
+                }
+            ),
+        ),
         patch(
             "app.services.competitions.adapt_generated_source",
             side_effect=lambda _, text: text,
@@ -261,80 +268,102 @@ def test_writer_resume_reuses_validated_sections(writing_client, edit_during_gen
         asyncio.run(writing_router._generate("paper-test", root, inputs["revision"]))
         first = workspace.read_json(root / "workspace.json")["generation"]
         assert first["status"] == "failed"
-        assert first["partial"] is True
-        assert first["completed_sections"] == ["eda"]
-        assert (root / first["file"]).is_file()
         asyncio.run(writing_router._generate("paper-test", root, inputs["revision"]))
     second = workspace.read_json(root / "workspace.json")["generation"]
     assert second["status"] == "completed"
     assert second["generation_id"] == first["generation_id"]
     assert writer.await_count == 3
-    if edit_during_generation:
-        assert workspace.read_json(root / "workspace.json")["main"] == "main.tex"
-        assert (root / "main.tex").read_text(encoding="utf-8") == "new manual edits"
-        compiler.assert_not_awaited()
-    else:
-        assert workspace.read_json(root / "workspace.json")["main"] == second["file"]
-        assert compiler.await_count == 3  # first chapter, resumed second chapter, final
     assert "保存过的真实章节" in (root / second["file"]).read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize("repair_succeeds", [True, False])
-def test_writer_repairs_rejected_section_once_without_publishing_invalid_prose(writing_client, repair_succeeds):
+@pytest.mark.parametrize("invalid_core", [False, True])
+def test_cached_paper_compiles_once_but_revalidates_core(writing_client, invalid_core):
+    from app.core.deliverable_contract import DeliverableValidationError
     from app.schemas.A2A import WriterResponse
 
     client, task_root = writing_client
     client.get("/api/writing/paper-test")
     root = workspace.paper_root(task_root)
     state = WorkflowCheckpoint(task_root).load()
-    state["solution_results"] = {"eda": {
-        "writer_prompt": "撰写数据分析章节", "artifacts": [],
-        "quality_report": {"selected_model": "指定方法"},
-    }}
+    state.update(
+        ques_count=1,
+        questions={"ques1": "question"},
+        solution_results={"eda": {"artifacts": []}, "ques1": {"artifacts": []}},
+    )
     inputs = workspace.sync_results(task_root, state)
-    rejected = "已读取数据并核对字段和单位。" * 30
-    repaired = rejected + ("采用指定方法。" if repair_succeeds else "")
-    writer = AsyncMock(side_effect=[WriterResponse(response_content=rejected), WriterResponse(response_content=repaired)])
-    with (
-        patch("app.core.llm.llm_factory.LLMFactory.get_writer_llm", return_value=object()),
-        patch("app.models.user_output.UserOutput._section_order", return_value=["eda"]),
-        patch("app.core.agents.writer_agent.WriterAgent.run", writer),
-        patch("app.core.flows.Flows.get_write_flows", return_value={}),
-        patch("app.utils.paper_polish.polish_markdown", side_effect=lambda text, *_: text),
-        patch("app.utils.paper_polish._convert_markdown_to_latex", side_effect=lambda text, path, *_: path.write_text(text, encoding="utf-8")),
-        patch("app.services.competitions.adapt_generated_source", side_effect=lambda _, text: text),
-        patch.object(writing_router, "compile_source", AsyncMock(return_value={"status": "completed"})),
-    ):
-        asyncio.run(writing_router._generate("paper-test", root, inputs["revision"]))
-    generation = workspace.read_json(root / "workspace.json")["generation"]
-    assert writer.await_count == 2
-    assert "未说明质量报告中的入选模型" in writer.call_args_list[1].args[0]
-    assert generation["status"] == ("completed" if repair_succeeds else "failed")
-    assert bool(list(root.glob("draft-*.tex"))) == repair_succeeds
-    attempt = workspace.read_json(next((root / ".drafts").glob("*/.attempts/eda.json")))
-    assert attempt["attempt"] == 2
-    assert attempt["response"]["response_content"] == repaired
+    keys = ["eda", "ques1", "firstPage", "judge"]
+    cached = {
+        key: WriterResponse(response_content=f"saved {key}").model_dump()
+        for key in keys
+    }
+    if invalid_core:
+        cached["ques1"]["response_content"] = "invalid evidence"
+    workspace.write_json(
+        root / ".drafts/123456abcd/.attempts/judge.json",
+        {"attempt": 2, "response": cached.pop("judge")},
+    )
+    workspace.write_json(root / ".drafts/123456abcd/.remit/paper_sections.json", cached)
 
-    if repair_succeeds:
-        return
-    # Simulate a corrected validator recognizing the saved response; no new model
-    # call is needed, but the retained candidate must be validated again.
+    def validate(_key, content, **_kwargs):
+        if content == "invalid evidence":
+            raise DeliverableValidationError("cached evidence no longer passes")
+
+    def convert(markdown, path, *_args, **_kwargs):
+        path.write_text(markdown, encoding="utf-8")
+
+    writer = AsyncMock(
+        return_value=WriterResponse(response_content="revalidated new section")
+    )
+    compiler = AsyncMock(
+        return_value={"status": "completed", "layout_review": {"blocking_issues": []}}
+    )
     with (
-        patch("app.core.llm.llm_factory.LLMFactory.get_writer_llm", return_value=object()),
-        patch("app.models.user_output.UserOutput._section_order", return_value=["eda"]),
-        patch("app.core.agents.writer_agent.WriterAgent.run", AsyncMock()) as resumed,
-        patch("app.core.deliverable_contract.validate_writer_section") as validate,
-        patch("app.core.flows.Flows.get_write_flows", return_value={}),
-        patch("app.utils.paper_polish.polish_markdown", side_effect=lambda text, *_: text),
-        patch("app.utils.paper_polish._convert_markdown_to_latex", side_effect=lambda text, path, *_: path.write_text(text, encoding="utf-8")),
-        patch("app.services.competitions.adapt_generated_source", side_effect=lambda _, text: text),
-        patch.object(writing_router, "compile_source", AsyncMock(return_value={"status": "completed"})),
+        patch("app.models.user_output.UserOutput._section_order", return_value=keys),
+        patch(
+            "app.core.llm.llm_factory.LLMFactory.get_writer_llm", return_value=object()
+        ),
+        patch("app.core.agents.writer_agent.WriterAgent.run", writer),
+        patch(
+            "app.core.deliverable_contract.validate_writer_section",
+            side_effect=validate,
+        ) as validator,
+        patch(
+            "app.core.flows.Flows.get_write_flows",
+            return_value={"firstPage": "summary", "judge": "conclusion"},
+        ),
+        patch(
+            "app.utils.paper_polish.polish_markdown",
+            side_effect=lambda text, *_, **__: text,
+        ),
+        patch(
+            "app.utils.paper_polish._convert_markdown_to_latex", side_effect=convert
+        ) as converter,
+        patch("app.routers.writing_router.compile_source", compiler),
+        patch(
+            "app.services.competitions.adapt_generated_source",
+            side_effect=lambda _, text: text,
+        ),
     ):
-        asyncio.run(writing_router._generate("paper-test", root, inputs["revision"]))
-    resumed.assert_not_awaited()
-    validate.assert_called_once()
-    assert validate.call_args.args[:2] == ("eda", repaired)
-    assert workspace.read_json(root / "workspace.json")["generation"]["status"] == "completed"
+        asyncio.run(
+            writing_router._generate(
+                "paper-test", root, inputs["revision"], "123456abcd"
+            )
+        )
+    generation = workspace.read_json(root / "workspace.json")["generation"]
+    assert generation["status"] == "completed" and generation["partial"] is False
+    assert set(generation["completed_sections"]) == set(keys)
+    saved = workspace.read_json(root / ".drafts/123456abcd/.remit/paper_sections.json")
+    assert set(saved) == set(keys)
+    if invalid_core:
+        # Regenerating scientific content also invalidates its old summary/conclusion.
+        assert writer.await_count == 3
+        assert compiler.await_count > 1
+    else:
+        writer.assert_not_awaited()
+        assert {call.args[0] for call in validator.call_args_list} == set(keys)
+        assert converter.call_count == compiler.await_count == 1
+        text = (root / generation["file"]).read_text(encoding="utf-8")
+        assert all(f"saved {key}" in text for key in keys)
 
 
 def test_generation_resume_is_limited_to_failed_same_input(tmp_path):
@@ -358,3 +387,108 @@ def test_generation_resume_is_limited_to_failed_same_input(tmp_path):
         )
         chosen = writing_router._generation_id(root, "rev")
         assert (chosen == identifier) is reuse
+
+
+@pytest.mark.parametrize("repair_succeeds", [True, False])
+def test_writer_repairs_rejected_section_once_without_publishing_invalid_prose(
+    writing_client, repair_succeeds
+):
+    from app.schemas.A2A import WriterResponse
+
+    client, task_root = writing_client
+    client.get("/api/writing/paper-test")
+    root = workspace.paper_root(task_root)
+    state = WorkflowCheckpoint(task_root).load()
+    state["solution_results"] = {
+        "eda": {
+            "writer_prompt": "撰写数据分析章节",
+            "artifacts": [],
+            "quality_report": {"selected_model": "指定方法"},
+        }
+    }
+    inputs = workspace.sync_results(task_root, state)
+    rejected = "已读取数据并核对字段和单位。" * 30
+    repaired = rejected + ("采用指定方法。" if repair_succeeds else "")
+    writer = AsyncMock(
+        side_effect=[
+            WriterResponse(response_content=rejected),
+            WriterResponse(response_content=repaired),
+        ]
+    )
+    with (
+        patch(
+            "app.core.llm.llm_factory.LLMFactory.get_writer_llm", return_value=object()
+        ),
+        patch("app.models.user_output.UserOutput._section_order", return_value=["eda"]),
+        patch("app.core.agents.writer_agent.WriterAgent.run", writer),
+        patch("app.core.flows.Flows.get_write_flows", return_value={}),
+        patch(
+            "app.utils.paper_polish.polish_markdown",
+            side_effect=lambda text, *_, **__: text,
+        ),
+        patch(
+            "app.utils.paper_polish._convert_markdown_to_latex",
+            side_effect=lambda text, path, *_, **__: path.write_text(
+                text, encoding="utf-8"
+            ),
+        ),
+        patch(
+            "app.services.competitions.adapt_generated_source",
+            side_effect=lambda _, text: text,
+        ),
+        patch.object(
+            writing_router,
+            "compile_source",
+            AsyncMock(return_value={"status": "completed"}),
+        ),
+    ):
+        asyncio.run(writing_router._generate("paper-test", root, inputs["revision"]))
+    generation = workspace.read_json(root / "workspace.json")["generation"]
+    assert writer.await_count == 2
+    assert "未说明质量报告中的入选模型" in writer.call_args_list[1].args[0]
+    assert generation["status"] == ("completed" if repair_succeeds else "failed")
+    assert bool(list(root.glob("draft-*.tex"))) == repair_succeeds
+    attempt = workspace.read_json(next((root / ".drafts").glob("*/.attempts/eda.json")))
+    assert attempt["attempt"] == 2
+    assert attempt["response"]["response_content"] == repaired
+
+    if repair_succeeds:
+        return
+    # Simulate a corrected validator recognizing the saved response; no new model
+    # call is needed, but the retained candidate must be validated again.
+    with (
+        patch(
+            "app.core.llm.llm_factory.LLMFactory.get_writer_llm", return_value=object()
+        ),
+        patch("app.models.user_output.UserOutput._section_order", return_value=["eda"]),
+        patch("app.core.agents.writer_agent.WriterAgent.run", AsyncMock()) as resumed,
+        patch("app.core.deliverable_contract.validate_writer_section") as validate,
+        patch("app.core.flows.Flows.get_write_flows", return_value={}),
+        patch(
+            "app.utils.paper_polish.polish_markdown",
+            side_effect=lambda text, *_, **__: text,
+        ),
+        patch(
+            "app.utils.paper_polish._convert_markdown_to_latex",
+            side_effect=lambda text, path, *_, **__: path.write_text(
+                text, encoding="utf-8"
+            ),
+        ),
+        patch(
+            "app.services.competitions.adapt_generated_source",
+            side_effect=lambda _, text: text,
+        ),
+        patch.object(
+            writing_router,
+            "compile_source",
+            AsyncMock(return_value={"status": "completed"}),
+        ),
+    ):
+        asyncio.run(writing_router._generate("paper-test", root, inputs["revision"]))
+    resumed.assert_not_awaited()
+    validate.assert_called_once()
+    assert validate.call_args.args[:2] == ("eda", repaired)
+    assert (
+        workspace.read_json(root / "workspace.json")["generation"]["status"]
+        == "completed"
+    )

@@ -36,26 +36,7 @@ _TEXTUAL_FORMATS = {"text", "html", "markdown", "json"}
 # 只提示存在、不回传内容的二进制格式
 _BINARY_FORMATS = {"png", "jpeg", "svg", "pdf"}
 
-_FONT_BOOTSTRAP = f"""
-from pathlib import Path
-from matplotlib import font_manager, pyplot
-
-font_files = [
-    path for path in Path({_SANDBOX_HOME!r}).iterdir()
-    if path.suffix.casefold() in {{'.ttf', '.otf', '.ttc'}}
-]
-for font_file in font_files:
-    font_manager.fontManager.addfont(str(font_file))
-
-preferred = ['FandolHei', 'SimHei', 'Noto Sans CJK SC', 'Microsoft YaHei', 'sans-serif']
-pyplot.rcParams.update({{
-    'font.family': 'sans-serif',
-    'font.sans-serif': preferred,
-    'axes.unicode_minus': False,
-}})
-print('Remit sandbox fonts:', len(font_files))
-""".strip()
-_FONT_BOOTSTRAP += "\n" + font_bootstrap(_SANDBOX_HOME)
+_FONT_BOOTSTRAP = font_bootstrap(_SANDBOX_HOME)
 
 
 class E2BCodeInterpreter(BaseCodeInterpreter):

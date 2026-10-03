@@ -1,6 +1,10 @@
 import request from "@/utils/request";
 
+export type PaperMode = "full_paper" | "short_report";
+
 export interface CompileResult {
+	mode?: PaperMode;
+	pdf_mode?: PaperMode;
 	page_count?: number;
 	status?: string;
 	revision?: string;
@@ -8,9 +12,17 @@ export interface CompileResult {
 	at?: string;
 	log?: string;
 	diagnostics?: { file: string; line: number; message: string }[];
-	layout_review?: { status: string; issues: string[]; metrics?: { abstract_page_fill?: number }; manual_checks?: string[] };
+	layout_review?: {
+		status: string;
+		issues: string[];
+		metrics?: { abstract_page_fill?: number };
+		manual_checks?: string[];
+	};
 }
 export interface PaperWorkspace {
+	mode: PaperMode;
+	mode_version: string;
+	document_mode: PaperMode;
 	main: string;
 	ready: boolean;
 	modeling_status: string;
@@ -25,6 +37,10 @@ export interface PaperWorkspace {
 		asset_count?: number;
 	};
 	generation: {
+		generation_id?: string;
+		proposal_id?: string;
+		base_generation_id?: string;
+		revised_sections?: string[];
 		status: string;
 		section?: string;
 		file?: string;
@@ -78,8 +94,17 @@ export const compilePaper = (id: string) =>
 	);
 export const syncPaper = (id: string) =>
 	request.post(`/api/writing/${id}/sync`);
-export const generatePaper = (id: string) =>
-	request.post(`/api/writing/${id}/generate`);
+export interface PaperRevisionRequest {
+	sections: string[];
+	instructions: string;
+	generation_id: string;
+	input_revision: string;
+	source_revision: string;
+}
+export const generatePaper = (id: string, revision?: PaperRevisionRequest) =>
+	request.post(`/api/writing/${id}/generate`, revision);
+export const setPaperMode = (id: string, mode: PaperMode, version: string) =>
+	request.put(`/api/writing/${id}/mode`, { mode, version });
 export const cancelPaper = (id: string) =>
 	request.post(`/api/writing/${id}/cancel`);
 export const setPaperMain = (id: string, name: string) =>

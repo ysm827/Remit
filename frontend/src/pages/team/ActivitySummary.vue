@@ -4,86 +4,216 @@ import { computed, ref } from "vue";
 import RoleAvatar from "./RoleAvatar.vue";
 import { roleLabels } from "./roles";
 
-const props = defineProps<{ events: TeamEvent[]; expanded?: boolean; state?: TeamState | null }>();
+const props = defineProps<{
+	events: TeamEvent[];
+	expanded?: boolean;
+	state?: TeamState | null;
+}>();
 const rawOpen = ref(false);
 const limit = ref(30);
 const statuses: Record<string, string> = {
- running: "进行中", completed: "已完成", failed: "执行失败", stopped: "已暂停",
- cancelled: "已取消", interrupted: "已中断", awaiting_approval: "待你验收",
- warning: "仍需核验", skipped: "已跳过，未验证", pending: "待执行", needs_info: "待你补充", ready: "待开始",
+	running: "进行中",
+	completed: "已完成",
+	failed: "执行失败",
+	stopped: "已暂停",
+	cancelled: "已取消",
+	interrupted: "已中断",
+	awaiting_approval: "待你验收",
+	awaiting_review: "待审阅修改",
+	warning: "仍需核验",
+	skipped: "已跳过，未验证",
+	pending: "待执行",
+	needs_info: "待你补充",
+	ready: "待开始",
 };
 const stage = computed(() => {
- const steps = props.state?.steps || [];
- return steps.find(s => s.id.startsWith('paper:') && s.status === 'running')
-  || steps.find(s => s.id === props.state?.current_node)
-  || steps.find(s => ['running', 'awaiting_approval', 'failed', 'interrupted'].includes(s.status));
+	const steps = props.state?.steps || [];
+	return (
+		steps.find((s) => s.id.startsWith("paper:") && s.status === "running") ||
+		steps.find((s) => s.id === props.state?.current_node) ||
+		steps.find((s) =>
+			[
+				"running",
+				"awaiting_approval",
+				"awaiting_review",
+				"failed",
+				"interrupted",
+			].includes(s.status),
+		)
+	);
 });
-const latestRole = computed(() => stage.value?.role || useful.value.at(-1)?.role || props.events.at(-1)?.role || "coordinator");
-const isNoise = (event: TeamEvent) => /正在输出|^进度更新$|调用.*工具|^execute_code$|开始执行.*代码|历史执行记录已同步|正在思考下一步|代码手反思纠正错误/.test(event.content);
+const latestRole = computed(
+	() =>
+		stage.value?.role ||
+		useful.value.at(-1)?.role ||
+		props.events.at(-1)?.role ||
+		"coordinator",
+);
+const isNoise = (event: TeamEvent) =>
+	/正在输出|^进度更新$|调用.*工具|^execute_code$|开始执行.*代码|历史执行记录已同步|正在思考下一步|代码手反思纠正错误/.test(
+		event.content,
+	);
 // Only brief action announcements belong in the summary; long reasoning and code stay in details.
-const isBriefAction = (event: TeamEvent) => event.content.length <= 240
- && /^(接下来|现在|先|继续|正在|已|完成|本轮|检查|读取|计算|生成|验证)/.test(event.content.trim())
- && !/```|\$\$/.test(event.content);
-const useful = computed(() => props.events.filter(event => !isNoise(event) && !["tool", "progress"].includes(event.kind)
- && (event.kind !== 'agent' || isBriefAction(event))));
-const short = (text: string, length = 170) => text.length > length ? `${text.slice(0, length)}…` : text;
+const isBriefAction = (event: TeamEvent) =>
+	event.content.length <= 240 &&
+	/^(接下来|现在|先|继续|正在|已|完成|本轮|检查|读取|计算|生成|验证)/.test(
+		event.content.trim(),
+	) &&
+	!/```|\$\$/.test(event.content);
+const useful = computed(() =>
+	props.events.filter(
+		(event) =>
+			!isNoise(event) &&
+			!["tool", "progress"].includes(event.kind) &&
+			(event.kind !== "agent" || isBriefAction(event)),
+	),
+);
+const short = (text: string, length = 170) =>
+	text.length > length ? `${text.slice(0, length)}…` : text;
 function progressText(event: TeamEvent) {
- if (event.kind === "plan") {
-  const actions: Record<string, string> = {
-   resume: "准备继续当前步骤", stop: "正在停止任务", start: "准备开始建模",
-   revise: "准备按修改意见重做", write: "准备撰写论文", compile: "准备编译论文",
-   reply: "整理回复", instruct: "已安排下一步工作",
-  };
-  return actions[String(event.data.action)] || "处理安排";
- }
- const text = event.content.replace(/建模ing\.{0,3}/g, "制定建模方案")
-  .replace(/\beda\b/gi, '数据清洗与探索分析').replace(/\bques(\d+)\b/g, '问题 $1')
-  .replace(/ · (状态更新|步骤完成)$/, "");
- if (event.kind !== "checkpoint") return text;
- // A finished node can coexist with overall running; do not label it running.
- const status = !event.data.current_node && Array.isArray(event.data.completed_nodes) && event.data.completed_nodes.length
-  ? "步骤已结束" : statuses[String(event.data.status)];
- return `${text}${status ? ` · ${status}` : ''}`;
+	if (event.kind === "plan") {
+		const actions: Record<string, string> = {
+			resume: "准备继续当前步骤",
+			stop: "正在停止任务",
+			start: "准备开始建模",
+			revise: "准备按修改意见重做",
+			write: "准备撰写论文",
+			compile: "准备编译论文",
+			reply: "整理回复",
+			instruct: "已安排下一步工作",
+		};
+		return actions[String(event.data.action)] || "处理安排";
+	}
+	const text = event.content
+		.replace(/awaiting_review/g, "待审阅修改")
+		.replace(/建模ing\.{0,3}/g, "制定建模方案")
+		.replace(/\beda\b/gi, "数据清洗与探索分析")
+		.replace(/\bques(\d+)\b/g, "问题 $1")
+		.replace(/ · (状态更新|步骤完成)$/, "");
+	if (event.kind !== "checkpoint") return text;
+	// A finished node can coexist with overall running; do not label it running.
+	const status =
+		!event.data.current_node &&
+		Array.isArray(event.data.completed_nodes) &&
+		event.data.completed_nodes.length
+			? "步骤已结束"
+			: statuses[String(event.data.status)];
+	return `${text}${status ? ` · ${status}` : ""}`;
 }
-const latest = computed(() => useful.value.length ? progressText(useful.value.at(-1)!) : "等待新的阶段进展");
-const currentDetail = computed(() => {
- const last = useful.value.at(-1);
- if (last && /失败|重试|自动修复|重新生成|重新尝试|等待.*(审核|验收)/.test(last.content)) return progressText(last);
- const boundary = [...props.events].reverse().find(e => e.kind === 'checkpoint' && e.data.current_node === props.state?.current_node)?.seq || 0;
- const action = [...useful.value].reverse().find(e => e.kind === 'agent' && e.role === stage.value?.role && e.seq > boundary);
- const routineCodeMessage = last && /正在执行.*代码|代码执行完成|代码执行成功/.test(last.content);
- if (last && action && last.seq > action.seq && !routineCodeMessage) return progressText(last);
- return action ? progressText(action) : latest.value;
+const latest = computed(() => {
+	const last = useful.value.at(-1);
+	return last ? progressText(last) : "等待新的阶段进展";
 });
-const waitingForPaper = computed(() => props.state?.status === 'completed' &&
- (!props.state.writing?.status || ['idle', 'ready'].includes(props.state.writing.status)));
-const headline = computed(() => stage.value ? short(stage.value.label, 90) : waitingForPaper.value ? '建模已完成，待生成论文初稿' : short(latest.value, 110));
-const stageStatus = computed(() => stage.value?.status || (waitingForPaper.value ? 'ready' : props.state?.status) || '');
-const completed = computed(() => (props.state?.steps || []).filter(s => s.status === 'completed').slice(-2));
-const warnings = computed(() => (props.state?.steps || []).filter(s => ['warning', 'skipped'].includes(s.status)));
-const warningIssues = computed(() => [...new Set(warnings.value.flatMap(s => s.issues || []))]);
-const calls = computed(() => props.events.filter(e => e.kind === "tool" && e.data.input != null).length);
-const repairs = computed(() => props.events.filter(e => /自动修复|重新生成|重新尝试|正在重试/.test(e.content)).length);
+const currentDetail = computed(() => {
+	const last = useful.value.at(-1);
+	if (
+		last &&
+		/失败|重试|自动修复|重新生成|重新尝试|等待.*(审核|验收)/.test(last.content)
+	)
+		return progressText(last);
+	const boundary =
+		[...props.events]
+			.reverse()
+			.find(
+				(e) =>
+					e.kind === "checkpoint" &&
+					e.data.current_node === props.state?.current_node,
+			)?.seq || 0;
+	const action = [...useful.value]
+		.reverse()
+		.find(
+			(e) =>
+				e.kind === "agent" && e.role === stage.value?.role && e.seq > boundary,
+		);
+	const routineCodeMessage =
+		last && /正在执行.*代码|代码执行完成|代码执行成功/.test(last.content);
+	if (last && action && last.seq > action.seq && !routineCodeMessage)
+		return progressText(last);
+	return action ? progressText(action) : latest.value;
+});
+const waitingForPaper = computed(
+	() =>
+		props.state?.status === "completed" &&
+		(!props.state.writing?.status ||
+			["idle", "ready"].includes(props.state.writing.status)),
+);
+const headline = computed(() =>
+	stage.value
+		? short(stage.value.label, 90)
+		: waitingForPaper.value
+			? "建模已完成，待生成论文初稿"
+			: short(latest.value, 110),
+);
+const stageStatus = computed(
+	() =>
+		stage.value?.status ||
+		(waitingForPaper.value ? "ready" : props.state?.status) ||
+		"",
+);
+const completed = computed(() =>
+	(props.state?.steps || []).filter((s) => s.status === "completed").slice(-2),
+);
+const warnings = computed(() =>
+	(props.state?.steps || []).filter((s) =>
+		["warning", "skipped"].includes(s.status),
+	),
+);
+const warningIssues = computed(() => [
+	...new Set(warnings.value.flatMap((s) => s.issues || [])),
+]);
+const calls = computed(
+	() =>
+		props.events.filter((e) => e.kind === "tool" && e.data.input != null)
+			.length,
+);
+const repairs = computed(
+	() =>
+		props.events.filter((e) =>
+			/自动修复|重新生成|重新尝试|正在重试/.test(e.content),
+		).length,
+);
 const milestones = computed(() => {
- const unique = new Map<string, TeamEvent>();
- for (const e of useful.value) {
-  if (e.kind === 'checkpoint' || e.kind === 'plan' || e.kind === 'preflight' || /正在思考|开始建模|开始制定建模|正在执行.*代码|代码执行完成|代码执行成功/.test(e.content)) continue;
-  if (stage.value && progressText(e) === currentDetail.value) continue;
-  const text = progressText(e);
-  unique.delete(text);
-  unique.set(text, e);
- }
- return [...unique.values()].slice(-3);
+	const unique = new Map<string, TeamEvent>();
+	for (const e of useful.value) {
+		if (
+			e.kind === "checkpoint" ||
+			e.kind === "plan" ||
+			e.kind === "preflight" ||
+			/正在思考|开始建模|开始制定建模|正在执行.*代码|代码执行完成|代码执行成功/.test(
+				e.content,
+			)
+		)
+			continue;
+		if (stage.value && progressText(e) === currentDetail.value) continue;
+		const text = progressText(e);
+		unique.delete(text);
+		unique.set(text, e);
+	}
+	return [...unique.values()].slice(-3);
 });
 const attention = computed(() => {
- if (stageStatus.value === 'awaiting_approval') return '当前步骤正在等待你的验收，请查看下方验收内容。';
- if (['failed', 'stopped', 'interrupted', 'cancelled'].includes(stageStatus.value)) return '当前步骤尚未完成，请查看最近的异常信息。';
- return '';
+	if (stageStatus.value === "awaiting_review")
+		return "返修提案已生成，接受后才写入并编译。";
+	if (stageStatus.value === "awaiting_approval")
+		return "当前步骤正在等待你的验收，请查看下方验收内容。";
+	if (
+		["failed", "stopped", "interrupted", "cancelled"].includes(
+			stageStatus.value,
+		)
+	)
+		return "当前步骤尚未完成，请查看最近的异常信息。";
+	return "";
 });
 const latestAt = computed(() => props.events.at(-1)?.at);
 const raw = computed(() => props.events.slice(-limit.value));
-const time = (value: string) => new Date(value).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
-function toggleRaw(event: Event) { rawOpen.value = (event.target as HTMLDetailsElement).open; }
+const time = (value: string) =>
+	new Date(value).toLocaleTimeString("zh-CN", {
+		hour: "2-digit",
+		minute: "2-digit",
+	});
+function toggleRaw(event: Event) {
+	rawOpen.value = (event.target as HTMLDetailsElement).open;
+}
 </script>
 
 <template>

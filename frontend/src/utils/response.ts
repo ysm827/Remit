@@ -17,6 +17,7 @@ export type MessageKind = (typeof messageKinds)[number];
 export type SystemMessageType = "info" | "warning" | "success" | "error";
 export type TaskStatus =
 	| "running"
+	| "stopping"
 	| "awaiting_approval"
 	| "completed"
 	| "failed"

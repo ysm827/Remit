@@ -235,3 +235,25 @@ def test_context_selects_matching_topic_within_contest(tmp_path, monkeypatch):
     )
     assert "山区无人机运输" in text
     assert "轴承" not in text and "定位" not in text
+
+
+@pytest.fixture(autouse=True)
+def isolated_local_library(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        library, "LOCAL_LIBRARY_PATH", tmp_path / "private-library.json"
+    )
+
+
+def test_local_cards_override_public_empty_library(tmp_path, monkeypatch):
+    root = tmp_path / "writing"
+    root.mkdir()
+    (root / "SKILL.md").write_text("Common guidance", encoding="utf-8")
+    (root / "library.json").write_text('{"cards": []}', encoding="utf-8")
+    monkeypatch.setattr(library, "LIBRARY_ROOT", root)
+    library.LOCAL_LIBRARY_PATH.write_text(
+        json.dumps({"cards": [{"competition": "gmcm", "topic": "Local lesson"}]}),
+        encoding="utf-8",
+    )
+    assert "Local lesson" in library.context("gmcm")
+    assert "Local lesson" not in library.context("cumcm")
+    assert json.loads((root / "library.json").read_text()) == {"cards": []}

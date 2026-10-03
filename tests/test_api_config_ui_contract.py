@@ -22,7 +22,11 @@ class ApiConfigUiContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn('if (!email) return { valid: true', dialog)
-        self.assertIn("!openalexEmail.value.trim() ||", dialog)
+        # 保存与付费验证已经拆分：空邮箱不能触发验证或阻止保存。
+        handler = dialog.split("async function saveAndClose", 1)[1].split("async function", 1)[0]
+        self.assertIn("saveToStore()", handler)
+        self.assertNotIn("validate", handler)
+        self.assertNotIn("openalexEmail", handler)
 
     def test_save_is_not_silently_skipped_after_validation(self) -> None:
         dialog = (

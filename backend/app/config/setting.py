@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     FALLBACK_MODEL: str | None = None
     FALLBACK_BASE_URL: str | None = None
     FALLBACK_REASONING_EFFORT: str | None = None
+    FALLBACK_ENABLED: bool = True
+    FALLBACK_CONTEXT_WINDOW: int = Field(default=128000, ge=1)
+    FALLBACK_MAX_TOKENS: int = Field(default=8192, ge=1)
 
     DISABLE_RESPONSE_STORAGE: bool = True
     API_TIMEOUT_SECONDS: float = 180.0
@@ -107,6 +110,7 @@ class Settings(BaseSettings):
 
     # ---- 模型评审组：独立探索者 + 匿名盲审者 ----
     MODEL_COUNCIL_ENABLED: bool = False
+    MODEL_SHARED_CORE: bool = False
     MODEL_COUNCIL_REQUIRE_DIVERSE_BACKENDS: bool = True
     MODEL_COUNCIL_CRITIC_TIMEOUT_SECONDS: float = 180.0
     MODEL_COUNCIL_FALLBACK_TIMEOUT_SECONDS: float = 180.0
@@ -128,9 +132,12 @@ class Settings(BaseSettings):
     # ---- 运行控制 ----
     MAX_CHAT_TURNS: int | None = 20
     MAX_CODE_EXECUTIONS_PER_RUN: int = 12
+    MAX_CODE_EXECUTIONS_PER_STAGE: int = Field(default=48, ge=1)
     MAX_RETRIES: int | None = 3
     GATEWAY_MAX_RETRIES: int = 4
     LLM_HARD_RETRY_LIMIT: int = 4
+    LLM_STAGE_CALL_LIMIT: int = 24
+    LLM_STAGE_API_SECONDS: float = 900.0
     LLM_RETRY_AFTER_MAX_SECONDS: float = 60.0
     E2B_API_KEY: str | None = None
     CODE_EXECUTION_BACKEND: str = "matlab"

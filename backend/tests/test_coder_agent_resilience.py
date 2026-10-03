@@ -37,8 +37,10 @@ def _make_agent(
     max_retries: int = 2,
     max_chat_turns: int = 10,
     max_code_executions: int = 8,
+    max_tokens: int | None = None,
 ) -> CoderAgent:
     model = MagicMock()
+    model.max_tokens = max_tokens
     model.api_type = ApiType.OPENAI_CHAT
     interpreter = MagicMock()
     interpreter.language = "matlab"
@@ -65,11 +67,13 @@ class CoderAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
             agent._inject_user_notes = AsyncMock()
             path = Path(tmp, "pilot_ques1_results.json")
             path.write_text('{"valid": true}')
-            agent._chat = AsyncMock(side_effect=[
-                _tool_response("inspect", "inspect"),
-                _tool_response("partial", "partial"),
-                _tool_response("finish", "finish"),
-            ])
+            agent._chat = AsyncMock(
+                side_effect=[
+                    _tool_response("inspect", "inspect"),
+                    _tool_response("partial", "partial"),
+                    _tool_response("finish", "finish"),
+                ]
+            )
 
             async def execute(code):
                 if code == "partial":
@@ -80,37 +84,63 @@ class CoderAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
 
             agent.code_interpreter.execute_code.side_effect = execute
             with (
-                patch("app.core.agents.coder_agent.redis_manager.publish_message", new_callable=AsyncMock),
-                patch("app.core.agents.coder_agent.publish_activity", new_callable=AsyncMock),
+                patch(
+                    "app.core.agents.coder_agent.redis_manager.publish_message",
+                    new_callable=AsyncMock,
+                ),
+                patch(
+                    "app.core.agents.coder_agent.publish_activity",
+                    new_callable=AsyncMock,
+                ),
             ):
-                result = await agent.run("pilot", "pilot:ques1", required_files=(path.name,),
-                    completion_check=lambda: json.loads(path.read_text())["valid"])
+                result = await agent.run(
+                    "pilot",
+                    "pilot:ques1",
+                    required_files=(path.name,),
+                    completion_check=lambda: json.loads(path.read_text())["valid"],
+                )
             self.assertEqual(agent._chat.await_count, 3)
             self.assertEqual(agent.current_code_executions, 3)
             self.assertIn("实际指标仍由后续审查和用户验收", result.code_response)
 
-    async def test_multi_call_reply_is_rejected_without_executing_and_requests_serial(self):
+    async def test_multi_call_reply_is_rejected_without_executing_and_requests_serial(
+        self,
+    ):
         agent = _make_agent()
         valid = _tool_response("single", "disp(1)")
-        multiple = StandardResponse(tool_calls=[*valid.tool_calls, *_tool_response("second", "disp(2)").tool_calls])
+        multiple = StandardResponse(
+            tool_calls=[
+                *valid.tool_calls,
+                *_tool_response("second", "disp(2)").tool_calls,
+            ]
+        )
         agent._chat = AsyncMock(side_effect=[multiple, valid])
-        with patch("app.core.agents.coder_agent.publish_activity", new_callable=AsyncMock) as activity:
+        with patch(
+            "app.core.agents.coder_agent.publish_activity", new_callable=AsyncMock
+        ) as activity:
             result = await agent._call_model([{"type": "function"}])
         self.assertIs(result, valid)
-        self.assertTrue(all(call.kwargs["parallel_tool_calls"] is False for call in agent._chat.call_args_list))
+        self.assertTrue(
+            all(
+                call.kwargs["parallel_tool_calls"] is False
+                for call in agent._chat.call_args_list
+            )
+        )
         agent.code_interpreter.execute_code.assert_not_awaited()
         self.assertIn("逐步执行", activity.call_args.args[1])
 
     async def test_same_node_quality_repair_keeps_observed_schema_and_fixed_code(self):
         agent = _make_agent(max_code_executions=2)
         captured = []
-        responses = iter([
-            _tool_response("bad", "bad_missing_check()"),
-            _tool_response("fixed", "disp(raw)"),
-            StandardResponse(content="缺少最终质量报告"),
-            StandardResponse(content="针对报告继续处理"),
-            StandardResponse(content="新问题"),
-        ])
+        responses = iter(
+            [
+                _tool_response("bad", "bad_missing_check()"),
+                _tool_response("fixed", "disp(raw)"),
+                StandardResponse(content="缺少最终质量报告"),
+                StandardResponse(content="针对报告继续处理"),
+                StandardResponse(content="新问题"),
+            ]
+        )
 
         async def chat(**kwargs):
             captured.append(json.dumps(kwargs["history"], ensure_ascii=False))
@@ -122,7 +152,9 @@ class CoderAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
             ("", True, "操作数必须可转换为标量逻辑值"),
             ("真实列名：经度、纬度；18行", False, ""),
         ]
-        with patch("app.core.agents.coder_agent.redis_manager.publish_message", new=AsyncMock()):
+        with patch(
+            "app.core.agents.coder_agent.redis_manager.publish_message", new=AsyncMock()
+        ):
             await agent.run("读取数据", "eda")
             await agent.run("补全质量报告", "eda")
             await agent.run("求解第一问", "ques1")
@@ -139,7 +171,9 @@ class CoderAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
     def test_execution_summary_uses_error_evidence(self):
         summarize = CoderAgent._execution_failure_summary
         self.assertIn("列名数量", summarize("VariableNames 属性必须包含一个名称"))
-        self.assertIn("空单元格", summarize("错误使用 fprintf 不支持 <missing> 字符串元素"))
+        self.assertIn(
+            "空单元格", summarize("错误使用 fprintf 不支持 <missing> 字符串元素")
+        )
         self.assertIn("数组", summarize("操作数必须可转换为标量逻辑值"))
         self.assertEqual(summarize("unknown failure"), "代码执行出错")
         source_context = (
@@ -149,8 +183,7 @@ class CoderAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("语法检查失败", summarize(source_context))
 
     async def test_output_budget_learned_from_truncation_is_reused(self):
-        agent = _make_agent()
-        agent.model.max_tokens = 8192
+        agent = _make_agent(max_tokens=8192)
         agent._chat = AsyncMock(
             side_effect=[
                 StandardResponse(content=None, finish_reason="max_output_tokens"),
@@ -249,8 +282,7 @@ class CoderAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(agent.current_code_executions, 0)
 
     async def test_truncated_empty_tool_is_retried_before_execution(self) -> None:
-        agent = _make_agent()
-        agent.model.max_tokens = 4096
+        agent = _make_agent(max_tokens=4096)
         agent._inject_user_notes = AsyncMock()
         agent._chat = AsyncMock(
             side_effect=[

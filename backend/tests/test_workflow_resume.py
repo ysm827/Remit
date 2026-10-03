@@ -88,7 +88,10 @@ class WorkflowResumeTests(unittest.IsolatedAsyncioTestCase):
 
     def test_pilot_technical_resume_keeps_progress_but_revision_invalidates_it(self):
         for skipped, technical in ((False, True), (True, True), (False, False)):
-            with self.subTest(skipped=skipped, technical=technical), tempfile.TemporaryDirectory() as tmp:
+            with (
+                self.subTest(skipped=skipped, technical=technical),
+                tempfile.TemporaryDirectory() as tmp,
+            ):
                 checkpoint = WorkflowCheckpoint(tmp)
                 state = checkpoint.initialize(self._problem())
                 self._complete_planning(checkpoint, state)
@@ -106,7 +109,9 @@ class WorkflowResumeTests(unittest.IsolatedAsyncioTestCase):
                     checkpoint.start_node(state, "pilot")
                 checkpoint.mark_status("stopped")
                 state = checkpoint.load()
-                restored = checkpoint.prepare_resume(state, "pilot", preserve_interrupted_artifacts=technical)
+                restored = checkpoint.prepare_resume(
+                    state, "pilot", preserve_interrupted_artifacts=technical
+                )
                 self.assertEqual("pilot_progress" in restored, technical)
                 self.assertEqual(path.exists(), technical)
                 self.assertNotIn("pilot_skipped", restored)

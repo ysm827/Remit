@@ -31,6 +31,7 @@ class AgentConfigurationStatus(BaseModel):
     configured: bool
     api_key_configured: bool
     context_window: int
+    max_tokens: int | None = None
     source: Literal["environment", "runtime", "missing"]
     api_type: str | None = None
     model_id: str | None = None
@@ -40,6 +41,8 @@ class AgentConfigurationStatus(BaseModel):
 class ConfigurationStatus(BaseModel):
     configured: bool
     model_council_enabled: bool
+    shared_core: bool = False
+    fallback_enabled: bool = False
     agents: dict[str, AgentConfigurationStatus]
 
 
@@ -52,6 +55,9 @@ class SaveConfigurationRequest(BaseModel):
     model_scout: dict[str, Any] = Field(default_factory=dict)
     model_critic: dict[str, Any] = Field(default_factory=dict)
     model_council_enabled: bool | None = None
+    shared_core: bool = False
+    fallback: dict[str, Any] = Field(default_factory=dict)
+    fallback_enabled: bool | None = None
 
     def role_payloads(self) -> tuple[tuple[str, dict[str, Any]], ...]:
         """Return role settings in their backend-prefix order."""
@@ -62,6 +68,7 @@ class SaveConfigurationRequest(BaseModel):
             ("WRITER", self.writer),
             ("MODEL_SCOUT", self.model_scout),
             ("MODEL_CRITIC", self.model_critic),
+            ("FALLBACK", self.fallback),
         )
 
 

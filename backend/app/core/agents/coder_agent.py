@@ -20,6 +20,7 @@ from app.core.llm.llm import LLM
 from app.core.llm.errors import NonRetryableLLMError
 from app.core.prompts.shared import get_reflection_prompt
 from app.core.prompts.coder import get_coder_prompt
+from app.core.task_purpose import TaskPurpose
 from app.core.structured_output import (
     configured_output_budget,
     expanded_output_budget,
@@ -28,6 +29,8 @@ from app.core.structured_output import (
 from app.schemas.A2A import CoderToWriter
 from app.schemas.response import InterpreterMessage, SystemMessage
 from app.services.redis_manager import redis_manager
+from app.services import call_ledger
+from app.services.async_io import run_blocking
 from app.tools.base_interpreter import BaseCodeInterpreter
 from app.utils.common_utils import get_current_files
 from app.utils.log_util import logger
@@ -63,6 +66,7 @@ class CoderAgent(Agent):
         code_interpreter: BaseCodeInterpreter | None = None,
         context_window: int = 128000,
         cancel_event: asyncio.Event | None = None,
+        task_purpose: TaskPurpose = "modeling",
     ) -> None:
         language = code_interpreter.language if code_interpreter else "python"
         super().__init__(
@@ -70,7 +74,7 @@ class CoderAgent(Agent):
             model,
             context_window,
             cancel_event=cancel_event,
-            system_prompt=get_coder_prompt(language),
+            system_prompt=get_coder_prompt(language, task_purpose),
         )
         self.work_dir = work_dir
         self.max_chat_turns = max_chat_turns or settings.MAX_CHAT_TURNS or 20
@@ -85,6 +89,7 @@ class CoderAgent(Agent):
         self._run_budget_notes: list[dict] = []
         self.code_interpreter = code_interpreter
         self._response_token_budget = configured_output_budget(model)
+        self._execution_budget: call_ledger.ExecutionBudget | None = None
 
     # ---- 主循环 ----
 
@@ -125,12 +130,18 @@ class CoderAgent(Agent):
             self.current_token_count = 0
             self.is_first_run = True
         self._active_subtask = subtask_title
-        # 预算按单次调用计，跨小问 / 修复尝试不共享。
+        # 单轮限制之外，同一检查点阶段还共享持久化执行额度。
         self.current_chat_turns = 0
         self.current_code_executions = 0
         execution_limit = self.max_code_executions
         if max_code_executions is not None:
             execution_limit = max(1, min(max_code_executions, execution_limit))
+        self._execution_budget = await run_blocking(
+            call_ledger.execution_budget, self.task_id, subtask_title
+        )
+        if self._execution_budget is not None:
+            remaining = await run_blocking(self._execution_budget.remaining)
+            execution_limit = min(execution_limit, remaining)
 
         def file_version(name: str) -> tuple[int, int] | None:
             try:
@@ -157,8 +168,8 @@ class CoderAgent(Agent):
                     "role": "user",
                     "content": (
                         "这是同一节点的质量返修，前轮工具调用、实际输出和报错已保留。"
-                        f"本轮重新开放 execute_code，执行预算为 {execution_limit} 次。"
-                        "上一轮预算耗尽及仅总结的指令已经结束；当前按本轮预算继续修复。"
+                        f"本轮执行预算为 {execution_limit} 次，同时受阶段累计额度限制。"
+                        "保留已有结果，按剩余额度继续修复。"
                         "先对照本轮检查意见复用已验证的读取代码和真实中间结果，"
                         "只修缺失交付或具体失败点；不要重新打印全部文件和工作表。"
                         "成功执行不等于成果通过验收，保留尚未解决的问题。"
@@ -186,7 +197,12 @@ class CoderAgent(Agent):
             )
 
             try:
-                response = await self._call_model(tools)
+                response = await self._call_model(
+                    tools,
+                    purpose="code_repair"
+                    if continuing or retry_count or idle_replies
+                    else "normal_work",
+                )
             except (CoderAgentRunError, NonRetryableLLMError):
                 raise
             except Exception as exc:
@@ -243,18 +259,25 @@ class CoderAgent(Agent):
             if outcome == "ok":
                 retry_count, last_error, last_source = 0, "", ""
                 if (
-                    completion_check is not None and required_files
-                    and all(file_version(name) is not None and file_version(name) != initial_files[name]
-                            for name in required_files)
+                    completion_check is not None
+                    and required_files
+                    and all(
+                        file_version(name) is not None
+                        and file_version(name) != initial_files[name]
+                        for name in required_files
+                    )
                     and completion_check()
                 ):
                     await publish_activity(
-                        self.task_id, f"{subtask_title} 的产物记录已齐全，进入结果核验",
+                        self.task_id,
+                        f"{subtask_title} 的产物记录已齐全，进入结果核验",
                         category="gate",
                     )
                     return CoderToWriter(
                         code_response="规定产物已更新并通过结构校验，实际指标仍由后续审查和用户验收。",
-                        created_images=await interpreter.get_created_images(subtask_title),
+                        created_images=await interpreter.get_created_images(
+                            subtask_title
+                        ),
                     )
                 remaining_executions = execution_limit - self.current_code_executions
                 if 0 < remaining_executions <= 2:
@@ -307,10 +330,12 @@ class CoderAgent(Agent):
         # 执行器在错误前附上源码，源码中的 VariableNames 等不是错误证据。
         diagnostic = re.search(r"(?m)^(?:错误[:：]|错误使用|Error(?: using|:))", error)
         if diagnostic:
-            error = error[diagnostic.start():]
+            error = error[diagnostic.start() :]
         else:
             error = re.sub(r"(?m)^\d+:.*$", "", error)
-        if "VariableNames" in error and ("名称" in error or "variable" in error.lower()):
+        if "VariableNames" in error and (
+            "名称" in error or "variable" in error.lower()
+        ):
             return "建表失败：数据列数与列名数量不匹配"
         if "<missing>" in error and "fprintf" in error:
             return "预览输出失败：空单元格尚未转换为可打印文本"
@@ -370,7 +395,9 @@ class CoderAgent(Agent):
             SystemMessage(content=content, type=level),  # type: ignore[arg-type]
         )
 
-    async def _call_model(self, tools: list[dict], tool_choice: str = "auto") -> Any:
+    async def _call_model(
+        self, tools: list[dict], tool_choice: str = "auto", *, purpose="normal_work"
+    ) -> Any:
         """只返回完整且可执行的响应，协议重试最多三次。"""
         budget = max(configured_output_budget(self.model), self._response_token_budget)
         for attempt in range(3):
@@ -381,6 +408,8 @@ class CoderAgent(Agent):
                 agent_name=self.__class__.__name__,
                 max_tokens=budget,
                 parallel_tool_calls=False,
+                sub_title=self._active_subtask,
+                purpose="structure_repair" if attempt else purpose,
             )
             error = ""
             if response_was_truncated(response, budget):
@@ -547,7 +576,18 @@ class CoderAgent(Agent):
             f"正在执行 {interpreter.backend_name} 代码…",
             category="code",
         )
-        output_text, failed, error_detail = await interpreter.execute_code(code)
+        from app.services.work_timing import ameasure
+
+        if self.cancel_event and self.cancel_event.is_set():
+            raise asyncio.CancelledError("任务被用户停止")
+        if self._execution_budget is not None:
+            await run_blocking(self._execution_budget.reserve)
+        async with ameasure(self.task_id, "computation") as timing:
+            if self.cancel_event and self.cancel_event.is_set():
+                raise asyncio.CancelledError("任务被用户停止")
+            output_text, failed, error_detail = await interpreter.execute_code(code)
+            if failed:
+                timing.status = "failed"
 
         tool_reply = {
             "role": "tool",

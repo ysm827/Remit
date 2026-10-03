@@ -58,58 +58,6 @@ def project(tmp_path, monkeypatch):
     router._workers.clear()
 
 
-@pytest.mark.parametrize("status", ["interrupted", "failed", "cancelled", "idle"])
-def test_continue_after_modeling_resumes_writer_without_model_call(project, monkeypatch, status):
-    root, checkpoint = project
-    checkpoint.mark_status("completed")
-    writing_router._set_generation(paper.ensure_workspace(root), status)
-    sync, generate, resume = AsyncMock(), AsyncMock(), AsyncMock()
-    monkeypatch.setattr(writing_router, "sync", sync)
-    monkeypatch.setattr(writing_router, "generate", generate)
-    monkeypatch.setattr(modeling_router, "resume_task", resume)
-    body = router.ChatRequest(request_id="continue-paper", content="继续")
-
-    async def run():
-        plan = await router.make_plan("team-test", body, root)
-        assert plan.action == "write"
-        await router.execute_plan("team-test", body, plan, root, BackgroundTasks())
-
-    asyncio.run(run())
-    generate.assert_awaited_once_with("team-test")
-    resume.assert_not_awaited()
-
-
-@pytest.mark.parametrize("status", ["interrupted", "completed", "running"])
-def test_resume_button_routes_to_writer_without_duplicate_generation(project, monkeypatch, status):
-    root, checkpoint = project
-    checkpoint.mark_status("completed")
-    writing_router._set_generation(paper.ensure_workspace(root), status)
-    sync, generate, resume = AsyncMock(), AsyncMock(), AsyncMock()
-    monkeypatch.setattr(writing_router, "sync", sync)
-    monkeypatch.setattr(writing_router, "generate", generate)
-    monkeypatch.setattr(modeling_router, "resume_task", resume)
-    if status == "running":
-        monkeypatch.setitem(writing_router._generations, "team-test", object())
-    body = router.ChatRequest(request_id="continue-button", content="继续", action="resume")
-    asyncio.run(router.execute_plan("team-test", body, router.Plan(action="resume"), root, BackgroundTasks()))
-    assert generate.await_count == (1 if status == "interrupted" else 0)
-    resume.assert_not_awaited()
-
-
-def test_paper_resume_cannot_bypass_pending_approval(project, monkeypatch):
-    root, checkpoint = project
-    state = checkpoint.load()
-    checkpoint.complete_node(state, "review_results")
-    checkpoint.request_approval(state, "review_results", summary="等待验收")
-    generate = AsyncMock()
-    monkeypatch.setattr(writing_router, "generate", generate)
-    body = router.ChatRequest(request_id="continue-gate", content="继续")
-    with pytest.raises(HTTPException):
-        asyncio.run(router.execute_plan("team-test", body, router.Plan(action="resume"), root, BackgroundTasks()))
-    generate.assert_not_awaited()
-    assert checkpoint.load()["pending_approval"]
-
-
 def test_shared_table_reflects_checkpoints_and_independent_writer(project):
     root, checkpoint = project
     state = checkpoint.load()
@@ -188,6 +136,74 @@ def test_shared_requirements_are_read_by_every_role_without_consumption(project)
     assert (
         len([item for item in team.events(root) if item["kind"] == "receipt"]) == before
     )
+
+
+def test_large_shared_results_keep_requirements_and_attachment_manifest(project):
+    root, checkpoint = project
+    state = checkpoint.load()
+    summary = {
+        "status": "needs_review",
+        "run_summary": "计算结束但证据待复核",
+        "content": "计算结束但证据待复核",
+        "modeler_weaknesses": ["尚未通过独立检验"],
+        "writer_guidance": "不得声称已经验收",
+        "metrics": [{"name": "误差", "model_value": 0.123456789}],
+        "table_previews": [
+            {
+                "filename": "result.csv",
+                "columns": ["说明"],
+                "rows": [{"说明": "详细输出" * 6000}],
+            }
+        ],
+    }
+    state["solution_results"] = {
+        "ques1": {"execution_summary": summary, "artifacts": ["result.csv"]}
+    }
+    checkpoint.save(state)
+    team.directive(root, "all", "必须保留不确定性", "all-constraint")
+    before = (root / "workflow_state.json").read_bytes()
+    context = team.context_for("team-test", "CoderAgent")
+    brief = json.loads(context[context.index("{") :])
+    assert brief["my_instructions"] == ["必须保留不确定性"]
+    assert brief["attachment_manifest"] == ".remit-inputs.json"
+    result = brief["results"][0]
+    assert result["artifacts"] == ["result.csv"]
+    for field in (
+        "status",
+        "run_summary",
+        "modeler_weaknesses",
+        "writer_guidance",
+        "metrics",
+    ):
+        assert result["summary"][field] == summary[field]
+    assert result["summary_source"] == {
+        "path": "workflow_state.json",
+        "result_key": "ques1",
+        "field": "execution_summary",
+    }
+    preview = result["summary"]["table_previews"][0]
+    assert preview["filename"] == "result.csv"
+    assert preview["rows_omitted"] == 1
+    assert len(context) < 18000
+    assert (root / "workflow_state.json").read_bytes() == before
+    assert team.snapshot(root)["results"][0]["summary"] == summary
+
+
+def test_long_shared_requirement_is_complete_and_checked_before_provider(project):
+    from app.core.llm.errors import NonRetryableLLMError
+
+    root, _ = project
+    instruction = "必须遵守的完整约束；" * 2200 + "末尾约束不可丢失"
+    team.directive(root, "coder", instruction, "long-constraint")
+    context = team.context_for("team-test", "CoderAgent")
+    brief = json.loads(context[context.index("{") :])
+    assert brief["my_instructions"] == [instruction]
+    llm = LLM(api_key="test", model="test", task_id="team-test")
+    llm.context_window = 2000
+    llm.provider.call = AsyncMock(return_value=StandardResponse(content="unexpected"))
+    with pytest.raises(NonRetryableLLMError, match="最终请求超出"):
+        asyncio.run(llm.chat(agent_name="CoderAgent", max_tokens=100, publish=False))
+    llm.provider.call.assert_not_awaited()
 
 
 def test_llm_refreshes_shared_context_each_call_without_growing_history(project):
@@ -429,24 +445,89 @@ def test_invalid_planner_output_is_recorded_without_dispatch(project, monkeypatc
     assert team.events(root)[-1]["kind"] == "error"
 
 
-@pytest.mark.parametrize("role,name", [("all", "团团"), ("modeler", "灵灵"), ("coder", "点点"), ("writer", "墨墨")])
-@pytest.mark.parametrize("conversation_only,status", [(False, "running"), (True, "completed"), (False, "completed"), (False, "awaiting_approval")])
-def test_progress_question_returns_model_answer_without_workflow_actions(project, monkeypatch, conversation_only, status, role, name):
+def test_chat_call_scope_does_not_inherit_active_solver_or_leak_to_dispatch(
+    project, monkeypatch
+):
+    from app.services.call_ledger import context
+
+    root, checkpoint = project
+    state = checkpoint.load()
+    state.update(status="running", current_node="solve:ques1", execution_id="a" * 32)
+    checkpoint.save(state)
+    observed = []
+
+    async def plan(*args):
+        observed.append(context("team-test", agent_name="TeamCoordinator"))
+        return router.Plan(action="reply", reply="计算尚未完成")
+
+    async def dispatch(*args):
+        observed.append(context("team-test", agent_name="Coder"))
+        return {"message": "计算尚未完成"}
+
+    monkeypatch.setattr(router, "make_plan", plan)
+    monkeypatch.setattr(router, "execute_plan", dispatch)
+    asyncio.run(
+        router._process(
+            "team-test",
+            router.ChatRequest(request_id="chat-scope", content="进度如何"),
+            root,
+        )
+    )
+    assert observed[0]["stage_id"] == "coordinator"
+    assert observed[0]["question_id"] is None
+    assert len(observed[0]["run_id"]) == 32 and observed[0]["run_id"] != "a" * 32
+    assert observed[1]["stage_id"] == "solve:ques1"
+    assert observed[1]["question_id"] == "ques1"
+    assert observed[1]["run_id"] == "a" * 32
+
+
+@pytest.mark.parametrize(
+    "role,name",
+    [("all", "团团"), ("modeler", "灵灵"), ("coder", "点点"), ("writer", "墨墨")],
+)
+@pytest.mark.parametrize(
+    "conversation_only,status", [(False, "running"), (True, "completed")]
+)
+def test_progress_question_returns_model_answer_without_workflow_actions(
+    project, monkeypatch, conversation_only, status, role, name
+):
     from app.routers import common_router
+
     root, checkpoint = project
     state = checkpoint.load()
     state["status"] = status
     checkpoint.save(state)
     before = (root / "workflow_state.json").read_bytes()
-    chat = AsyncMock(return_value=StandardResponse(content="目前还在计算第一问，还没有完成验证。"))
-    monkeypatch.setattr(router, "LLMFactory", lambda _: SimpleNamespace(get_modeling_llms=lambda: (SimpleNamespace(chat=chat), None, None)))
+    chat = AsyncMock(
+        return_value=StandardResponse(content="目前还在计算第一问，还没有完成验证。")
+    )
+    monkeypatch.setattr(
+        router,
+        "LLMFactory",
+        lambda _: SimpleNamespace(
+            get_modeling_llms=lambda: (SimpleNamespace(chat=chat), None, None)
+        ),
+    )
     evidence = {"workflow": {"status": status, "current_node": "solve:ques1"}}
-    monkeypatch.setattr(common_router, "_build_task_copilot_context", AsyncMock(return_value=evidence))
+    monkeypatch.setattr(
+        common_router, "_build_task_copilot_context", AsyncMock(return_value=evidence)
+    )
     cancel = AsyncMock()
     resume = AsyncMock()
     monkeypatch.setattr(modeling_router, "cancel_task", cancel)
     monkeypatch.setattr(modeling_router, "resume_task", resume)
-    asyncio.run(router._process("team-test", router.ChatRequest(request_id="progress-question", content="现在到底进行得怎么样了", conversation_only=conversation_only, role=role), root))
+    asyncio.run(
+        router._process(
+            "team-test",
+            router.ChatRequest(
+                request_id="progress-question",
+                content="现在到底进行得怎么样了",
+                conversation_only=conversation_only,
+                role=role,
+            ),
+            root,
+        )
+    )
     assert team.events(root)[-1]["kind"] == "reply"
     assert "还没有完成验证" in team.events(root)[-1]["content"]
     cancel.assert_not_awaited()
@@ -458,3 +539,159 @@ def test_progress_question_returns_model_answer_without_workflow_actions(project
     assert context["latest_user_request"] == "现在到底进行得怎么样了"
     assert team.events(root)[-1]["role"] == ("coordinator" if role == "all" else role)
     assert name in chat.call_args.kwargs["history"][0]["content"]
+
+
+def _stub_coordinator(monkeypatch, chat):
+    from app.routers import common_router
+
+    monkeypatch.setattr(
+        router,
+        "LLMFactory",
+        lambda _: SimpleNamespace(
+            get_modeling_llms=lambda: (SimpleNamespace(chat=chat), None, None)
+        ),
+    )
+    monkeypatch.setattr(
+        common_router, "_build_task_copilot_context", AsyncMock(return_value={})
+    )
+
+
+def test_planner_json_embedded_in_prose_is_recovered(project, monkeypatch):
+    root, checkpoint = project
+    state = checkpoint.load()
+    state["status"] = "completed"
+    checkpoint.save(state)
+    chat = AsyncMock(
+        return_value=StandardResponse(
+            content='好的，我来说明一下。{"action": "reply", "reply": "目前完成了问题一的计算，问题二还在排队。"} 希望对你有帮助。'
+        )
+    )
+    _stub_coordinator(monkeypatch, chat)
+
+    plan = asyncio.run(
+        router.make_plan(
+            "team-test",
+            router.ChatRequest(request_id="prose-json", content="目前的结果是什么"),
+            root,
+        )
+    )
+
+    assert plan.action == "reply"
+    assert "问题一" in plan.reply
+
+
+def test_broken_planner_json_falls_back_to_conversational_answer(project, monkeypatch):
+    root, checkpoint = project
+    state = checkpoint.load()
+    state["status"] = "completed"
+    checkpoint.save(state)
+    chat = AsyncMock(
+        side_effect=[
+            StandardResponse(
+                content='{"action": "revise", "instruction": "重做第二问，结果被截断'
+            ),
+            StandardResponse(content="问题二已完成计算，23 个架次，能耗较基线降 48%。"),
+        ]
+    )
+    _stub_coordinator(monkeypatch, chat)
+
+    plan = asyncio.run(
+        router.make_plan(
+            "team-test",
+            router.ChatRequest(
+                request_id="broken-json", content="每一问的指标结果是什么"
+            ),
+            root,
+        )
+    )
+
+    assert plan.action == "reply"
+    assert "48%" in plan.reply
+    assert "没能读懂" not in plan.reply
+    assert chat.await_count == 2
+
+
+def test_conversation_empty_reply_retries_then_static_fallback(project, monkeypatch):
+    root, _ = project
+    chat = AsyncMock(return_value=StandardResponse(content=""))
+    _stub_coordinator(monkeypatch, chat)
+
+    plan = asyncio.run(
+        router.make_plan(
+            "team-test",
+            router.ChatRequest(
+                request_id="empty-reply", content="进展如何", conversation_only=True
+            ),
+            root,
+        )
+    )
+
+    assert plan.action == "reply"
+    assert "换个说法" in plan.reply
+    assert chat.await_count == 2
+
+
+@pytest.mark.parametrize("status", ["interrupted", "completed", "running"])
+def test_resume_button_routes_to_writer_without_duplicate_generation(
+    project, monkeypatch, status
+):
+    root, checkpoint = project
+    checkpoint.mark_status("completed")
+    writing_router._set_generation(paper.ensure_workspace(root), status)
+    sync, generate, resume = AsyncMock(), AsyncMock(), AsyncMock()
+    monkeypatch.setattr(writing_router, "sync", sync)
+    monkeypatch.setattr(writing_router, "generate", generate)
+    monkeypatch.setattr(modeling_router, "resume_task", resume)
+    if status == "running":
+        monkeypatch.setitem(writing_router._generations, "team-test", object())
+    body = router.ChatRequest(
+        request_id="continue-button", content="继续", action="resume"
+    )
+    asyncio.run(
+        router.execute_plan(
+            "team-test", body, router.Plan(action="resume"), root, BackgroundTasks()
+        )
+    )
+    assert generate.await_count == (1 if status == "interrupted" else 0)
+    resume.assert_not_awaited()
+
+
+@pytest.mark.parametrize("status", ["interrupted", "failed", "cancelled", "idle"])
+def test_continue_after_modeling_resumes_writer_without_model_call(
+    project, monkeypatch, status
+):
+    root, checkpoint = project
+    checkpoint.mark_status("completed")
+    writing_router._set_generation(paper.ensure_workspace(root), status)
+    sync, generate, resume = AsyncMock(), AsyncMock(), AsyncMock()
+    monkeypatch.setattr(writing_router, "sync", sync)
+    monkeypatch.setattr(writing_router, "generate", generate)
+    monkeypatch.setattr(modeling_router, "resume_task", resume)
+    body = router.ChatRequest(request_id="continue-paper", content="继续")
+
+    async def run():
+        plan = await router.make_plan("team-test", body, root)
+        assert plan.action == "write"
+        await router.execute_plan("team-test", body, plan, root, BackgroundTasks())
+
+    asyncio.run(run())
+    generate.assert_awaited_once_with("team-test")
+    resume.assert_not_awaited()
+
+
+def test_paper_resume_cannot_bypass_pending_approval(project, monkeypatch):
+    root, checkpoint = project
+    state = checkpoint.load()
+    checkpoint.complete_node(state, "review_results")
+    checkpoint.request_approval(state, "review_results", summary="等待验收")
+    generate = AsyncMock()
+    monkeypatch.setattr(writing_router, "generate", generate)
+    body = router.ChatRequest(request_id="continue-gate", content="继续")
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            router.execute_plan(
+                "team-test", body, router.Plan(action="resume"), root, BackgroundTasks()
+            )
+        )
+    generate.assert_not_awaited()
+    assert checkpoint.load()["pending_approval"]

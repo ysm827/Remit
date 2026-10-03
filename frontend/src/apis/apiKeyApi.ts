@@ -5,6 +5,8 @@ export type AgentCredentials = {
 	baseUrl: string;
 	modelId: string;
 	apiType: string;
+	contextWindow?: number;
+    maxTokens?: number;
 };
 
 export type ValidateApiKeyRequest = {
@@ -25,6 +27,7 @@ export type AgentApiConfigStatus = {
 	configured: boolean;
 	api_key_configured: boolean;
 	context_window: number;
+    max_tokens?: number | null;
 	source: "environment" | "runtime" | "missing";
 	api_type: string | null;
 	model_id: string | null;
@@ -34,6 +37,8 @@ export type AgentApiConfigStatus = {
 /** 全部 Agent 的配置状态 */
 export type ApiConfigStatusResponse = {
 	configured: boolean;
+	shared_core?: boolean;
+	fallback_enabled?: boolean;
 	model_council_enabled: boolean;
 	agents: Readonly<Record<string, AgentApiConfigStatus>>;
 };
@@ -47,6 +52,9 @@ type CoreRoleConfig = {
 };
 
 export type SaveApiConfigRequest = CoreRoleConfig & {
+	fallback?: AgentCredentials;
+	fallback_enabled?: boolean;
+	shared_core?: boolean;
 	openalex_email: string;
 	model_scout?: AgentCredentials;
 	model_critic?: AgentCredentials;

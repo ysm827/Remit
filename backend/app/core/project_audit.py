@@ -33,12 +33,15 @@ def evaluate_research(state: dict[str, Any]) -> dict[str, Any]:
     literature_status = str(review.get("status") or "")
     if not literature_status:
         literature_status = "completed" if paper_count > 0 else "failed"
+    not_requested = (state.get("problem") or {}).get(
+        "literature_enabled"
+    ) is False and literature_status == "not_requested"
 
     issues: list[str] = []
     if data_status != "completed":
         notes = [str(item) for item in (profile.get("notes") or []) if str(item)]
         issues.extend(notes[:4] or ["附件数据画像未生成或未识别到数据文件"])
-    if literature_status not in {"completed"}:
+    if literature_status != "completed" and not not_requested:
         errors = [str(item) for item in (review.get("errors") or []) if str(item)]
         issues.extend(errors[:5] or ["文献调研没有取得可用文献和方法卡"])
     if paper_count and not cards:
@@ -49,7 +52,8 @@ def evaluate_research(state: dict[str, Any]) -> dict[str, Any]:
 
     status = (
         "completed"
-        if data_status == "completed" and literature_status == "completed" and cards
+        if data_status == "completed"
+        and (not_requested or (literature_status == "completed" and cards))
         else "warning"
     )
     return {
@@ -62,7 +66,9 @@ def evaluate_research(state: dict[str, Any]) -> dict[str, Any]:
         "fulltext_read_count": fulltext_read,
         "issues": issues,
         "summary": (
-            f"已画像 {len(profiled_files)} 个附件，检索 {paper_count} 篇文献，"
+            f"已画像 {len(profiled_files)} 个附件；用户未启用建模前文献检索，没有新增文献证据"
+            if status == "completed" and not_requested
+            else f"已画像 {len(profiled_files)} 个附件，检索 {paper_count} 篇文献，"
             f"精读 {fulltext_read} 篇全文并产出 {len(cards)} 张方法卡"
             if status == "completed"
             else (
@@ -105,7 +111,7 @@ def evaluate_analysis(state: dict[str, Any]) -> dict[str, Any]:
         "expected_question_count": len(expected),
         "issues": list(dict.fromkeys(issues)),
         "summary": (
-            f"已生成 {len(actual)} 问结构化分析，且附件与文献证据完整"
+            f"已生成 {len(actual)} 问结构化分析，已核对当前项目启用的证据检查"
             if status == "completed"
             else f"已生成 {len(actual)} 问结构化分析，但证据核验尚未完整"
         ),
@@ -116,27 +122,43 @@ def evaluate_pilot(state: dict[str, Any]) -> dict[str, Any]:
     """Old checkpoints must also distinguish a skipped experiment from success."""
     reason = state.get("pilot_skipped")
     if reason:
-        return {"status": "skipped", "issues": [f"探索实验未完成，沿用原方案：{reason}"],
-                "summary": "探索实验已跳过，未取得完整候选比较证据"}
+        return {
+            "status": "skipped",
+            "issues": [f"探索实验未完成，沿用原方案：{reason}"],
+            "summary": "探索实验已跳过，未取得完整候选比较证据",
+        }
     outcome = (state.get("node_outcomes") or {}).get("pilot") or {}
     if outcome.get("status") == "failed":
         return outcome
     if state.get("pilot_results") and state.get("pilot_decision"):
-        return {"status": "completed", "issues": [], "summary": "探索记录和选型结论已保存，仍需按规则验收"}
-    return {"status": "warning", "issues": ["尚无完整探索记录和选型结论"],
-            "summary": "候选比较证据不完整"}
+        return {
+            "status": "completed",
+            "issues": [],
+            "summary": "探索记录和选型结论已保存，仍需按规则验收",
+        }
+    return {
+        "status": "warning",
+        "issues": ["尚无完整探索记录和选型结论"],
+        "summary": "候选比较证据不完整",
+    }
 
 
 def pilot_evidence_notice(state: dict[str, Any]) -> str:
-    if not (state.get("pilot_skipped") or "pilot" in state.get("workflow_features", [])
-            or "pilot" in state.get("node_outcomes", {})):
+    if not (
+        state.get("pilot_skipped")
+        or "pilot" in state.get("workflow_features", [])
+        or "pilot" in state.get("node_outcomes", {})
+    ):
         return ""
     outcome = evaluate_pilot(state)
     if outcome["status"] == "completed":
         return ""
-    return ("【探索证据限制】" + "；".join(outcome["issues"])
-            + "。不得声称已完成候选比较、由探索验证选型或编造比较指标。"
-            "正式求解结果只按自身真实证据报告。")
+    return (
+        "【探索证据限制】"
+        + "；".join(outcome["issues"])
+        + "。不得声称已完成候选比较、由探索验证选型或编造比较指标。"
+        "正式求解结果只按自身真实证据报告。"
+    )
 
 
 def evaluated_node_status(state: dict[str, Any], node_id: str) -> str:

@@ -197,6 +197,108 @@ class HierarchicalMethodRetrieverTests(unittest.TestCase):
 
 
 class MethodRetrievalIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_modeler_revision_keeps_earlier_corrections_after_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = WorkflowCheckpoint(tmp)
+            state = {
+                "version": 1,
+                "completed_nodes": [],
+                "revision_feedback": {"modeler": "重复设计点不等于秩亏"},
+                "revision_counts": {"modeler": 2},
+                "approval_history": [
+                    {
+                        "decision": "revise",
+                        "node_id": "modeler",
+                        "feedback": "容差超限不得豁免",
+                    },
+                    {
+                        "decision": "revise",
+                        "node_id": "solve:ques1",
+                        "feedback": "不属于建模节点的代码修改",
+                    },
+                    {
+                        "decision": "revise",
+                        "node_id": "modeler",
+                        "feedback": "重复设计点不等于秩亏",
+                    },
+                ],
+            }
+            checkpoint.save(state)
+            workflow = RemitWorkFlow()
+            workflow.task_id, workflow.work_dir = "revision-context", tmp
+            workflow.checkpoint = checkpoint
+            workflow._require_human_approval = AsyncMock()
+            modeler = MagicMock()
+            modeler.run = AsyncMock(
+                return_value=ModelerToCoder(questions_solution={"ques1": "核验"})
+            )
+            coordinator = CoordinatorToModeler(
+                questions={"ques1": "核验"},
+                ques_count=1,
+                task_purpose="numerical_verification",
+                user_requirements="保留原始数据",
+            )
+            with patch(
+                "app.core.workflow.redis_manager.publish_message", new=AsyncMock()
+            ):
+                await workflow._modeler_node(
+                    checkpoint.load(), coordinator, modeler, None
+                )
+            requirements = modeler.run.await_args.args[0].user_requirements
+            self.assertIn("保留原始数据", requirements)
+            self.assertEqual(requirements.count("容差超限不得豁免"), 1)
+            self.assertEqual(requirements.count("重复设计点不等于秩亏"), 1)
+            self.assertNotIn("不属于建模节点的代码修改", requirements)
+            self.assertLess(
+                requirements.index("容差超限"), requirements.index("重复设计点")
+            )
+            self.assertEqual(coordinator.user_requirements, "保留原始数据")
+
+    async def test_fixed_method_does_not_retrieve_irrelevant_alternatives(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workflow = RemitWorkFlow()
+            workflow.task_id, workflow.work_dir = "numeric-method", tmp
+            workflow.checkpoint = WorkflowCheckpoint(tmp)
+            workflow._require_human_approval = AsyncMock()
+            state = {
+                "completed_nodes": [],
+                "revision_feedback": {},
+                "revision_counts": {},
+            }
+            modeler = MagicMock()
+            modeler.run = AsyncMock(
+                return_value=ModelerToCoder(
+                    questions_solution={
+                        "eda": "核验输入",
+                        "ques1": "指定 OLS",
+                        "sensitivity_analysis": "留一复算",
+                    }
+                )
+            )
+            coordinator = CoordinatorToModeler(
+                questions={"ques1": "核对 OLS"},
+                ques_count=1,
+                task_purpose="numerical_verification",
+            )
+            with (
+                patch(
+                    "app.core.workflow.redis_manager.publish_message", new=AsyncMock()
+                ),
+                patch(
+                    "app.core.workflow.HierarchicalMethodRetriever.from_default_library",
+                    side_effect=AssertionError("unneeded method search"),
+                ),
+            ):
+                await workflow._modeler_node(state, coordinator, modeler, None)
+            self.assertEqual(modeler.run.await_args.args[0].method_recommendations, {})
+            self.assertFalse((Path(tmp) / "method_recommendations.json").exists())
+            self.assertEqual(
+                workflow._require_human_approval.await_args.kwargs["explain"][
+                    "candidates"
+                ],
+                [],
+            )
+
     async def test_modeler_receives_retrieved_methods_as_selection_evidence(
         self,
     ) -> None:

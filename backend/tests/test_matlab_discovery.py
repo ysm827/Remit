@@ -9,7 +9,13 @@ class MatlabRootTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "extern/engines/python").mkdir(parents=True)
-            for suffix in ("bin/matlab.exe", "bin/win64/MATLAB.exe", "bin/glnxa64/MATLAB", "bin/maca64/MATLAB", "bin/maci64/MATLAB"):
+            for suffix in (
+                "bin/matlab.exe",
+                "bin/win64/MATLAB.exe",
+                "bin/glnxa64/MATLAB",
+                "bin/maca64/MATLAB",
+                "bin/maci64/MATLAB",
+            ):
                 interpreter = object.__new__(MatlabCodeInterpreter)
                 interpreter.executable = str(root / suffix)
                 self.assertEqual(interpreter.matlab_root, root.resolve())

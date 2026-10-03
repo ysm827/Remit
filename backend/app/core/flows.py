@@ -9,6 +9,7 @@ from typing import Any
 
 from app.core.agents.modeler_agent import ModelerToCoder
 from app.core.deliverable_contract import build_question_contract, build_stage_contract
+from app.core.task_purpose import TaskPurpose, NUMERICAL_VERIFICATION_SCOPE
 from app.models.user_output import UserOutput
 from app.tools.base_interpreter import BaseCodeInterpreter
 
@@ -36,9 +37,13 @@ class Flows:
         questions: dict[str, str | int],
         user_requirements: str = "",
         citation_brief: str = "",
+        task_purpose: TaskPurpose = "modeling",
     ) -> None:
         self.questions = questions
         self.user_requirements = user_requirements.strip()
+        self.task_purpose = task_purpose
+        if task_purpose == "numerical_verification":
+            self.user_requirements += "\n" + NUMERICAL_VERIFICATION_SCOPE
         # 经代码验证后仍被采用的文献清单；探索实验定案后才可用，允许后置注入
         self.citation_brief = citation_brief.strip()
         self.flows: dict[str, dict] = {}
@@ -82,15 +87,24 @@ class Flows:
 
         flows: dict[str, dict] = {}
 
-        eda_contract = build_stage_contract("eda")
+        eda_contract = build_stage_contract(
+            "eda", self.task_purpose, self.user_requirements
+        )
+        eda_scope = (
+            "只检查指定输入的数据结构、有限性、重复情况和方案要求的可辨识条件。"
+            "保留原始数据；清洗、副本、分布图和异常筛选仅在已批准方案明确要求时执行。"
+            if self.task_purpose == "numerical_verification"
+            else "对当前目录下数据进行EDA分析(数据清洗,可视化)，清洗后的数据保存当前目录下，不需要复杂的模型。"
+            "必须识别真实独立分析单位、重复测量/技术重复、缺失、异常、数据泄露风险和关键区间样本支持度。"
+        )
         flows["eda"] = {
             "contract": eda_contract,
             "question_text": "数据清洗与探索性分析",
             "model_plan": solutions.get("eda", "对数据进行探索性分析"),
             "coder_prompt": f"""
                         参考建模手给出的解决方案{solutions.get("eda", "对数据进行探索性分析")}
-                        对当前目录下数据进行EDA分析(数据清洗,可视化),清洗后的数据保存当前目录下,**不需要复杂的模型**。
-                        必须识别真实独立分析单位、重复测量/技术重复、缺失、异常、数据泄露风险和关键区间样本支持度。
+                        {eda_scope}
+                        用户任务范围：{requirements}
 
                         {eda_contract.prompt_block()}
                     """,
@@ -101,6 +115,7 @@ class Flows:
                 question_key=key,
                 question_text=str(questions[key]),
                 user_requirements=self.user_requirements,
+                task_purpose=self.task_purpose,
             )
             flows[key] = {
                 "contract": contract,
@@ -115,14 +130,24 @@ class Flows:
                     """,
             }
 
-        sensitivity_contract = build_stage_contract("sensitivity_analysis")
+        sensitivity_contract = build_stage_contract(
+            "sensitivity_analysis", self.task_purpose, self.user_requirements
+        )
+        sensitivity_scope = (
+            "只完成已批准方案要求的稳定性核验，复用已有计算与独立复算证据。"
+            "不得为凑场景数增加浮点精度、求解器参数或额外模型实验；"
+            "不存在可调参数时如实说明，不把待估系数冒充可扰动参数。"
+            if self.task_purpose == "numerical_verification"
+            else "完成敏感性分析。不得只画一张扰动图；必须覆盖最终入选模型的关键参数、数据扰动和结论稳定性。"
+        )
         flows["sensitivity_analysis"] = {
             "contract": sensitivity_contract,
             "question_text": "最终入选模型的灵敏度与稳健性分析",
             "model_plan": solutions.get("sensitivity_analysis", "对模型进行灵敏度分析"),
             "coder_prompt": f"""
                         参考建模手给出的解决方案{solutions.get("sensitivity_analysis", "对模型进行灵敏度分析")}
-                        完成敏感性分析。不得只画一张扰动图；必须覆盖最终入选模型的关键参数、数据扰动和结论稳定性。
+                        {sensitivity_scope}
+                        用户任务范围：{requirements}
 
                         {sensitivity_contract.prompt_block()}
                     """,
@@ -181,6 +206,22 @@ class Flows:
         background = self.questions["background"]
         requirements = self.user_requirements or "无"
         citations = self._citation_block()
+
+        # 两个写作入口共用相同事实边界；此处只整理已经生成的证据。
+        from app.services.paper_plan import section_context
+
+        citations += section_context(
+            key,
+            {
+                "questions": self.questions,
+                "solution_results": {
+                    key: {
+                        "execution_summary": coder_response,
+                        "model_review": model_review or {},
+                    }
+                },
+            },
+        )
 
         if key in self.get_questions_quesx():
             return f"""

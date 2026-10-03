@@ -555,7 +555,10 @@ class ModelCouncil:
         last_error = "未知格式错误"
         for attempt in range(1, max_attempts + 1):
             response = await self._chat_with_cancel(
-                llm, history, max_retries=call_max_retries
+                llm,
+                history,
+                max_retries=call_max_retries,
+                purpose="structure_repair" if attempt > 1 else "normal_work",
             )
             content = response.content or ""
             try:
@@ -585,6 +588,7 @@ class ModelCouncil:
         history: list[dict[str, Any]],
         *,
         max_retries: int | None = None,
+        purpose="normal_work",
     ):
         task = asyncio.create_task(
             llm.chat(
@@ -592,6 +596,7 @@ class ModelCouncil:
                 agent_name=AgentType.SYSTEM,
                 publish=False,
                 max_retries=max_retries,
+                purpose=purpose,
             )
         )
         if self.cancel_event is None:

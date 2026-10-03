@@ -8,7 +8,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.core.pilot import (
-    PilotValidationError, pilot_input_context, pilot_input_fingerprint,
+    PilotValidationError,
+    pilot_input_context,
+    pilot_input_fingerprint,
     validate_pilot_results,
 )
 from app.core.workflow import RemitWorkFlow
@@ -16,20 +18,45 @@ from app.schemas.A2A import ModelerToCoder, PilotPlan
 
 
 def make_plan():
-    return PilotPlan.model_validate({"questions": {
-        key: {"candidates": [
-            {"name": "baseline", "role": "baseline", "approach": "使用简单可行的基线方案"},
-            {"name": "alternative", "approach": "使用相同样本比较另一方案"},
-        ], "sampling_rule": "固定抽取相同的两个地点", "primary_metric": "cost"}
-        for key in ("ques1", "ques2")
-    }})
+    return PilotPlan.model_validate(
+        {
+            "questions": {
+                key: {
+                    "candidates": [
+                        {
+                            "name": "baseline",
+                            "role": "baseline",
+                            "approach": "使用简单可行的基线方案",
+                        },
+                        {"name": "alternative", "approach": "使用相同样本比较另一方案"},
+                    ],
+                    "sampling_rule": "固定抽取相同的两个地点",
+                    "primary_metric": "cost",
+                }
+                for key in ("ques1", "ques2")
+            }
+        }
+    )
 
 
 def output(key):
-    return {"questions": {key: {"sample_description": "the same two sites",
-        "candidates": [{"name": name, "metric_name": "cost", "metric_value": 2.0,
-                        "runtime_seconds": 1, "ran_ok": True}
-                       for name in ("baseline", "alternative")]}}}
+    return {
+        "questions": {
+            key: {
+                "sample_description": "the same two sites",
+                "candidates": [
+                    {
+                        "name": name,
+                        "metric_name": "cost",
+                        "metric_value": 2.0,
+                        "runtime_seconds": 1,
+                        "ran_ok": True,
+                    }
+                    for name in ("baseline", "alternative")
+                ],
+            }
+        }
+    }
 
 
 class PilotQuestionRecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -45,14 +72,21 @@ class PilotQuestionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             wf.questions = {"ques1": "FIRST_QUESTION", "ques2": "SECOND_QUESTION"}
             wf.checkpoint = MagicMock()
             wf._check_cancelled = AsyncMock()
-            strategies = ModelerToCoder(questions_solution={"ques1": "FIRST_APPROVED", "ques2": "SECOND_APPROVED"})
+            strategies = ModelerToCoder(
+                questions_solution={
+                    "ques1": "FIRST_APPROVED",
+                    "ques2": "SECOND_APPROVED",
+                }
+            )
             state, calls = {}, []
             fail_second = True
 
             async def run(**kwargs):
                 key = kwargs["subtask_title"].split(":")[1]
                 calls.append(key)
-                self.assertEqual(kwargs["required_files"], (f"pilot_{key}_results.json",))
+                self.assertEqual(
+                    kwargs["required_files"], (f"pilot_{key}_results.json",)
+                )
                 self.assertLessEqual(kwargs["max_code_executions"], 6)
                 self.assertIn("site", kwargs["prompt"])
                 if key == "ques1":
@@ -60,7 +94,9 @@ class PilotQuestionRecoveryTests(unittest.IsolatedAsyncioTestCase):
                     self.assertNotIn("SECOND_APPROVED", kwargs["prompt"])
                 if key == "ques2" and fail_second:
                     return
-                (root / kwargs["required_files"][0]).write_text(json.dumps(output(key)), encoding="utf-8")
+                (root / kwargs["required_files"][0]).write_text(
+                    json.dumps(output(key)), encoding="utf-8"
+                )
 
             coder = SimpleNamespace(run=AsyncMock(side_effect=run))
             with patch("app.core.workflow.publish_activity", new_callable=AsyncMock):
@@ -73,7 +109,9 @@ class PilotQuestionRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 state = json.loads(json.dumps(state))
                 fail_second = False
                 calls.clear()
-                result = await wf._run_pilot_questions(state, coder, strategies, make_plan())
+                result = await wf._run_pilot_questions(
+                    state, coder, strategies, make_plan()
+                )
                 self.assertEqual(calls, ["ques2"])
                 self.assertEqual(set(result["questions"]), {"ques1", "ques2"})
                 self.assertEqual(validate_pilot_results(root, make_plan()), result)
@@ -97,7 +135,9 @@ class PilotQuestionRecoveryTests(unittest.IsolatedAsyncioTestCase):
             manifest.write_text('["original.csv"]')
             before = pilot_input_fingerprint(root, {"strategy": "approved"})
             data.write_text("x\n2\n")
-            self.assertNotEqual(before, pilot_input_fingerprint(root, {"strategy": "approved"}))
+            self.assertNotEqual(
+                before, pilot_input_fingerprint(root, {"strategy": "approved"})
+            )
             manifest.write_text('["../outside.csv"]')
             with self.assertRaises(PilotValidationError):
                 pilot_input_fingerprint(root, {})

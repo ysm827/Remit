@@ -75,9 +75,16 @@ def record(
             previous = db.execute(
                 "SELECT role,kind,content,data FROM events ORDER BY seq DESC LIMIT 1"
             ).fetchone()
-            if previous and (previous["role"], previous["kind"], previous["content"]) == (role, kind, content):
+            if previous and (
+                previous["role"],
+                previous["kind"],
+                previous["content"],
+            ) == (role, kind, content):
                 old = json.loads(previous["data"])
-                if all(old.get(field) == (data or {}).get(field) for field in ("category", "detail")):
+                if all(
+                    old.get(field) == (data or {}).get(field)
+                    for field in ("category", "detail")
+                ):
                     return
         db.execute(
             "INSERT OR IGNORE INTO events(event_key,at,role,kind,content,data) VALUES(?,?,?,?,?,?)",
@@ -235,10 +242,11 @@ def snapshot(root: Path) -> dict:
                 "label": WorkflowCheckpoint.node_label(node, state),
                 "role": owner(node),
                 "status": node_status,
-                "issues": (evaluate_pilot(state) if node == "pilot" else
-                           (state.get("node_outcomes", {}).get(node) or {})).get(
-                    "issues", []
-                ),
+                "issues": (
+                    evaluate_pilot(state)
+                    if node == "pilot"
+                    else (state.get("node_outcomes", {}).get(node) or {})
+                ).get("issues", []),
             }
         )
     writing = read_json(root / "paper" / "workspace.json").get("generation", {})
@@ -246,17 +254,29 @@ def snapshot(root: Path) -> dict:
     if root.name in compiling_tasks:
         compilation = {**compilation, "status": "running"}
     inputs = read_json(root / "paper" / "input.json")
+    from app.services.call_ledger import summary as call_summary
+
+    resolved_root = root.resolve()
+    usage = call_summary(resolved_root)
+    from app.services.work_timing import summary as work_summary
+
+    timing = work_summary(resolved_root, state=state)
+    failure = read_json(root / ".runtime-failure.json") if status == "failed" else None
     steps.extend(
         [
             {
                 "id": "paper:generate",
                 "label": writing.get("section") or "论文手撰写初稿",
                 "role": "writer",
-                "status": ("ready" if inputs else "blocked") if writing.get("status", "idle") == "idle" else writing["status"],
+                "status": ("ready" if inputs else "blocked")
+                if writing.get("status", "idle") == "idle"
+                else writing["status"],
             },
             {
                 "id": "paper:compile",
-                "label": "论文 PDF 编译" if writing.get("file") else "当前源码预览（尚未生成论文）",
+                "label": "论文 PDF 编译"
+                if writing.get("file")
+                else "当前源码预览（尚未生成论文）",
                 "role": "writer",
                 "status": compilation.get("status", "pending"),
             },
@@ -276,6 +296,12 @@ def snapshot(root: Path) -> dict:
         latest = db.execute("SELECT COALESCE(MAX(seq),0) FROM events").fetchone()[0]
     return {
         "task_id": root.name,
+        "task_purpose": (state.get("problem") or meta.get("problem") or {}).get(
+            "task_purpose", "modeling"
+        ),
+        "failure": failure,
+        "usage": usage,
+        "timing": timing,
         "preflight": meta.get("preflight") if not state else None,
         "archived": meta.get("archived", False),
         "status": status,
@@ -304,6 +330,46 @@ def snapshot(root: Path) -> dict:
             for key, value in (state.get("solution_results") or {}).items()
         ],
     }
+
+
+def _context_results(results: list[dict]) -> list[dict]:
+    """Keep verdicts and evidence; table rows remain in their source files."""
+    compact = []
+    for result in results:
+        summary = result["summary"]
+        if not isinstance(summary, dict):
+            compact.append(result)
+            continue
+        summary = dict(summary)
+        if (
+            "run_summary" in summary
+            and summary.get("content") == summary["run_summary"]
+        ):
+            summary.pop("content", None)
+        previews = summary.get("table_previews")
+        if isinstance(previews, list):
+            # Copy each preview: the full checkpoint and UI still need its rows.
+            summary["table_previews"] = [
+                {
+                    **{key: value for key, value in preview.items() if key != "rows"},
+                    "rows_omitted": len(preview["rows"]),
+                }
+                if isinstance(preview, dict) and isinstance(preview.get("rows"), list)
+                else preview
+                for preview in previews
+            ]
+        compact.append(
+            {
+                **result,
+                "summary": summary,
+                "summary_source": {
+                    "path": "workflow_state.json",
+                    "result_key": result["key"],
+                    "field": "execution_summary",
+                },
+            }
+        )
+    return compact
 
 
 def context_for(task_id: str, agent_name: str) -> str:
@@ -338,6 +404,7 @@ def context_for(task_id: str, agent_name: str) -> str:
                 f"已读取协作要求：{item['content']}",
                 key=f"receipt:{item['id']}:{role}",
             )
+    attachments = input_filenames(root)
     brief = {
         "status": state["status"],
         "current_node": state["current_node"],
@@ -347,14 +414,16 @@ def context_for(task_id: str, agent_name: str) -> str:
             for item in reversed(state["directives"])
         ],
         "my_instructions": [item["content"] for item in reversed(applicable)],
-        "results": state["results"],
-        "attachment_files": sorted(input_filenames(root))[:200],
-        "attachment_count": len(input_filenames(root)),
+        "results": _context_results(state["results"]),
+        "attachment_files": sorted(attachments)[:200],
+        "attachment_count": len(attachments),
         "attachment_manifest": ".remit-inputs.json",
     }
     return (
         "\n共享协作状态（执行事实；用户要求不得覆盖质量门禁或编造结果）：\n"
-        + json.dumps(brief, ensure_ascii=False, default=str)[:18000]
+        # LLM.chat checks the complete request budget before contacting a provider.
+        # A character slice here silently removed constraints and attachment refs.
+        + json.dumps(brief, ensure_ascii=False, default=str, separators=(",", ":"))
     )
 
 
@@ -362,7 +431,14 @@ def checkpoint_event(root: Path, state: dict) -> None:
     """检查点改变时记录每个开始、完成、暂停和返修转移。"""
     activate_directives(root, state)
     data = {
-        key: state.get(key) for key in ("status", "current_node", "completed_nodes", "node_outcomes", "pilot_skipped")
+        key: state.get(key)
+        for key in (
+            "status",
+            "current_node",
+            "completed_nodes",
+            "node_outcomes",
+            "pilot_skipped",
+        )
     }
     pending = state.get("pending_approval") or {}
     data["checkpoint_id"] = pending.get("checkpoint_id")
@@ -385,8 +461,11 @@ def checkpoint_event(root: Path, state: dict) -> None:
         from app.core.project_audit import evaluated_node_status
 
         outcome = evaluated_node_status(state, node)
-        phase = {"skipped": "步骤已跳过，未验证", "warning": "步骤结束，仍需核验",
-                 "failed": "步骤失败"}.get(outcome, phase)
+        phase = {
+            "skipped": "步骤已跳过，未验证",
+            "warning": "步骤结束，仍需核验",
+            "failed": "步骤失败",
+        }.get(outcome, phase)
     record(root, owner(node), "checkpoint", f"{label} · {phase}", data)
 
 

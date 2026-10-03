@@ -3,6 +3,7 @@
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
+from app.core.task_purpose import TaskPurpose
 
 
 class QuestionAnalysis(BaseModel):
@@ -64,6 +65,7 @@ class CoordinatorToModeler(BaseModel):
     analysis_summary: str = ""
     question_analyses: dict[str, QuestionAnalysis] = Field(default_factory=dict)
     user_requirements: str = ""
+    task_purpose: TaskPurpose = "modeling"
     # 调研节点注入：确定性数据画像与文献调研摘要，供选型参考
     data_profile: dict | None = None
     literature_brief: str = ""
@@ -269,6 +271,7 @@ class PilotQuestionPlan(BaseModel):
     primary_metric: str = Field(min_length=2)
     higher_is_better: bool = False
     time_budget_minutes: int = Field(default=5, ge=1, le=15)
+    excluded_cards: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_baseline(self) -> "PilotQuestionPlan":
@@ -280,7 +283,17 @@ class PilotQuestionPlan(BaseModel):
 class PilotPlan(BaseModel):
     """全部小问的探索实验协议。"""
 
-    questions: dict[str, PilotQuestionPlan]
+    questions: dict[str, PilotQuestionPlan] = Field(default_factory=dict)
+    not_applicable_reason: str = ""
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "PilotPlan":
+        if self.not_applicable_reason.strip():
+            if self.questions or len(self.not_applicable_reason.strip()) < 12:
+                raise ValueError("不适用时必须写明具体任务约束且 questions 为空")
+        elif not self.questions:
+            raise ValueError("探索协议须包含小问或明确的不适用原因")
+        return self
 
 
 class CitationDecision(BaseModel):
@@ -323,4 +336,7 @@ class WriterResponse(BaseModel):
 
     response_content: Any
     footnotes: list[tuple[str, str]] = Field(default_factory=list)
-    omitted_images: dict[str, str] = Field(default_factory=dict, description="未采用的候选图片文件名及具体理由；正文须保留相关关键结论与负结果")
+    omitted_images: dict[str, str] = Field(
+        default_factory=dict,
+        description="未采用的候选图片文件名及具体理由；正文须保留相关关键结论与负结果",
+    )

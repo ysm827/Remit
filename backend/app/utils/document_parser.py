@@ -25,7 +25,11 @@ def save_word_preview_images(content: bytes, destination: Path) -> dict[str, str
         if sum(item.file_size for item in archive.infolist()) > 100 * 1024 * 1024:
             raise PdfParseError("Word 文档解压后超过 100MB，请拆分文档")
         for item in archive.infolist():
-            if not re.fullmatch(r"word/media/[A-Za-z0-9_.-]+\.(?:png|jpg|jpeg|gif|svg)", item.filename, re.I):
+            if not re.fullmatch(
+                r"word/media/[A-Za-z0-9_.-]+\.(?:png|jpg|jpeg|gif|svg)",
+                item.filename,
+                re.I,
+            ):
                 continue
             data = archive.read(item)
             name = Path(item.filename).name
@@ -34,7 +38,9 @@ def save_word_preview_images(content: bytes, destination: Path) -> dict[str, str
                 with fitz.open(stream=data, filetype="svg") as image:
                     page = image[0]
                     scale = min(2, 2000 / max(page.rect.width, page.rect.height, 1))
-                    data = page.get_pixmap(matrix=fitz.Matrix(scale, scale)).tobytes("png")
+                    data = page.get_pixmap(matrix=fitz.Matrix(scale, scale)).tobytes(
+                        "png"
+                    )
                 name += ".png"
             destination.mkdir(parents=True, exist_ok=True)
             target = destination / name
@@ -86,7 +92,9 @@ def parse_word_bytes(content: bytes, suffix: str) -> ParsedProblemPdf:
                     )
                 )
         text = "\n\n".join(line for line in lines if line.strip()).strip()
-        if document.inline_shapes or any(node.tag == qn("m:oMath") for node in document.element.iter()):
+        if document.inline_shapes or any(
+            node.tag == qn("m:oMath") for node in document.element.iter()
+        ):
             # OMML 公式不能简单拼接字符，否则分数、上下标会丢失数学含义。
             import pypandoc
 
@@ -101,10 +109,17 @@ def parse_word_bytes(content: bytes, suffix: str) -> ParsedProblemPdf:
 
                 digest = hashlib.sha256(content).hexdigest()
                 images = save_word_preview_images(
-                    content, BACKEND_ROOT / "project" / "work_dir" / "_document_previews" / digest
+                    content,
+                    BACKEND_ROOT
+                    / "project"
+                    / "work_dir"
+                    / "_document_previews"
+                    / digest,
                 )
                 for source, name in images.items():
-                    text = text.replace(f"]({source})", f"](/static/_document_previews/{digest}/{name})")
+                    text = text.replace(
+                        f"]({source})", f"](/static/_document_previews/{digest}/{name})"
+                    )
         if not text:
             raise PdfParseError("Word 中没有可提取文字；扫描图片请先转成 PDF 识别")
         if document.inline_shapes:

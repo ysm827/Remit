@@ -79,6 +79,54 @@ catch { $failed = $true }
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             return json.loads(result.stdout.strip())
 
+    def test_dependency_environment_is_isolated_and_restored(self) -> None:
+        for fail in (False, True):
+            with self.subTest(sync_failure=fail), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                fixture = {"script": str(PROJECT_ROOT / "tools/package_win.ps1"), "fail": fail}
+                (root / "fixture.json").write_text(json.dumps(fixture), encoding="utf-8")
+                harness = root / "dependencies.ps1"
+                harness.write_text(r"""
+$ErrorActionPreference = "Stop"
+$f = Get-Content -LiteralPath (Join-Path $PSScriptRoot "fixture.json") -Raw | ConvertFrom-Json
+$tokens = $null; $errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($f.script, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw ($errors | Out-String) }
+foreach ($name in @("Assert-Path", "Initialize-BuildDependencies")) {
+    $definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
+$env:UV_PROJECT_ENVIRONMENT = "user-environment-sentinel"
+$script:calls = @()
+function uv {
+    $script:calls += ,@($args)
+    if ($args[0] -eq "sync") {
+        if ($env:UV_PROJECT_ENVIRONMENT -ne (Join-Path $PSScriptRoot "build-env")) { throw "Wrong environment" }
+        if ($f.fail) { $global:LASTEXITCODE = 17; return }
+        New-Item -ItemType Directory -Path (Join-Path $env:UV_PROJECT_ENVIRONMENT "Scripts") | Out-Null
+        New-Item -ItemType File -Path (Join-Path $env:UV_PROJECT_ENVIRONMENT "Scripts\python.exe") | Out-Null
+    }
+    $global:LASTEXITCODE = 0
+}
+$failed = $false
+try { Initialize-BuildDependencies -ProjectDirectory (Join-Path $PSScriptRoot "project") -EnvironmentDirectory (Join-Path $PSScriptRoot "build-env") -PythonExecutable "base-python" }
+catch { $failed = $true }
+$before = $script:calls.Count
+$overlapRejected = $false
+try { Initialize-BuildDependencies -ProjectDirectory (Join-Path $PSScriptRoot "project") -EnvironmentDirectory (Join-Path $PSScriptRoot "project\.venv") -PythonExecutable "base-python" }
+catch { $overlapRejected = $true }
+@{ failed=$failed; restored=$env:UV_PROJECT_ENVIRONMENT; calls=$script:calls; overlap_rejected=$overlapRejected; overlap_did_not_sync=($before -eq $script:calls.Count) } | ConvertTo-Json -Depth 5 -Compress
+""", encoding="utf-8-sig")
+                run = subprocess.run(["powershell.exe", "-NoProfile", "-File", str(harness)], capture_output=True, text=True, timeout=30)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                result = json.loads(run.stdout)
+                self.assertEqual(result["failed"], fail)
+                self.assertEqual(result["restored"], "user-environment-sentinel")
+                self.assertTrue(result["overlap_rejected"] and result["overlap_did_not_sync"])
+                self.assertEqual(len(result["calls"]), 1 if fail else 2)
+                self.assertIn("--locked", result["calls"][0])
+                self.assertIn("--no-dev", result["calls"][0])
+
     def test_missing_translation_is_installed(self) -> None:
         result = self.run_language_setup("missing")
         self.assertEqual(result, {

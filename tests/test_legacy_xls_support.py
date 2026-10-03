@@ -14,6 +14,7 @@ BACKEND_ROOT = PROJECT_ROOT / "backend"
 sys.path.insert(0, str(BACKEND_ROOT))
 
 from app.tools.e2b_interpreter import E2BCodeInterpreter  # noqa: E402
+from app.tools.notebook_serializer import NotebookSerializer  # noqa: E402
 from app.utils.common_utils import get_current_files  # noqa: E402
 
 
@@ -21,12 +22,12 @@ class LegacyXlsBackendTests(unittest.IsolatedAsyncioTestCase):
     def test_data_discovery_includes_legacy_xls(self) -> None:
         with tempfile.TemporaryDirectory() as temp_directory:
             folder = Path(temp_directory)
-            for filename in ("legacy.xls", "modern.xlsx", "table.csv", "attachment.pdf"):
+            for filename in ("legacy.xls", "modern.xlsx", "table.csv", "reference.pdf", ".hidden.csv", "workflow_state.json", "all.zip"):
                 (folder / filename).touch()
 
             discovered = set(get_current_files(str(folder), "data"))
 
-        self.assertEqual(discovered, {"legacy.xls", "modern.xlsx", "table.csv", "attachment.pdf"})
+        self.assertEqual(discovered, {"legacy.xls", "modern.xlsx", "table.csv", "reference.pdf"})
 
     async def test_e2b_upload_includes_legacy_xls(self) -> None:
         class FakeFiles:
@@ -43,12 +44,12 @@ class LegacyXlsBackendTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as temp_directory:
             legacy_file = Path(temp_directory) / "legacy.xls"
             legacy_file.write_bytes(b"legacy-excel-fixture")
-            interpreter = E2BCodeInterpreter.__new__(E2BCodeInterpreter)
-            interpreter.work_dir = temp_directory
+            interpreter = E2BCodeInterpreter("fixture", temp_directory, NotebookSerializer(temp_directory))
             interpreter.sbx = FakeSandbox()
-            interpreter._uploaded_files = set()
 
             await interpreter._upload_all_files()
+            await interpreter._upload_all_files()
+            self.assertEqual(len(interpreter.sbx.files.writes), 1)
 
         self.assertIn(
             ("/home/user/legacy.xls", b"legacy-excel-fixture"),

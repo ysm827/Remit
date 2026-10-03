@@ -10,6 +10,7 @@ from app.core.agents.agent import Agent
 from app.core.functions import writer_tools
 from app.core.llm.llm import LLM
 from app.core.prompts.writer import get_writer_prompt
+from app.core.paper_mode import PaperMode, SHORT_REPORT_PROMPT, paper_mode
 from app.core.structured_output import (
     configured_output_budget,
     expanded_output_budget,
@@ -35,13 +36,18 @@ class WriterAgent(Agent):
         scholar: OpenAlexScholar | None = None,
         context_window: int = 128000,
         cancel_event: asyncio.Event | None = None,
+        mode: PaperMode = "full_paper",
     ) -> None:
         super().__init__(
             task_id,
             model,
             context_window,
             cancel_event=cancel_event,
-            system_prompt=get_writer_prompt(format_output),
+            system_prompt=(
+                SHORT_REPORT_PROMPT
+                if paper_mode(mode) == "short_report"
+                else get_writer_prompt(format_output)
+            ),
         )
         self.comp_template = comp_template
         self.format_out_put = format_output
@@ -112,7 +118,10 @@ class WriterAgent(Agent):
         omitted = {}
         for record in records:
             data = json.loads(record)
-            if not isinstance(data, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in data.items()):
+            if not isinstance(data, dict) or any(
+                not isinstance(k, str) or not isinstance(v, str)
+                for k, v in data.items()
+            ):
                 raise ValueError("图片取舍记录必须为文件名与理由的映射")
             if omitted.keys() & data.keys():
                 raise ValueError("图片取舍记录重复")
@@ -130,7 +139,10 @@ class WriterAgent(Agent):
         """Allow three bounded retries; never publish incomplete prose as done."""
         budget = configured_output_budget(self.model)
         for attempt in range(4):
-            response = await self._chat(**kwargs, max_tokens=budget)
+            response = await self._chat(
+                **{**kwargs, **({"purpose": "structure_repair"} if attempt else {})},
+                max_tokens=budget,
+            )
             truncated = response_was_truncated(response, budget)
             has_text = bool((response.content or "").strip())
             has_allowed_tools = bool(response.tool_calls and kwargs.get("tools"))
@@ -154,18 +166,21 @@ class WriterAgent(Agent):
         raise RuntimeError("论文手没有返回完整正文")
 
     @staticmethod
-    def _image_directive(available_images: list[str], template: CompTemplate = CompTemplate.CHINA) -> str:
+    def _image_directive(
+        available_images: list[str], template: CompTemplate = CompTemplate.CHINA
+    ) -> str:
         """Offer evidence figures for selection, not a compulsory slide gallery."""
         lines = "\n".join(f"- ![{img}]({img})" for img in available_images)
         references = (
             "用 @fig:文件名.png@ 引用图片，排版器会填入真实图号；alt写简洁图题，不手填图号。"
-            if template == CompTemplate.CHINA else
-            "正文图号须与图片顺序一致，按 Figure 1, Figure 2 顺序引用，alt只写简洁图题。"
+            if template == CompTemplate.CHINA
+            else "正文图号须与图片顺序一致，按 Figure 1, Figure 2 顺序引用，alt只写简洁图题。"
         )
         directive = (
             "\n\n【可供正文选用的证据图片】\n"
             "按独特证据贡献选取下列图片，不要求全部展示；优先保留关键对比、约束与负结果：\n"
             f"{lines}\n"
+            "以上是本节完整候选列表。其他章节或共享证据中的图片不属于本节取舍范围，不要为其添加 omit 注释。"
             "图片以 ![简洁图题](文件名) 独占一行，前后留空行，插入相邻论证段落之间。"
             "图题不超过20字，不写文件名。正文先提出结论，"
             f"{references}"

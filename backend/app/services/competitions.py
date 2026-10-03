@@ -123,7 +123,7 @@ def template(root: Path) -> str:
     preamble = (
         r"\documentclass[a4paper,12pt]{article}"
         if english
-        else r"\documentclass[UTF8,a4paper,zihao=-4,fontset=fandol]{ctexart}"
+        else r"\documentclass[UTF8,a4paper,zihao=-4]{ctexart}"
     ) + "\n"
     preamble += r"""\usepackage[margin=2.5cm]{geometry}
 \usepackage{amsmath,amssymb,graphicx,booktabs}
@@ -184,6 +184,11 @@ def adapt_generated_source(task_root: Path, source: str) -> str:
     if not entry:
         return source
     rules = entry.get("rules", {})
+    if "Remit-LaTeX-Assembler: china-v1" in source:
+        # 组装器已按冻结配置设置页边距、页脚页码与标题版式，只做正文级清理。
+        if rules.get("toc") is False:
+            source = re.sub(r"\\tableofcontents\b", "", source)
+        return source
     header = "\n% Remit contest: " + entry["id"] + " / " + str(entry["year"]) + "\n"
     if rules.get("margin_cm"):
         header += "\\geometry{a4paper,margin=2.5cm}\n"
@@ -216,6 +221,13 @@ def review(root: Path) -> dict:
     compiled = ws.read_json(paper / "compile.json")
     pdf = paper / "preview.pdf"
     checks = []
+    if ws.document_mode(paper) == "short_report":
+        checks.append(
+            {
+                "label": "当前文档为短报告，不能作为完整竞赛论文提交；请生成完整论文并逐项验收。",
+                "status": "failed",
+            }
+        )
     checks.append(
         {
             "label": "当前源码已成功编译",

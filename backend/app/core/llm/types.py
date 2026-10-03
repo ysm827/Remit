@@ -22,6 +22,7 @@ class Usage:
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    known: bool = False
 
 
 @dataclass

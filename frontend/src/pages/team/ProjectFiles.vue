@@ -106,7 +106,7 @@ async function refresh(manual = false) {
 		}
 	} catch (cause) {
 		if (!disposed && currentRevision === revision) {
-			error.value = "这次同步没成功：" + explainModelingSubmissionFailure(cause);
+			error.value = `这次同步没成功：${explainModelingSubmissionFailure(cause)}`;
 			refreshNotice.value = "已保留上次读取的内容，可以再试一次。";
 		}
 	} finally {
@@ -157,7 +157,7 @@ onBeforeUnmount(() => {
     <div class="status-strip"><div><strong>{{ rows.length }}</strong><span>步骤有记录</span></div><div><strong>{{ reviewed }}</strong><span>复核通过</span></div><button @click="openResult(attention[0]?.key || rows[0]?.key || '', 'checks')"><strong :class="{warning:attention.length}">{{ attention.length }}</strong><span>步骤待核验 <ArrowUpRight :size="13" /></span></button><button @click="navigate('files')"><strong>{{ files.length }}</strong><span>文件已保存 <ArrowUpRight :size="13" /></span></button></div>
     <div v-if="attention.length" class="attention-note"><CircleHelp :size="18" /><div><strong>有结果，也有尚未确认的部分</strong><p>{{ attention.map(r=>r.title).join('、') }}仍需核验。查看依据后再决定如何使用。</p></div><button @click="openResult(attention[0].key,'checks')">查看待核验项 →</button></div>
     <div class="section-heading"><h2>各问主要结果</h2><button @click="navigate('results')">查看全部步骤 →</button></div>
-    <div v-if="!rows.length" class="empty"><FileText :size="28" /><h3>还没有保存计算结果</h3><p>可以先查看题面与方案；产生结果后会自动出现在这里。</p><button @click="navigate('materials')">查看题面与方案 →</button></div>
+    <div v-if="!rows.length" class="empty"><FileText :size="28" /><h3>还没有保存计算结果</h3><p>可以先查看题面与方案；产生结果后会自动出现在这里。</p><p class="problem-excerpt">{{ artifacts.problem?.ques_all?.slice(0, 240) }}</p><button @click="navigate('materials')">查看题面与方案 →</button></div>
     <div class="result-grid"><article v-for="row in cards" :key="row.key" class="result-card"><div class="card-heading"><h3>{{ row.title }}</h3><span class="badge" :class="row.tone">{{ row.status }}</span></div><p class="result-excerpt">{{ row.tone === 'attention' && row.warning ? row.warning : row.excerpt }}</p><dl v-if="row.metrics.length" class="metrics"><div v-for="m in row.metrics.slice(0,3)" :key="m.name"><dt>{{ m.name }}</dt><dd>{{ m.value }}</dd><small v-if="m.baseline !== undefined">基准 {{ m.baseline }}</small></div></dl><p v-else class="muted">尚无结构化指标，请查看结论原文。</p><button class="card-link" @click="openResult(row.key)">查看结论与依据 <ArrowUpRight :size="15" /></button></article></div>
     <div v-if="cardPages > 1" class="pagination"><button :disabled="cardPage===1" @click="cardPage--">上一页</button><span>{{cardPage}} / {{cardPages}}</span><button :disabled="cardPage===cardPages" @click="cardPage++">下一页</button></div>
     <div v-if="questions.length && rows.length > questions.length" class="supporting"><span class="muted">支撑工作</span><button v-for="row in rows.filter(r=>!questions.includes(r))" :key="row.key" @click="openResult(row.key)">{{row.title}} <span class="status-dot" :class="row.tone" /> <ArrowUpRight :size="13" /></button></div>

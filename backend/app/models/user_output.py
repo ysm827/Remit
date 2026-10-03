@@ -118,6 +118,8 @@ class UserOutput:
 
     def _reference_list(self) -> str:
         """渲染参考文献区块。"""
+        if not self.footnotes:
+            return ""
         lines = ["\n\n## 参考文献"]
         for _, meta in sorted(self.footnotes.items(), key=lambda kv: kv[1]["number"]):
             lines.append(f"\n\n[^{meta['number']}]: {meta['content']}")

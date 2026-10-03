@@ -30,7 +30,9 @@ def test_word_import_keeps_image_and_rewrites_preview_url(tmp_path, monkeypatch)
     digest = hashlib.sha256(content).hexdigest()
     assert f"](/static/_document_previews/{digest}/image1.png)" in parsed.text
     assert "含图片的赛题" in parsed.text
-    assert (tmp_path / "project" / "work_dir" / "_document_previews" / digest / "image1.png").read_bytes() == png
+    assert (
+        tmp_path / "project" / "work_dir" / "_document_previews" / digest / "image1.png"
+    ).read_bytes() == png
 
 
 def archive(entries):
@@ -42,10 +44,12 @@ def archive(entries):
 
 
 def test_rasterizes_svg_and_skips_paths_outside_media(tmp_path):
-    data = archive({
-        "word/media/image2.svg": '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/></svg>',
-        "word/media/../../escape.png": b"invalid",
-    })
+    data = archive(
+        {
+            "word/media/image2.svg": '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="red"/></svg>',
+            "word/media/../../escape.png": b"invalid",
+        }
+    )
     mapping = save_word_preview_images(data, tmp_path / "media")
     assert mapping == {"media/image2.svg": "image2.svg.png"}
     image = tmp_path / "media/image2.svg.png"

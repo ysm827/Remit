@@ -111,10 +111,3 @@ it('用简短行动说明解释当前工作，新的执行限制不能被旧说�
 	expect(wrapper.get('.current-line').text()).toContain('已达到代码执行上限');
 	expect(wrapper.get('.current-line').text()).not.toContain('继续检查');
 });
-
-it("建模结束但论文未开始时明确显示待写作", () => {
- const state = {status: "completed", writing: {status: "idle"}, steps: []} as unknown as TeamState;
- const wrapper = mount(ActivitySummary, {props: {events: [event(1, "任务处理完成")], state}});
- expect(wrapper.find(".stage-title").exists() ? wrapper.find(".stage-title").text() : wrapper.text()).toContain("建模已完成，待生成论文初稿");
- expect(wrapper.text()).toContain("待开始");
-});

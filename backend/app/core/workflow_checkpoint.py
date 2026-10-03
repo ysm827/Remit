@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -42,6 +43,7 @@ NODE_LABELS = {
 NodeStatus = Literal["completed", "interrupted", "available"]
 WorkflowStatus = Literal[
     "running",
+    "stopping",
     "awaiting_approval",
     "stopped",
     "failed",
@@ -75,6 +77,7 @@ class WorkflowCheckpoint:
         """
         state: dict[str, Any] = {
             "version": 1,
+            "created_at": self._now(),
             "problem": problem.model_dump(mode="json"),
             "status": "running",
             "current_node": None,
@@ -94,10 +97,13 @@ class WorkflowCheckpoint:
             "approval_history": [],
             "revision_feedback": {},
             "revision_counts": {},
+            "execution_budget_epochs": {},
             "protected_input_files": sorted(
                 str(path.relative_to(self.work_dir))
                 for path in self.work_dir.rglob("*")
-                if path.is_file() and path.name != CHECKPOINT_FILENAME
+                if path.is_file()
+                and path.name != CHECKPOINT_FILENAME
+                and not path.name.startswith(".calls.sqlite3")
             ),
             "updated_at": self._now(),
         }
@@ -223,6 +229,23 @@ class WorkflowCheckpoint:
         """在执行节点前先记录当前位置。"""
         state["status"] = "running"
         state["current_node"] = node_id
+        state.pop("completed_at", None)
+        for item in state.get("node_timings", []):
+            if item.get("status") == "running" and (
+                item.get("run_id") != state.get("execution_id")
+                or item.get("node_id") == node_id
+            ):
+                # 重新开始不能把停机期间冒充节点实际运行时间。
+                item["status"] = "interrupted_end_unknown"
+        state.setdefault("node_timings", []).append(
+            {
+                "node_id": node_id,
+                "run_id": state.get("execution_id"),
+                "started_at": self._now(),
+                "finished_at": None,
+                "status": "running",
+            }
+        )
         self.save(state)
 
     def complete_node(self, state: dict[str, Any], node_id: str) -> None:
@@ -232,6 +255,12 @@ class WorkflowCheckpoint:
             completed.append(node_id)
         state["completed_nodes"] = completed
         state["current_node"] = None
+        for item in reversed(state.get("node_timings", [])):
+            if item.get("node_id") == node_id and item.get("status") == "running":
+                item.update(finished_at=self._now(), status="completed")
+                break
+        if re.fullmatch(r"solve:ques\d+", node_id):
+            state.setdefault("first_question_completed_at", self._now())
         self.save(state)
 
     def request_approval(
@@ -282,6 +311,9 @@ class WorkflowCheckpoint:
             "requested_at": self._now(),
         }
         state["pending_approval"] = pending
+        for item in state.get("node_timings", []):
+            if item.get("status") == "running" and item.get("node_id") == node_id:
+                item.update(finished_at=self._now(), status="awaiting_approval")
         state["status"] = "awaiting_approval"
         state["current_node"] = node_id
         self.save(state)
@@ -368,6 +400,7 @@ class WorkflowCheckpoint:
         state = self.prepare_resume(
             state,
             node_id,
+            renew_execution_budget=True,
             preserve_interrupted_artifacts=bool(pending.get("allow_incomplete")),
             preserve_review_artifacts=(
                 node_id == pending.get("node_id")
@@ -433,7 +466,20 @@ class WorkflowCheckpoint:
             return
         state = self.load()
         state["status"] = status
+        if status == "completed":
+            state["completed_at"] = self._now()
         if status in {"stopped", "failed", "completed"}:
+            for item in state.get("node_timings", []):
+                if item.get("status") == "running":
+                    item.update(finished_at=self._now(), status=status)
+            pending = state.get("pending_approval")
+            if pending:
+                state.setdefault("cancelled_approval_timings", []).append(
+                    {
+                        "requested_at": pending.get("requested_at"),
+                        "decided_at": self._now(),
+                    }
+                )
             state["pending_approval"] = None
         self.save(state)
 
@@ -449,6 +495,28 @@ class WorkflowCheckpoint:
         state["workflow_features"] = features
         self.save(state)
         return state
+
+    def retire_pilot_outputs(self, state: dict[str, Any]) -> None:
+        """Keep superseded protocol evidence off the active artifact list."""
+        protected = set(state.get("protected_input_files") or [])
+        names = {"pilot_results.json", "final_citations.json"}
+        names.update(
+            path.name
+            for path in self.work_dir.glob("pilot_ques*_results.json")
+            if re.fullmatch(r"pilot_ques\d+_results\.json", path.name)
+        )
+        destination = self.work_dir / ".history" / ("pilot-" + uuid4().hex)
+        if not destination.resolve().is_relative_to(self.work_dir.resolve()):
+            raise WorkflowCheckpointError("探索历史目录越出任务目录，不能归档")
+        for name in sorted(names - protected):
+            source = self.work_dir / name
+            if not source.is_file() or source.is_symlink():
+                continue
+            # Only known, direct child protocol files are eligible, never inputs.
+            if source.resolve().parent != self.work_dir.resolve():
+                continue
+            destination.mkdir(parents=True, exist_ok=True)
+            source.replace(destination / name)
 
     def _invalidate_pilot_state(self, state: dict[str, Any]) -> None:
         """作废探索实验的全部痕迹：状态键、定案覆盖的方案与磁盘旧结果。
@@ -468,8 +536,7 @@ class WorkflowCheckpoint:
         pre_pilot = state.pop("modeler_response_pre_pilot", None)
         if pre_pilot is not None:
             state["modeler_response"] = pre_pilot
-        (self.work_dir / "pilot_results.json").unlink(missing_ok=True)
-        (self.work_dir / "final_citations.json").unlink(missing_ok=True)
+        self.retire_pilot_outputs(state)
 
     def prepare_resume(
         self,
@@ -478,6 +545,7 @@ class WorkflowCheckpoint:
         *,
         preserve_interrupted_artifacts: bool = True,
         preserve_review_artifacts: bool = False,
+        renew_execution_budget: bool = False,
     ) -> dict[str, Any]:
         """校验续跑节点并使该节点及其下游旧产物失效。
 
@@ -488,6 +556,8 @@ class WorkflowCheckpoint:
                 产物；人工返修必须传 False，使旧证据失效。
             preserve_review_artifacts: 当前 manual_review 节点的增量返修保留文件，
                 仍使已完成/批准状态失效；不适用于上游重新建模。
+            renew_execution_budget: 人工退回修改时为失效阶段开启新额度；
+                单纯恢复中断或自动质量返修不启用。
 
         Returns:
             已完成失效处理并落盘的状态。
@@ -506,11 +576,17 @@ class WorkflowCheckpoint:
             )
         )
         recover_skipped_pilot = (
-            node_id == "pilot" and preserve_interrupted_artifacts
+            node_id == "pilot"
+            and preserve_interrupted_artifacts
             and bool(state.get("pilot_skipped"))
-            and not any(str(n).startswith("solve:ques") for n in state.get("completed_nodes", []))
+            and not any(
+                str(n).startswith("solve:ques")
+                for n in state.get("completed_nodes", [])
+            )
         )
-        preserve_pilot = node_id == "pilot" and (preserve_selected_artifacts or recover_skipped_pilot)
+        preserve_pilot = node_id == "pilot" and (
+            preserve_selected_artifacts or recover_skipped_pilot
+        )
 
         # 兼容升级前已经执行过 Fable、但尚未记录独立预算字段的任务。
         # 只要评审结论已经落盘，就视为本任务额度已使用，避免续跑再次扣费。
@@ -533,6 +609,15 @@ class WorkflowCheckpoint:
             # 结构章节相互独立：退回单章只作废该章与最终合并，
             # 不牵连其他已完成章节
             invalidated = {node_id, "finalize"}
+        if renew_execution_budget or not (
+            preserve_selected_artifacts or recover_skipped_pilot
+        ):
+            # A deliberate revision opens a new budget only for invalidated
+            # stages. Technical recovery keeps the original durable counts.
+            epochs = dict(state.get("execution_budget_epochs", {}))
+            for stage in invalidated:
+                epochs[stage] = int(epochs.get(stage, 0)) + 1
+            state["execution_budget_epochs"] = epochs
         # 先清理磁盘证据，再清空状态中的产物清单。所有上游重做都必须
         # 经过同一失效路径，否则旧质量报告会让新方案跳过真实执行。
         invalid_solution_keys = [
@@ -552,7 +637,8 @@ class WorkflowCheckpoint:
             item for item in state.get("approved_nodes", []) if item not in invalidated
         ]
         state["node_outcomes"] = {
-            key: value for key, value in state.get("node_outcomes", {}).items()
+            key: value
+            for key, value in state.get("node_outcomes", {}).items()
             if key not in invalidated
         }
         if "pilot" in invalidated and not preserve_pilot:
@@ -747,6 +833,7 @@ class WorkflowCheckpoint:
                     path.unlink()
         state["status"] = "running"
         state["current_node"] = node_id
+        state.pop("completed_at", None)
         self.save(state)
         return state
 
@@ -756,7 +843,7 @@ class WorkflowCheckpoint:
         state: dict[str, Any],
         solution_results: dict[str, Any],
     ) -> None:
-        """删除失效节点声明的产物，防止旧报告让新一轮门禁误通过。"""
+        """归档失效产物，保留返修源码且防止旧报告冒充新一轮证据。"""
         root = self.work_dir
         protected = {
             (root / str(value)).resolve()
@@ -800,11 +887,28 @@ class WorkflowCheckpoint:
                     root / f"{key}_prediction_metrics.json",
                 }
             )
-        for path in candidates:
+        archive = root / ".history" / ("revision-" + uuid4().hex)
+        if not archive.resolve().is_relative_to(root):
+            raise WorkflowCheckpointError("返修历史目录越出任务目录，不能归档")
+        archived: list[str] = []
+        for path in sorted(candidates):
             resolved = path.resolve()
             if (
                 resolved not in protected
                 and resolved not in retained
                 and path.is_file()
+                and root in resolved.parents
+                and ".history" not in resolved.relative_to(root).parts
             ):
-                path.unlink()
+                relative = resolved.relative_to(root)
+                target = archive / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                path.replace(target)
+                archived.append(relative.as_posix())
+        if archived:
+            backups = state.setdefault("revision_artifact_backups", {})
+            for key in keys:
+                backups[key] = {
+                    "directory": archive.relative_to(root).as_posix(),
+                    "files": archived,
+                }

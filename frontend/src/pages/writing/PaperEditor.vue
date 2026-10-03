@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import {
+	type PaperProposal,
+	getPaperProposals,
+	decidePaperProposal,
+} from "@/apis/teamApi";
+import PaperProposalReview from "./PaperProposalReview.vue";
+import {
 	type PaperWorkspace,
+	type PaperMode,
 	cancelPaper,
 	compilePaper,
 	generatePaper,
@@ -9,6 +16,7 @@ import {
 	getPaperWorkspace,
 	savePaperSource,
 	setPaperMain,
+	setPaperMode,
 	syncPaper,
 	writingUrl,
 } from "@/apis/writingApi";
@@ -35,9 +43,33 @@ import {
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink, onBeforeRouteLeave } from "vue-router";
 import ContestReview from "./ContestReview.vue";
+import ChapterPlan from "./ChapterPlan.vue";
+import ReviseChapters from "./ReviseChapters.vue";
 
 const props = defineProps<{ task_id: string; embedded?: boolean }>();
 const project = ref<PaperWorkspace | null>(null);
+const revisionProposal = ref<PaperProposal | null>(null);
+const decidingRevision = ref(false);
+async function reviewRevision(accept: boolean) {
+	const proposal = revisionProposal.value;
+	if (!proposal || decidingRevision.value) return;
+	decidingRevision.value = true;
+	try {
+		if (accept && !(await save())) return;
+		const result = (
+			await decidePaperProposal(props.task_id, proposal.id, accept)
+		).data;
+		revisionProposal.value = null;
+		if (accept) await reloadAccepted();
+		else await refresh();
+		if (result.compile === "failed")
+			error.value = "修改已保存，编译未通过，请查看日志。";
+	} catch (cause) {
+		error.value = message(cause);
+	} finally {
+		decidingRevision.value = false;
+	}
+}
 const selected = ref("");
 const content = ref("");
 const savedContent = ref("");
@@ -45,7 +77,15 @@ const version = ref<string | null>(null);
 const loading = ref(true);
 const saving = ref(false);
 const compiling = ref(false);
-const autoCompile = ref(true);
+const stopRequested = ref(false);
+const stopping = computed(
+	() =>
+		stopRequested.value ||
+		project.value?.compile.status === "stopping" ||
+		project.value?.generation.status === "stopping",
+);
+const autoCompile = ref(false);
+const sourceOpen = ref(false);
 const error = ref("");
 const logsOpen = ref(false);
 const filesOpen = ref(true);
@@ -70,14 +110,47 @@ let compileTimer: ReturnType<typeof setTimeout> | undefined;
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 let pendingSave: Promise<boolean> | null = null;
 let disposed = false;
+let refreshSequence = 0;
+let loadingFile = false;
 const dirty = computed(() => content.value !== savedContent.value);
-const generating = computed(
-	() => project.value?.generation.status === "running",
+async function changeMode(event: Event) {
+	const selector = event.target as HTMLSelectElement;
+	const mode = selector.value as PaperMode;
+	selector.value = project.value?.mode || "full_paper";
+	if (!project.value || busy.value) return;
+	busy.value = true;
+	try {
+		await setPaperMode(
+			props.task_id,
+			mode,
+			project.value.mode_version || "legacy",
+		);
+		await refresh();
+	} catch (cause) {
+		error.value = message(cause);
+	} finally {
+		busy.value = false;
+	}
+}
+const generating = computed(() =>
+	["running", "stopping"].includes(project.value?.generation.status || ""),
 );
 const writingSection = computed(() => {
 	const section = project.value?.generation.section || "";
-	const names: Record<string, string> = { eda: "数据分析", sensitivity_analysis: "敏感性分析", firstPage: "摘要", RepeatQues: "问题重述", analysisQues: "问题分析", modelAssumption: "模型假设", symbol: "符号说明", judge: "模型评价" };
-	return names[section] || (/^ques\d+$/.test(section) ? `问题 ${section.slice(4)}` : "整理草稿");
+	const names: Record<string, string> = {
+		eda: "数据分析",
+		sensitivity_analysis: "敏感性分析",
+		firstPage: "摘要",
+		RepeatQues: "问题重述",
+		analysisQues: "问题分析",
+		modelAssumption: "模型假设",
+		symbol: "符号说明",
+		judge: "模型评价",
+	};
+	return (
+		names[section] ||
+		(/^ques\d+$/.test(section) ? `问题 ${section.slice(4)}` : "整理草稿")
+	);
 });
 const pdfUrl = computed(() =>
 	project.value?.pdf_available
@@ -94,38 +167,40 @@ const stale = computed(() =>
 const lineNumbers = computed(() =>
 	Array.from(
 		{ length: content.value.split("\n").length },
-		(_, index) => index + 1,
-	),
+		(_, i) => i + 1,
+	).join("\n"),
 );
 const outline = computed(() =>
-	[...content.value.matchAll(/\\(?:sub)*section\*?\{([^}]+)\}/g)].map(
-		(match) => ({
+	content.value.split("\n").flatMap((line, index) =>
+		[...line.matchAll(/\\(?:sub)*section\*?\{([^}]+)\}/g)].map((match) => ({
 			title: match[1],
-			line: content.value.slice(0, match.index).split("\n").length,
-		}),
+			line: index + 1,
+		})),
 	),
 );
+const plainSource = computed(() => content.value.length > 30000);
 const escaped = (text: string) =>
 	text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-const highlighted = computed(
-	() =>
-		`${content.value
-			.split("\n")
-			.map((line) => {
-				const tokens = line.split(/(%.*$|\\[a-zA-Z]+\*?|[{}$])/g);
-				return tokens
-					.map((token) =>
-						token.startsWith("%")
-							? `<span class="tex-comment">${escaped(token)}</span>`
-							: token.startsWith("\\")
-								? `<span class="tex-command">${escaped(token)}</span>`
-								: /^[{}$]$/.test(token)
-									? `<span class="tex-symbol">${token}</span>`
-									: escaped(token),
-					)
-					.join("");
-			})
-			.join("\n")}\n`,
+const highlighted = computed(() =>
+	!sourceOpen.value || plainSource.value
+		? ""
+		: `${content.value
+				.split("\n")
+				.map((line) => {
+					const tokens = line.split(/(%.*$|\\[a-zA-Z]+\*?|[{}$])/g);
+					return tokens
+						.map((token) =>
+							token.startsWith("%")
+								? `<span class="tex-comment">${escaped(token)}</span>`
+								: token.startsWith("\\")
+									? `<span class="tex-command">${escaped(token)}</span>`
+									: /^[{}$]$/.test(token)
+										? `<span class="tex-symbol">${token}</span>`
+										: escaped(token),
+						)
+						.join("");
+				})
+				.join("\n")}\n`,
 );
 
 function message(cause: unknown): string {
@@ -136,21 +211,80 @@ function message(cause: unknown): string {
 			: "操作失败，请重试";
 }
 async function refresh() {
+	const requestSequence = ++refreshSequence;
+	const taskId = props.task_id;
 	const previousMain = project.value?.main;
 	const previousRevision = project.value?.revision;
-	project.value = (await getPaperWorkspace(props.task_id)).data;
-	if (previousMain && project.value.main !== previousMain && selected.value === previousMain && !dirty.value && !saving.value) {
+	const response = (await getPaperWorkspace(taskId)).data;
+	if (
+		disposed ||
+		requestSequence !== refreshSequence ||
+		taskId !== props.task_id
+	)
+		return;
+	project.value = response;
+	const proposalId = response.generation.proposal_id;
+	if (
+		response.generation.status === "awaiting_review" &&
+		proposalId &&
+		revisionProposal.value?.id !== proposalId
+	) {
+		const proposals = (await getPaperProposals(taskId)).data;
+		if (
+			disposed ||
+			requestSequence !== refreshSequence ||
+			taskId !== props.task_id
+		)
+			return;
+		if (
+			!disposed &&
+			requestSequence === refreshSequence &&
+			taskId === props.task_id
+		)
+			revisionProposal.value =
+				proposals.find((item) => item.id === proposalId) || null;
+	} else if (response.generation.status !== "awaiting_review")
+		revisionProposal.value = null;
+	if (["stopping", "cancelled"].includes(response.compile.status || ""))
+		autoCompile.value = false;
+	if (
+		!response.compiling &&
+		!["running", "stopping"].includes(response.generation.status)
+	)
+		stopRequested.value = false;
+	if (
+		previousMain &&
+		project.value.main !== previousMain &&
+		selected.value === previousMain &&
+		!dirty.value &&
+		!saving.value
+	) {
 		await loadFile(project.value.main);
-	} else if (previousRevision && previousRevision !== project.value.revision && selected.value === project.value.generation.file && !dirty.value && !saving.value) {
+	} else if (
+		previousRevision &&
+		previousRevision !== project.value.revision &&
+		selected.value === project.value.generation.file &&
+		!dirty.value &&
+		!saving.value
+	) {
 		await loadFile(selected.value, true);
 	}
 }
 async function loadFile(name: string, force = false) {
+	if (loadingFile || disposed) return;
 	if (name === selected.value && !force) return;
 	if (!(await save())) return;
+	loadingFile = true;
+	const snapshot = content.value;
 	busy.value = true;
 	try {
 		const response = await getPaperSource(props.task_id, name);
+		if (disposed) return;
+		if (content.value !== snapshot) {
+			error.value =
+				"读取期间你继续编辑了正文，已保留本地内容，请保存后再切换。";
+			return;
+		}
 		selected.value = name;
 		version.value = response.data.version;
 		savedContent.value = response.data.content;
@@ -165,6 +299,7 @@ async function loadFile(name: string, force = false) {
 	} catch (cause) {
 		error.value = message(cause);
 	} finally {
+		loadingFile = false;
 		busy.value = false;
 	}
 }
@@ -276,6 +411,7 @@ async function reloadAccepted() {
 }
 defineExpose({ save, paperContext, reloadAccepted });
 function jump(line: number) {
+	sourceOpen.value = true;
 	const input = sourceInput.value;
 	if (!input) return;
 	const offset = content.value
@@ -320,17 +456,59 @@ function keydown(event: KeyboardEvent) {
 		edited();
 	}
 }
-async function action(kind: "sync" | "generate" | "cancel" | "main") {
+async function stopPaper() {
+	if (stopping.value) return;
+	autoCompile.value = false;
+	clearTimeout(compileTimer);
+	stopRequested.value = true;
+	try {
+		await cancelPaper(props.task_id);
+		await refresh();
+	} catch (cause) {
+		stopRequested.value = false;
+		error.value = message(cause);
+	}
+}
+async function action(kind: "sync" | "generate" | "main") {
 	busy.value = true;
 	try {
 		if (!(await save())) return;
 		if (kind === "sync") await syncPaper(props.task_id);
 		if (kind === "generate") await generatePaper(props.task_id);
-		if (kind === "cancel") await cancelPaper(props.task_id);
 		if (kind === "main") await setPaperMain(props.task_id, selected.value);
 		await refresh();
 		error.value = "";
 		if (kind === "main") void compile();
+	} catch (cause) {
+		error.value = message(cause);
+	} finally {
+		busy.value = false;
+	}
+}
+async function reviseChapters(request: {
+	sections: string[];
+	instructions: string;
+}) {
+	if (
+		!project.value?.generation.generation_id ||
+		!project.value.inputs.revision ||
+		busy.value
+	)
+		return;
+	const generationId = project.value.generation.generation_id;
+	const inputRevision = project.value.inputs.revision;
+	busy.value = true;
+	try {
+		if (!(await save())) return;
+		await refresh();
+		await generatePaper(props.task_id, {
+			...request,
+			generation_id: generationId,
+			input_revision: inputRevision,
+			source_revision: project.value.revision,
+		});
+		await refresh();
+		error.value = "";
 	} catch (cause) {
 		error.value = message(cause);
 	} finally {
@@ -426,11 +604,15 @@ onUnmounted(() => {
 		<header class="project-bar">
 			<RouterLink v-if="!embedded" to="/home" class="project-back" title="返回项目"><ArrowLeft :size="17" /><strong>Remit</strong></RouterLink>
 			<div class="project-title"><span>论文写作</span><ChevronDown :size="13" /><small>{{ task_id.slice(0, 8) }}</small></div>
-			<div class="project-actions"><ContestReview :task_id="task_id" /><button @click="showHistory" :disabled="!selected"><History :size="15" />历史</button><a :href="writingUrl(task_id, '/export')"><Download :size="15" />下载项目</a><RouterLink :to="`/project/${task_id}`">团队对话</RouterLink><RouterLink :to="`/project/${task_id}/results`">建模结果</RouterLink></div>
+			<div class="project-actions"><button :aria-pressed="sourceOpen" @click="sourceOpen = !sourceOpen">{{ sourceOpen ? "只看论文" : "编辑源码" }}</button><ContestReview :task_id="task_id" /><button @click="showHistory" :disabled="!selected"><History :size="15" />历史</button><a :href="writingUrl(task_id, '/export')"><Download :size="15" />下载项目</a><RouterLink :to="`/project/${task_id}`">团队对话</RouterLink><RouterLink :to="`/project/${task_id}/results`">建模结果</RouterLink></div>
 		</header>
 		<div v-if="error" class="error-banner" role="alert"><span>{{ error }}</span><button @click="error = ''" aria-label="关闭错误"><X :size="15" /></button></div>
-		<div class="evidence-bar"><div><span class="sync-dot" :class="{ ready: project?.ready }" />{{ project?.ready ? '建模成果已就绪' : '等待建模与计算完成' }}<span class="evidence-count">{{ project?.inputs.sections?.length || 0 }} 个章节 · {{ project?.inputs.asset_count || 0 }} 项素材</span></div><div><button :disabled="busy || !project?.ready" @click="action('sync')"><RefreshCw :size="13" />同步建模素材</button><button v-if="generating" @click="action('cancel')"><Square :size="12" />停止写作</button><button v-else :disabled="busy || !project?.ready" class="generate-button" @click="action('generate')"><WandSparkles :size="14" />生成论文初稿</button></div></div>
-		<div v-if="generating || project?.generation.status === 'failed' || project?.generation.status === 'completed' || project?.generation.status === 'interrupted'" class="generation-bar" role="status"><LoaderCircle v-if="generating" :size="14" class="spin" /><span v-if="generating">墨墨正在撰写{{ writingSection }}。<template v-if="project?.generation.partial">已写 {{ project.generation.completed_sections?.length || 0 }} 个章节，当前为部分草稿，会继续更新。</template><template v-else>首个章节通过校验后会更新正文预览。</template></span><span v-else-if="project?.generation.error">{{ project.generation.error }}</span><template v-else><span>{{ project?.generation.message || "初稿已生成，请核对正文与证据。" }}</span><button v-if="project?.generation.file" @click="loadFile(project.generation.file)">打开 {{ project.generation.file }}</button></template></div>
+		<ChapterPlan :task-id="task_id" />
+		<ReviseChapters v-if="project?.generation.generation_id && project.generation.completed_sections?.length" :key="task_id" :sections="project.generation.completed_sections" :disabled="busy || generating || compiling || !!project.compiling || !project.ready || project.generation.status === 'awaiting_review'" @revise="reviseChapters" />
+		<div class="writing-mode"><label>新草稿模式 <select aria-label="新草稿模式" :value="project?.mode || 'full_paper'" :disabled="busy || generating || compiling || project?.compiling" @change="changeMode"><option value="full_paper">完整论文</option><option value="short_report">短报告</option></select></label><span>{{ project?.mode === 'short_report' ? '精简篇幅，保留计算证据与局限。' : '按完整章节写作，提交前仍需核验。' }} 模式用于下一份草稿，已有文稿保留。</span><small v-if="project?.pdf_available">当前 PDF：{{ project.compile.pdf_mode === 'short_report' ? '短报告' : '完整论文模式' }}</small></div>
+		<PaperProposalReview v-if="revisionProposal" :proposal="revisionProposal" :disabled="decidingRevision || busy || generating || compiling" :processing="decidingRevision" @decide="reviewRevision" />
+		<div class="evidence-bar"><div><span class="sync-dot" :class="{ ready: project?.ready }" />{{ project?.ready ? '建模成果已就绪' : '等待建模与计算完成' }}<span class="evidence-count">{{ project?.inputs.sections?.length || 0 }} 个章节 · {{ project?.inputs.asset_count || 0 }} 项素材</span></div><div><button :disabled="busy || !project?.ready" @click="action('sync')"><RefreshCw :size="13" />同步建模素材</button><button v-if="generating" :disabled="stopping" @click="stopPaper"><Square :size="12" />{{ stopping ? "正在停止…" : "停止写作" }}</button><button v-else :disabled="busy || !project?.ready || project.generation.status === 'awaiting_review'" class="generate-button" @click="action('generate')"><WandSparkles :size="14" />{{ project?.mode === "short_report" ? "生成短报告" : "生成论文初稿" }}</button></div></div>
+		<div v-if="generating || project?.generation.status === 'failed' || project?.generation.status === 'completed' || project?.generation.status === 'interrupted' || project?.generation.status === 'awaiting_review'" class="generation-bar" role="status"><LoaderCircle v-if="generating" :size="14" class="spin" /><span v-if="generating">墨墨正在撰写{{ writingSection }}。<template v-if="project?.generation.partial">已写 {{ project.generation.completed_sections?.length || 0 }} 个章节，当前为部分草稿，会继续更新。</template><template v-else>首个章节通过校验后会更新正文预览。</template></span><span v-else-if="project?.generation.error">上次自动写作记录：{{ project.generation.error }}（当前文稿的编译结果见 PDF 面板）</span><template v-else><span>{{ project?.generation.message || "初稿已生成，请核对正文与证据。" }}</span><button v-if="project?.generation.file" @click="loadFile(project.generation.file)">打开 {{ project.generation.file }}</button></template></div>
 		<div v-if="loading" class="loading-state"><LoaderCircle class="spin" />正在打开论文项目…</div>
 		<div v-else class="editor-layout">
 			<aside v-if="filesOpen" class="file-panel">
@@ -441,19 +623,19 @@ onUnmounted(() => {
 				<footer><span class="sync-dot ready" />独立保存 · 本地项目</footer>
 			</aside>
 			<div ref="splitArea" class="split-area">
-				<section class="source-panel" :style="{ width: `${split}%` }" aria-label="LaTeX 源码编辑器">
+				<section v-show="sourceOpen" class="source-panel" :style="{ width: `${split}%` }" aria-label="LaTeX 源码编辑器">
 					<div class="panel-toolbar source-toolbar"><div><button v-if="!filesOpen" @click="filesOpen = true" aria-label="显示文件树"><FolderOpen :size="16" /></button><span class="source-tab"><Code2 :size="14" />源码</span><span class="filename" :title="selected">{{ selected }}</span></div><div><button v-if="selected !== project?.main && selected.endsWith('.tex')" @click="action('main')" :disabled="busy" title="编译时使用这个文件">设为主文件</button><button @click="searchOpen = !searchOpen" aria-label="搜索源码"><Search :size="15" /></button></div></div>
 					<form v-if="searchOpen" class="search-bar" @submit.prevent="findNext"><input v-model="searchText" placeholder="查找…" aria-label="查找源码" /><button type="submit">下一个</button><button type="button" @click="searchOpen = false" aria-label="关闭搜索"><X :size="14" /></button></form>
-					<div class="code-area"><div class="line-gutter" aria-hidden="true"><div ref="numbersLayer"><div v-for="line in lineNumbers" :key="line">{{ line }}</div></div></div><div class="code-content"><pre ref="highlightLayer" class="code-highlight" aria-hidden="true" v-html="highlighted" /><textarea ref="sourceInput" v-model="content" class="code-input" aria-label="LaTeX 源码" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off" :disabled="busy" @input="edited" @scroll="scrollEditor" @click="updateCursor" @keyup="updateCursor" /></div></div>
+					<div class="code-area"><div class="line-gutter" aria-hidden="true"><pre ref="numbersLayer">{{ lineNumbers }}</pre></div><div class="code-content"><pre ref="highlightLayer" class="code-highlight" aria-hidden="true" v-html="highlighted" /><textarea ref="sourceInput" v-model="content" class="code-input" :class="{ plain: plainSource }" aria-label="LaTeX 源码" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off" :disabled="busy" @input="edited" @scroll="scrollEditor" @click="updateCursor" @keyup="updateCursor" /></div></div>
 					<footer class="editor-status"><span><LoaderCircle v-if="saving" :size="12" class="spin" /><Check v-else-if="!dirty" :size="12" />{{ saving ? '正在保存' : dirty ? '有未保存修改' : '所有修改已保存' }}</span><span :title="savedAt">Ln {{ cursor.line }}, Col {{ cursor.column }} · UTF-8</span></footer>
 				</section>
-				<div class="splitter" role="separator" aria-label="调整源码和 PDF 宽度" aria-orientation="vertical" :aria-valuenow="Math.round(split)" aria-valuemin="25" aria-valuemax="75" tabindex="0" @pointerdown="dragSplit" @pointermove="moveSplit" @keydown.left.prevent="split = Math.max(25, split - 2)" @keydown.right.prevent="split = Math.min(75, split + 2)"><span /></div>
+				<div v-show="sourceOpen" class="splitter" role="separator" aria-label="调整源码和 PDF 宽度" aria-orientation="vertical" :aria-valuenow="Math.round(split)" aria-valuemin="25" aria-valuemax="75" tabindex="0" @pointerdown="dragSplit" @pointermove="moveSplit" @keydown.left.prevent="split = Math.max(25, split - 2)" @keydown.right.prevent="split = Math.min(75, split + 2)"><span /></div>
 				<section class="pdf-panel" aria-label="PDF 预览">
-					<div class="panel-toolbar pdf-toolbar"><div class="compile-group"><button class="compile-button" :disabled="compiling || project?.compiling" @click="compile"><LoaderCircle v-if="compiling || project?.compiling" :size="14" class="spin" /><Play v-else :size="13" fill="currentColor" />{{ compiling || project?.compiling ? '正在编译…' : '重新编译' }}</button><label class="auto-compile"><input v-model="autoCompile" type="checkbox" />自动</label></div><div><button @click="logsOpen = !logsOpen" :class="{ 'has-errors': project?.compile.status === 'failed' }" title="日志与错误">日志<span v-if="project?.compile.diagnostics?.length" class="error-count">{{ project.compile.diagnostics.length }}</span></button><a v-if="pdfUrl" :href="writingUrl(task_id, '/pdf')" target="_blank" rel="noopener" title="打开或下载 PDF" aria-label="打开 PDF"><Download :size="16" /></a></div></div>
+					<div class="panel-toolbar pdf-toolbar"><div class="compile-group"><button class="compile-button" :disabled="compiling || project?.compiling" @click="compile"><LoaderCircle v-if="compiling || project?.compiling" :size="14" class="spin" /><Play v-else :size="13" fill="currentColor" />{{ compiling || project?.compiling ? '正在编译…' : '重新编译' }}</button><button v-if="compiling || project?.compiling" :disabled="stopping" aria-label="停止论文编译" @click="stopPaper"><Square :size="13" />{{ stopping ? "正在停止…" : "停止编译" }}</button><label class="auto-compile"><input v-model="autoCompile" type="checkbox" />自动</label></div><div><button @click="logsOpen = !logsOpen" :class="{ 'has-errors': project?.compile.status === 'failed' }" title="日志与错误">日志<span v-if="project?.compile.diagnostics?.length" class="error-count">{{ project.compile.diagnostics.length }}</span></button><a v-if="pdfUrl" :href="writingUrl(task_id, '/pdf')" target="_blank" rel="noopener" title="打开或下载 PDF" aria-label="打开 PDF"><Download :size="16" /></a></div></div>
 					<div v-if="stale" class="pdf-stale">源码已更新 · 当前显示上次成功编译的 PDF</div>
 					<details v-if="project?.compile.layout_review?.issues?.length" class="pdf-stale" open><summary>排版仍需修订（{{ project.compile.layout_review.issues.length }} 项）</summary><ul><li v-for="issue in project.compile.layout_review.issues" :key="issue">{{ issue }}</li></ul></details><div v-if="pdfUrl && project?.compile.page_count" class="pdf-view-controls"><span>{{ project.compile.page_count }} 页</span><label>缩放 <select v-model="zoom" aria-label="PDF 缩放"><option :value="75">75%</option><option :value="100">适合宽度</option><option :value="125">125%</option><option :value="150">150%</option></select></label></div><div class="pdf-surface"><div v-if="pdfUrl && project?.compile.page_count" class="pdf-pages" aria-label="论文 PDF 页面"><figure v-for="page in project.compile.page_count" :key="`${project.compile.pdf_revision}-${page}`" :style="{ width: `${zoom}%` }"><img :src="writingUrl(task_id, `/pdf/pages/${page - 1}?revision=${project.compile.pdf_revision}&scale=${pdfRenderScale}`)" :alt="`论文 PDF 第 ${page} 页`" loading="lazy" /><figcaption>{{ page }} / {{ project.compile.page_count }}</figcaption></figure></div><div v-else class="pdf-empty"><FileText :size="44" /><h2>{{ compiling ? '正在排版你的论文' : 'PDF 预览' }}</h2><p>{{ compiling ? 'XeLaTeX 编译完成后，PDF 会显示在这里。' : '点击重新编译，查看左侧源码的排版效果。' }}</p><button v-if="project?.compile.status === 'failed'" @click="logsOpen = true">查看编译错误</button></div></div>
 					<div v-if="logsOpen" class="compile-logs"><header><strong>{{ project?.compile.status === 'completed' ? '编译成功' : '编译日志' }}</strong><button @click="logsOpen = false" aria-label="关闭编译日志"><X :size="14" /></button></header><div class="diagnostics"><button v-for="(diagnostic, index) in project?.compile.diagnostics" :key="index" @click="jump(diagnostic.line)">第 {{ diagnostic.line }} 行：{{ diagnostic.message }}</button></div><pre>{{ project?.compile.log || '尚无编译日志。' }}</pre></div>
-					<footer class="pdf-status"><span>XeLaTeX · {{ project?.main }}</span><span>{{ project?.compile.status === 'completed' ? '编译成功' : project?.compile.status === 'failed' ? '编译失败 · 查看日志' : '等待编译' }}</span></footer>
+					<footer class="pdf-status"><span>XeLaTeX · {{ project?.main }}</span><span>{{ project?.compile.status === 'completed' ? '编译成功' : project?.compile.status === 'failed' ? '编译失败 · 查看日志' : project?.compile.status === 'cancelled' ? '已停止 · 保留上次 PDF' : stopping ? '正在停止…' : '等待编译' }}</span></footer>
 				</section>
 			</div>
 		</div>
@@ -462,6 +644,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.writing-mode { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 8px 16px; font-size: 12px; border-bottom: 1px solid var(--border); }
+.writing-mode select { border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; background: var(--background); color: inherit; }
+.writing-mode span, .writing-mode small { color: var(--muted-foreground); }
+.code-input.plain{color:#334155;-webkit-text-fill-color:#334155}.line-gutter pre{font:inherit;line-height:23px;margin:0}.pdf-panel{min-width:0}
+
 .paper-editor.embedded { height:100%; min-height:0; }
 .embedded .project-bar { height:35px; background:#fafafa; color:#333; border-bottom:1px solid #ddd; }
 .embedded .project-title,.embedded .project-actions>a:nth-last-child(-n+2) { display:none; }

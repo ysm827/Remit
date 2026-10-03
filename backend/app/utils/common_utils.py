@@ -90,7 +90,9 @@ def get_work_dir(task_id: str) -> str:
 def get_config_template(comp_template: CompTemplate = CompTemplate.CHINA) -> dict:
     """读取竞赛模板对应的论文骨架配置。"""
     if comp_template == CompTemplate.CHINA:
-        return load_toml(str(Path(__file__).resolve().parents[1] / "config/md_template.toml"))
+        return load_toml(
+            str(Path(__file__).resolve().parents[1] / "config" / "md_template.toml")
+        )
     return {}
 
 
@@ -113,11 +115,12 @@ def get_current_files(folder_path: str, type: str = "all") -> list[str]:
         type: ``all`` / ``md`` / ``ipynb`` / ``data`` / ``image``。
     """
     root = Path(folder_path).resolve()
+    inputs = input_filenames(root)
     entries = sorted(
         set(os.listdir(folder_path))
         | {
             name
-            for name in input_filenames(root)
+            for name in inputs
             if (root / name).is_file() and (root / name).resolve().is_relative_to(root)
         }
     )
@@ -129,11 +132,7 @@ def get_current_files(folder_path: str, type: str = "all") -> list[str]:
         case "ipynb":
             return [f for f in entries if f.endswith(".ipynb")]
         case "data":
-            return [
-                f
-                for f in entries
-                if is_data_file(f) or f in input_filenames(folder_path)
-            ]
+            return [f for f in entries if is_data_file(f) or f in inputs]
         case "image":
             return [f for f in entries if f.endswith((".png", ".jpg"))]
         case _:

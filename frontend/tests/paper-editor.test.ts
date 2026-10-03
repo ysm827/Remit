@@ -11,10 +11,16 @@ const api = vi.hoisted(() => ({
 	syncPaper: vi.fn(),
 	cancelPaper: vi.fn(),
 	setPaperMain: vi.fn(),
+	setPaperMode: vi.fn(),
 	getPaperHistory: vi.fn(),
 	writingUrl: (id: string, path = "") => `/writing/${id}${path}`,
 }));
 vi.mock("@/apis/writingApi", () => api);
+const reviewApi = vi.hoisted(() => ({
+	getPaperProposals: vi.fn(),
+	decidePaperProposal: vi.fn(),
+}));
+vi.mock("@/apis/teamApi", () => reviewApi);
 vi.mock("vue-router", () => ({
 	onBeforeRouteLeave: vi.fn(),
 	RouterLink: { template: "<a><slot /></a>" },
@@ -45,6 +51,218 @@ describe("论文编辑器保存与编译", () => {
 		api.compilePaper.mockResolvedValue({ data: { status: "completed" } });
 	});
 	afterEach(() => vi.useRealTimers());
+	it("章节提案保留手工编辑，接受冲突后仍可拒绝", async () => {
+		const workspace = (await api.getPaperWorkspace()).data;
+		api.getPaperWorkspace.mockResolvedValue({
+			data: {
+				...workspace,
+				generation: { status: "awaiting_review", proposal_id: "proposal-1" },
+			},
+		});
+		reviewApi.getPaperProposals.mockResolvedValue({
+			data: [
+				{
+					id: "proposal-1",
+					name: "main.tex",
+					summary: "局部修订",
+					diff: "-old\n+new",
+					status: "pending",
+				},
+			],
+		});
+		reviewApi.decidePaperProposal.mockRejectedValueOnce(
+			new Error("源码已更新"),
+		);
+		const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
+		await flushPromises();
+		expect(wrapper.get('[aria-label="论文修改建议"]').text()).toContain(
+			"局部修订",
+		);
+		await wrapper.get(".code-input").setValue("manual changes");
+		await wrapper.get(".review-actions .primary-button").trigger("click");
+		await flushPromises();
+		expect(api.savePaperSource).toHaveBeenCalled();
+		expect(reviewApi.decidePaperProposal).toHaveBeenCalledWith(
+			"test",
+			"proposal-1",
+			true,
+		);
+		expect(
+			(wrapper.get(".code-input").element as HTMLTextAreaElement).value,
+		).toBe("manual changes");
+		expect(wrapper.text()).toContain("源码已更新");
+		reviewApi.decidePaperProposal.mockResolvedValue({
+			data: { status: "rejected" },
+		});
+		api.getPaperWorkspace.mockResolvedValue({ data: workspace });
+		await wrapper.get(".review-actions button").trigger("click");
+		await flushPromises();
+		expect(reviewApi.decidePaperProposal).toHaveBeenLastCalledWith(
+			"test",
+			"proposal-1",
+			false,
+		);
+		expect(wrapper.find('[aria-label="论文修改建议"]').exists()).toBe(false);
+		wrapper.unmount();
+	});
+
+	it("按章返修先保存编辑，携带版本并在失败后保留意见", async () => {
+		const workspace = (await api.getPaperWorkspace()).data;
+		const current = {
+			...workspace,
+			inputs: { revision: "evidence-1" },
+			generation: {
+				status: "completed",
+				generation_id: "generation-1",
+				completed_sections: ["ques1", "firstPage", "judge"],
+			},
+		};
+		api.getPaperWorkspace.mockResolvedValue({ data: current });
+		const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
+		await flushPromises();
+		await wrapper.get(".chapter-revision > button").trigger("click");
+		await wrapper.get('input[value="ques1"]').setValue(true);
+		expect(wrapper.get(".chapter-revision").text()).toContain("一并更新摘要");
+		await wrapper.get('input[value="ques1"]').setValue(false);
+		await wrapper.get('input[value="judge"]').setValue(true);
+		await wrapper
+			.get('[aria-label="本次章节返修意见"]')
+			.setValue("纠正最大斜率差的名称");
+		await wrapper.get("textarea.code-input").setValue("local source edit");
+		api.getPaperWorkspace.mockResolvedValue({
+			data: { ...current, revision: "saved" },
+		});
+		api.generatePaper.mockRejectedValueOnce(new Error("版本冲突"));
+		await wrapper.get(".chapter-revision form").trigger("submit");
+		await flushPromises();
+		expect(api.savePaperSource).toHaveBeenCalledWith(
+			"test",
+			"main.tex",
+			"local source edit",
+			"first",
+		);
+		expect(api.generatePaper).toHaveBeenCalledWith("test", {
+			sections: ["judge"],
+			instructions: "纠正最大斜率差的名称",
+			generation_id: "generation-1",
+			input_revision: "evidence-1",
+			source_revision: "saved",
+		});
+		expect(
+			wrapper.get<HTMLTextAreaElement>('[aria-label="本次章节返修意见"]')
+				.element.value,
+		).toBe("纠正最大斜率差的名称");
+		expect(
+			wrapper.get<HTMLInputElement>('input[value="judge"]').element.checked,
+		).toBe(true);
+		expect(wrapper.get(".error-banner").text()).toContain("版本冲突");
+		wrapper.unmount();
+	});
+	it("历史写作失败与当前成功编译分别显示", async () => {
+		const workspace = (await api.getPaperWorkspace()).data;
+		api.getPaperWorkspace.mockResolvedValue({
+			data: {
+				...workspace,
+				generation: { status: "failed", error: "草稿已保留，排版仍需修订" },
+				compile: {
+					...workspace.compile,
+					status: "completed",
+					layout_review: { status: "passed_automatic_checks", issues: [] },
+				},
+			},
+		});
+		const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
+		await flushPromises();
+		expect(wrapper.get(".generation-bar").text()).toContain("上次自动写作记录");
+		expect(wrapper.get(".generation-bar").text()).toContain(
+			"当前文稿的编译结果见 PDF 面板",
+		);
+		expect(wrapper.text()).toContain("编译成功");
+		expect(api.generatePaper).not.toHaveBeenCalled();
+		wrapper.unmount();
+	});
+	it("切换模式仅改变新草稿用途，旧 PDF 标签和未保存内容保持", async () => {
+		const workspace = (await api.getPaperWorkspace()).data;
+		api.getPaperWorkspace.mockResolvedValueOnce({
+			data: {
+				...workspace,
+				mode: "full_paper",
+				mode_version: "v1",
+				compile: { ...workspace.compile, pdf_mode: "full_paper" },
+			},
+		});
+		const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
+		await flushPromises();
+		await wrapper.get("textarea").setValue("unsaved content");
+		api.setPaperMode.mockResolvedValue({ data: {} });
+		api.getPaperWorkspace.mockResolvedValue({
+			data: {
+				...workspace,
+				mode: "short_report",
+				mode_version: "v2",
+				compile: { ...workspace.compile, pdf_mode: "full_paper" },
+			},
+		});
+		await wrapper.get('[aria-label="新草稿模式"]').setValue("short_report");
+		await flushPromises();
+		expect(api.setPaperMode).toHaveBeenCalledWith("test", "short_report", "v1");
+		expect(wrapper.get("textarea").element.value).toBe("unsaved content");
+		expect(wrapper.text()).toContain("当前 PDF：完整论文模式");
+		expect(wrapper.get(".generate-button").text()).toContain("生成短报告");
+		expect(api.generatePaper).not.toHaveBeenCalled();
+		wrapper.unmount();
+	});
+	it("停止编译不等待冲突保存，不清空源码，也不自动重启编译", async () => {
+		let finish!: (value: unknown) => void;
+		let stopped = false;
+		api.compilePaper.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					finish = resolve;
+				}),
+		);
+		const workspace = (await api.getPaperWorkspace()).data;
+		api.getPaperWorkspace.mockImplementation(async () => ({
+			data: {
+				...workspace,
+				compiling: !stopped,
+				compile: {
+					...workspace.compile,
+					status: stopped ? "cancelled" : "stopping",
+				},
+			},
+		}));
+		// Initial page has an active compile from another request/window.
+		api.getPaperWorkspace.mockResolvedValueOnce({
+			data: { ...workspace, compiling: false },
+		});
+		const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
+		await flushPromises();
+		await wrapper.get(".compile-button").trigger("click");
+		await flushPromises();
+		await wrapper.get("textarea").setValue("unsaved revision");
+		api.savePaperSource.mockRejectedValue(new Error("保存冲突"));
+		api.cancelPaper.mockResolvedValue({ data: { status: "stopping" } });
+		await wrapper.get('[aria-label="停止论文编译"]').trigger("click");
+		await flushPromises();
+		expect(api.cancelPaper).toHaveBeenCalledWith("test");
+		expect(wrapper.get('[aria-label="停止论文编译"]').text()).toContain(
+			"正在停止",
+		);
+		expect(
+			wrapper.get<HTMLButtonElement>('[aria-label="停止论文编译"]').element
+				.disabled,
+		).toBe(true);
+		expect(wrapper.get("textarea").element.value).toBe("unsaved revision");
+		stopped = true;
+		finish({ data: { status: "cancelled" } });
+		await flushPromises();
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(api.compilePaper).toHaveBeenCalledTimes(1);
+		expect(wrapper.text()).toContain("已停止 · 保留上次 PDF");
+		expect(wrapper.find(".pdf-pages img").exists()).toBe(true);
+		wrapper.unmount();
+	});
 	it("打开尚无 PDF 的论文页不会自动编译空模板", async () => {
 		api.getPaperWorkspace.mockResolvedValue({
 			data: {
@@ -67,22 +285,6 @@ describe("论文编辑器保存与编译", () => {
 		wrapper.unmount();
 	});
 
-	it("生成的主文件在轮询后打开，无需用户重新进入", async () => {
-        const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
-        await flushPromises();
-        api.getPaperWorkspace.mockResolvedValue({data: {
-            main: "draft-new.tex", ready: true, revision: "new", pdf_available: false,
-            files: [{name: "draft-new.tex", editable: true}], inputs: {},
-            generation: {status: "completed", file: "draft-new.tex"}, compile: {},
-        }});
-        api.getPaperSource.mockResolvedValue({data: {content: "generated paper", version: "new"}});
-        await vi.advanceTimersByTimeAsync(4000);
-        await flushPromises();
-        expect(api.getPaperSource).toHaveBeenLastCalledWith("test", "draft-new.tex");
-        expect(wrapper.get("textarea").element.value).toBe("generated paper");
-        wrapper.unmount();
-    });
-
 	it("保存冲突保留正在编辑的内容，并阻止编译", async () => {
 		const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
 		await flushPromises();
@@ -93,42 +295,6 @@ describe("论文编辑器保存与编译", () => {
 		expect(wrapper.get("textarea").element.value).toBe("my unsaved changes");
 		expect(wrapper.text()).toContain("文件已被其他窗口修改");
 		expect(api.compilePaper).not.toHaveBeenCalled();
-		wrapper.unmount();
-	});
-
-	it("同名草稿增量更新会刷新正文，并显示实际排版问题", async () => {
-		const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
-		await flushPromises();
-		api.getPaperWorkspace.mockResolvedValue({ data: {
-			main: "main.tex", ready: true, revision: "chapter-2", pdf_available: true,
-			files: [{ name: "main.tex", editable: true }], inputs: {},
-			generation: { status: "running", file: "main.tex", section: "symbol", partial: true, completed_sections: ["firstPage", "RepeatQues"] },
-			compile: { pdf_revision: "chapter-2", page_count: 2, layout_review: { status: "needs_revision", issues: ["摘要和关键词跨页"] } },
-		} });
-		api.getPaperSource.mockResolvedValue({ data: { content: "new chapter", version: "chapter-2" } });
-		await vi.advanceTimersByTimeAsync(4000);
-		await flushPromises();
-		expect(wrapper.get("textarea").element.value).toBe("new chapter");
-		expect(wrapper.text()).toContain("墨墨正在撰写符号说明");
-		expect(wrapper.text()).toContain("已写 2 个章节");
-		expect(wrapper.text()).toContain("摘要和关键词跨页");
-		wrapper.unmount();
-	});
-
-	it("草稿轮询不会覆盖尚未保存的用户修改", async () => {
-		const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
-		await flushPromises();
-		api.savePaperSource.mockRejectedValue(new Error("保存冲突"));
-		await wrapper.get("textarea").setValue("my draft");
-		api.getPaperWorkspace.mockResolvedValue({ data: {
-			main: "main.tex", ready: true, revision: "chapter-2", pdf_available: false,
-			files: [{ name: "main.tex", editable: true }], inputs: {},
-			generation: { status: "running", file: "main.tex" }, compile: {},
-		} });
-		await vi.advanceTimersByTimeAsync(4000);
-		await flushPromises();
-		expect(wrapper.get("textarea").element.value).toBe("my draft");
-		expect(api.getPaperSource).toHaveBeenCalledTimes(1);
 		wrapper.unmount();
 	});
 

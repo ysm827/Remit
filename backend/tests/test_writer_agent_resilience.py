@@ -36,7 +36,8 @@ class WriterAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
             result = await agent.run("Write from evidence", sub_title="ques1")
         self.assertEqual(result.response_content, "经过验证的完整论文章节。")
         agent._serve_tool_call.assert_not_awaited()
-        self.assertEqual(agent._chat.await_args_list[1].kwargs["max_tokens"], 16384)
+        self.assertEqual(agent._chat.await_args_list[0].kwargs["max_tokens"], 32768)
+        self.assertEqual(agent._chat.await_args_list[1].kwargs["max_tokens"], 65536)
         self.assertFalse(any(m.get("content") == "partial" for m in agent.chat_history))
 
     async def test_empty_writer_responses_fail_with_a_bounded_retry(self) -> None:
@@ -51,17 +52,6 @@ class WriterAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "未保存为完成稿"):
                 await agent.run("Write from evidence", sub_title="ques1")
         self.assertEqual(agent._chat.await_count, 4)
-
-    async def test_reasoning_only_truncation_receives_room_for_prose(self) -> None:
-        agent = WriterAgent(task_id="task-test", model=MagicMock())
-        agent._chat = AsyncMock(side_effect=[
-            StandardResponse(content="", finish_reason="length"),
-            StandardResponse(content="完整的证据论述。", finish_reason="stop"),
-        ])
-        with patch("app.core.agents.writer_agent.redis_manager.publish_message", new=AsyncMock()):
-            result = await agent.run("Write from evidence", sub_title="ques1")
-        self.assertEqual(result.response_content, "完整的证据论述。")
-        self.assertEqual(agent._chat.await_args_list[1].kwargs["max_tokens"], 32768)
 
     async def test_search_failure_falls_back_to_prose(self) -> None:
         model = MagicMock()
@@ -119,6 +109,22 @@ class WriterAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             all("请勿编造引文" in message["content"] for message in tool_messages)
         )
+
+    async def test_reasoning_only_truncation_receives_room_for_prose(self) -> None:
+        agent = WriterAgent(task_id="task-test", model=MagicMock())
+        agent._chat = AsyncMock(
+            side_effect=[
+                StandardResponse(content="", finish_reason="length"),
+                StandardResponse(content="完整的证据论述。", finish_reason="stop"),
+            ]
+        )
+        with patch(
+            "app.core.agents.writer_agent.redis_manager.publish_message",
+            new=AsyncMock(),
+        ):
+            result = await agent.run("Write from evidence", sub_title="ques1")
+        self.assertEqual(result.response_content, "完整的证据论述。")
+        self.assertEqual(agent._chat.await_args_list[1].kwargs["max_tokens"], 65536)
 
 
 if __name__ == "__main__":

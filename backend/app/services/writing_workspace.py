@@ -68,9 +68,15 @@ def figure_overrides(root: Path, revision: str) -> dict[str, str]:
     for name, entry in manifest.get("files", {}).items():
         original = (root / ".inputs" / revision / "assets" / name).resolve()
         replacement = (root / entry["file"]).resolve()
-        if not original.is_relative_to((root / ".inputs" / revision / "assets").resolve()) or not replacement.is_relative_to((root / "assets").resolve()):
+        if not original.is_relative_to(
+            (root / ".inputs" / revision / "assets").resolve()
+        ) or not replacement.is_relative_to((root / "assets").resolve()):
             raise ValueError("图表修订路径越出素材目录")
-        if hashlib.sha256(original.read_bytes()).hexdigest() != entry["source_sha256"] or hashlib.sha256(replacement.read_bytes()).hexdigest() != entry["rendered_sha256"]:
+        if (
+            hashlib.sha256(original.read_bytes()).hexdigest() != entry["source_sha256"]
+            or hashlib.sha256(replacement.read_bytes()).hexdigest()
+            != entry["rendered_sha256"]
+        ):
             raise ValueError("图表修订版本已变化，请重新核验后再用于论文")
         result[name] = replacement.relative_to(root).as_posix()
     return result
@@ -139,9 +145,10 @@ def ensure_workspace(task_root: Path) -> Path:
     return root
 
 
-def sync_results(task_root: Path, state: dict[str, Any]) -> dict[str, Any]:
-    """保存只读的计算证据版本，更新输入指针，不覆盖论文源码。"""
-    root = ensure_workspace(task_root)
+def collect_evidence(
+    task_root: Path, state: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Path]]:
+    """读取实际证据与文件指纹，供同步和提案冲突检查共用。"""
     payload = {
         key: state.get(key)
         for key in (
@@ -179,7 +186,19 @@ def sync_results(task_root: Path, state: dict[str, Any]) -> dict[str, Any]:
         name: hashlib.sha256(path.read_bytes()).hexdigest()
         for name, path in sources.items()
     }
-    revision = digest(json.dumps(payload, sort_keys=True, ensure_ascii=False))[:20]
+    return payload, sources
+
+
+def evidence_digest(payload: dict[str, Any]) -> str:
+    """沿用快照标识算法，排除计时等非科学状态变化。"""
+    return digest(json.dumps(payload, sort_keys=True, ensure_ascii=False))[:20]
+
+
+def sync_results(task_root: Path, state: dict[str, Any]) -> dict[str, Any]:
+    """保存只读的计算证据版本，更新输入指针，不覆盖论文源码。"""
+    root = ensure_workspace(task_root)
+    payload, sources = collect_evidence(task_root, state)
+    revision = evidence_digest(payload)
     snapshot = root / ".inputs" / revision
     assets = snapshot / "assets"
     if not (snapshot / "evidence.json").is_file():
@@ -196,6 +215,20 @@ def sync_results(task_root: Path, state: dict[str, Any]) -> dict[str, Any]:
         "sections": list((state.get("solution_results") or {}).keys()),
         "asset_count": sum(1 for path in assets.rglob("*") if path.is_file()),
     }
+    from app.services.paper_plan import build_plan
+
+    plan_path = root / "chapter-plan.json"
+    previous_plan = read_json(plan_path)
+    if previous_plan.get("evidence_revision") != revision:
+        write_json(
+            plan_path,
+            {
+                "evidence_revision": revision,
+                "sections": build_plan(payload),
+                "notes": "",
+                "previous_notes_stale": bool(previous_plan.get("notes")),
+            },
+        )
     # 独立文件避免与编辑/生成状态的写入竞争。
     write_json(root / "input.json", summary)
     return summary
@@ -217,11 +250,25 @@ def source_files(root: Path) -> list[Path]:
 def project_revision(root: Path) -> str:
     """计算编译输入版本，PDF 能据此显示是否落后于源码。"""
     hashed = hashlib.sha256()
+    if document_mode(root) != "full_paper":
+        hashed.update(document_mode(root).encode())
     hashed.update(read_json(root / "workspace.json").get("main", "main.tex").encode())
     for path in source_files(root):
         hashed.update(path.relative_to(root).as_posix().encode())
         hashed.update(path.read_bytes())
     return hashed.hexdigest()
+
+
+def document_mode(root: Path, name: str | None = None) -> str:
+    """Mode belongs to a source document, not the next-generation preference."""
+    from app.core.paper_mode import paper_mode
+
+    meta = read_json(root / "workspace.json")
+    return paper_mode(
+        meta.get("document_modes", {}).get(
+            name or meta.get("main", "main.tex"), "full_paper"
+        )
+    )
 
 
 def save_source(root: Path, name: str, content: str, expected: str | None) -> str:
@@ -270,6 +317,7 @@ def prepare_build(root: Path) -> tuple[Path, str, str]:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
     main = read_json(root / "workspace.json").get("main", "main.tex")
+    write_json(build / ".document.json", {"mode": document_mode(root, main)})
     resolve_source(build, main)
     return build, main, revision
 
@@ -277,12 +325,14 @@ def prepare_build(root: Path) -> tuple[Path, str, str]:
 def compile_build(build: Path, main: str, revision: str) -> dict[str, Any]:
     """在源码快照上运行两轮 XeLaTeX，返回真实日志及错误行。"""
     compiler = shutil.which(settings.LATEX_ENGINE or "xelatex")
+    mode = read_json(build / ".document.json").get("mode", "full_paper")
     result: dict[str, Any] = {
         "revision": revision,
         "at": now(),
         "status": "failed",
         "log": "",
         "diagnostics": [],
+        "mode": mode,
     }
     if not compiler:
         result["log"] = "未找到 XeLaTeX，请安装 TeX Live 或 MiKTeX 并加入 PATH。"
@@ -328,9 +378,16 @@ def compile_build(build: Path, main: str, revision: str) -> dict[str, Any]:
         from app.services.paper_layout import inspect_layout
 
         try:
-            result["layout_review"] = inspect_layout(build / "preview.pdf", result["log"])
+            result["layout_review"] = inspect_layout(
+                build / "preview.pdf", result["log"], mode=mode
+            )
         except Exception as exc:
-            result["layout_review"] = {"status": "unverified", "issues": [f"版式检查未完成：{exc}"]}
+            message = f"版式检查未完成（{type(exc).__name__}），请重试或人工核验"
+            result["layout_review"] = {
+                "status": "unverified",
+                "issues": [message],
+                "blocking_issues": [message],
+            }
     for match in re.finditer(
         r"(?:\./)?([^\r\n:]+\.tex):(\d+):\s*([^\r\n]+)", result["log"]
     ):

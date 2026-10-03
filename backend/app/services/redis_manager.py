@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import os
 from pathlib import Path
 
 import redis.asyncio as aioredis
@@ -31,7 +32,14 @@ class RedisManager:
         self.redis_url = settings.REDIS_URL
         self._client: aioredis.Redis | None = None
         backend_root = Path(__file__).resolve().parents[2]
-        self.messages_dir = messages_dir or backend_root / "logs" / "messages"
+        configured = os.environ.get("REMIT_MESSAGES_DIR", "").strip()
+        self.messages_dir = (
+            messages_dir
+            if messages_dir is not None
+            else Path(configured).expanduser().resolve()
+            if configured
+            else backend_root / "logs" / "messages"
+        )
         self.messages_dir.mkdir(parents=True, exist_ok=True)
         self.archive = MessageArchive(self.messages_dir)
         self._message_locks: dict[str, asyncio.Lock] = {}
@@ -146,7 +154,9 @@ class RedisManager:
 
         sink = message_sink.get()
         await asyncio.to_thread(
-            record_message, task_id, message.model_dump(mode="json"),
+            record_message,
+            task_id,
+            message.model_dump(mode="json"),
             scope="writing" if sink is not None else "modeling",
         )
         if sink is not None:
@@ -242,7 +252,7 @@ class RedisManager:
         """从持久化索引恢复状态，重启前仍运行的任务标记为停止。"""
         count = 0
         for summary in await self.list_task_summaries():
-            if summary["status"] == "running":
+            if summary["status"] in {"running", "stopping"}:
                 await self._save_message_to_file(
                     summary["task_id"],
                     SystemMessage(

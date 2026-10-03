@@ -100,18 +100,6 @@ class DesktopLauncherTests(unittest.TestCase):
             desktop.APP_USER_MODEL_ID
         )
 
-    def test_homepage_uses_remit_brand_without_upstream_promotions(self) -> None:
-        """主页应只展示 Remit 品牌，不再携带上游作者的推广入口。"""
-        homepage = (
-            Path(__file__).parents[2]
-            / "frontend/src/pages/team/TeamChat.vue"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn(">Remit</strong>", homepage)
-        self.assertNotIn("MathModelAgent", homepage)
-        self.assertNotIn("jihe520", homepage)
-        self.assertNotIn("mathmodel.top", homepage)
-
     def test_desktop_external_link_guard_is_installed(self) -> None:
         """Future same-window external anchors must also be converted to new windows."""
         desktop = load_desktop_module()
@@ -197,6 +185,17 @@ class DesktopLauncherTests(unittest.TestCase):
         self.assertEqual(expected_host, "127.0.0.1")
         self.assertIn(f"--host {expected_host}", start_script)
         self.assertNotIn("run dev -- --host", start_script)
+
+    def test_homepage_uses_remit_brand_without_upstream_promotions(self) -> None:
+        """主页应只展示 Remit 品牌，不再携带上游作者的推广入口。"""
+        homepage = (
+            Path(__file__).parents[2] / "frontend/src/pages/team/TeamChat.vue"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(">Remit</strong>", homepage)
+        self.assertNotIn("MathModelAgent", homepage)
+        self.assertNotIn("jihe520", homepage)
+        self.assertNotIn("mathmodel.top", homepage)
 
 
 if __name__ == "__main__":

@@ -7,8 +7,15 @@ from app.utils.paper_polish import compact_abstract
 
 
 def test_abstract_keeps_all_evidence_and_bold_even_above_old_limit():
-    paragraph = "针对问题一，采用**整数规划**，得到**23 架次**。保留候选未通过通信校验这一限制。" * 30
-    text = "## 摘要\n\n" + paragraph + "\n\n**关键词：** 整数规划；通信\n\n# 问题重述\n后续。"
+    paragraph = (
+        "针对问题一，采用**整数规划**，得到**23 架次**。保留候选未通过通信校验这一限制。"
+        * 30
+    )
+    text = (
+        "## 摘要\n\n"
+        + paragraph
+        + "\n\n**关键词：** 整数规划；通信\n\n# 问题重述\n后续。"
+    )
     output = compact_abstract(text)
     assert paragraph in output
     assert "**关键词：整数规划；通信**" in output
@@ -41,6 +48,7 @@ def test_frontmatter_allows_small_editorial_overrun():
 
 def test_plain_abstract_heading_is_recognized():
     from app.utils.paper_polish import _split_china_paper
+
     _, abstract, keywords, _, body = _split_china_paper(
         "# 运输优化\n\n摘要\n\n采用**整数规划**得到**23 架次**。\n\n"
         "**关键词：整数规划；运输**\n\n# 问题重述\n正文。"
@@ -52,6 +60,7 @@ def test_plain_abstract_heading_is_recognized():
 
 def test_long_equation_list_wraps_without_changing_expressions():
     from app.utils.paper_polish import _number_display_equations
+
     left = r"L_{g}(q)=L_{g}^{0}-\left(L_{g}^{0}-L_{g}^{F}\right)\left(\frac{q}{Q_{g}}\right)^{3/2}"
     right = r"t_{gij}=\frac{h_{ij}^{+}}{v_{g}^{\uparrow}}+\frac{d_{ij}}{v_{g}^{c}}+\frac{h_{ij}^{-}}{v_{g}^{\downarrow}}"
     out = _number_display_equations(r"\[" + left + r",\qquad " + right + r"\]")
@@ -64,6 +73,7 @@ def test_long_equation_list_wraps_without_changing_expressions():
 def test_layout_reads_spaced_abstract_heading_and_ignores_tiny_overflow(tmp_path):
     import pymupdf
     from app.services.paper_layout import inspect_layout
+
     pdf = tmp_path / "paper.pdf"
     with pymupdf.open() as doc:
         page = doc.new_page(width=595, height=842)
@@ -72,20 +82,25 @@ def test_layout_reads_spaced_abstract_heading_and_ignores_tiny_overflow(tmp_path
         doc.save(pdf)
     result = inspect_layout(pdf, r"Overfull \hbox (0.535pt too wide)")
     assert not result["issues"]
-    assert .77 < result["metrics"]["abstract_page_fill"] < .81
+    assert 0.77 < result["metrics"]["abstract_page_fill"] < 0.81
     assert inspect_layout(pdf, r"Overfull \hbox (9.97pt too wide)")["issues"]
 
 
 def test_figure_override_rejects_changed_evidence_and_path_escape(tmp_path):
     import hashlib
     from app.services.writing_workspace import figure_overrides, write_json
+
     original = tmp_path / ".inputs" / "r1" / "assets" / "plot.png"
     original.parent.mkdir(parents=True)
     original.write_bytes(b"original")
     replacement = tmp_path / "assets" / "fixed.png"
     replacement.parent.mkdir()
     replacement.write_bytes(b"fixed")
-    entry = {"file": "assets/fixed.png", "source_sha256": hashlib.sha256(b"original").hexdigest(), "rendered_sha256": hashlib.sha256(b"fixed").hexdigest()}
+    entry = {
+        "file": "assets/fixed.png",
+        "source_sha256": hashlib.sha256(b"original").hexdigest(),
+        "rendered_sha256": hashlib.sha256(b"fixed").hexdigest(),
+    }
     manifest = {"input_revision": "r1", "files": {"plot.png": entry}}
     write_json(tmp_path / "figure_overrides.json", manifest)
     assert figure_overrides(tmp_path, "r1") == {"plot.png": "assets/fixed.png"}
@@ -102,16 +117,26 @@ def test_figure_override_rejects_changed_evidence_and_path_escape(tmp_path):
 def test_pdf_review_measures_indent_and_detects_stranded_body_content(tmp_path):
     import pymupdf
     from app.services.paper_layout import inspect_layout
+
     for indent, expected in [(0, True), (24, False)]:
         pdf = tmp_path / f"indent-{indent}.pdf"
         with pymupdf.open() as doc:
             page = doc.new_page(width=595, height=842)
             page.insert_text((240, 100), "摘 要", fontname="china-s", fontsize=12)
-            page.insert_text((72 * 25 / 25.4 + indent, 140), "摘要第一段应按正文的两个汉字宽度缩进并保留完整内容", fontname="china-s", fontsize=12)
-            page.insert_text((72 * 25 / 25.4, 166), "后续正文内容", fontname="china-s", fontsize=12)
+            page.insert_text(
+                (72 * 25 / 25.4 + indent, 140),
+                "摘要第一段应按正文的两个汉字宽度缩进并保留完整内容",
+                fontname="china-s",
+                fontsize=12,
+            )
+            page.insert_text(
+                (72 * 25 / 25.4, 166), "后续正文内容", fontname="china-s", fontsize=12
+            )
             page.insert_text((70, 660), "关键词：运输", fontname="china-s")
             page = doc.new_page(width=595, height=842)
-            page.insert_text((70, 100), "只有顶部内容，大块留白应报告", fontname="china-s")
+            page.insert_text(
+                (70, 100), "只有顶部内容，大块留白应报告", fontname="china-s"
+            )
             page = doc.new_page(width=595, height=842)
             page.insert_text((70, 100), "末页留白允许", fontname="china-s")
             doc.save(pdf)
@@ -122,12 +147,16 @@ def test_pdf_review_measures_indent_and_detects_stranded_body_content(tmp_path):
 
 def test_render_font_guard_survives_latin_style_reset(tmp_path: Path):
     import matplotlib
+
     matplotlib.use("Agg")
     from matplotlib import pyplot as plt, font_manager
     from app.tools.plot_fonts import install_plot_font_guard
     import warnings
 
-    if not any(f.name in {"Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "FandolHei"} for f in font_manager.fontManager.ttflist):
+    if not any(
+        f.name in {"Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "FandolHei"}
+        for f in font_manager.fontManager.ttflist
+    ):
         pytest.skip("CJK font required for actual render")
     install_plot_font_guard(tmp_path)
     with plt.rc_context({"font.family": "DejaVu Sans"}):
@@ -144,6 +173,7 @@ def test_render_font_guard_survives_latin_style_reset(tmp_path: Path):
 def test_pdf_review_reports_figure_gallery_without_argument(tmp_path):
     import pymupdf
     from app.services.paper_layout import inspect_layout
+
     pdf = tmp_path / "gallery.pdf"
     pixel = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 2, 2), False)
     pixel.clear_with(128)
@@ -152,9 +182,13 @@ def test_pdf_review_reports_figure_gallery_without_argument(tmp_path):
         first.insert_text((70, 100), "摘要", fontname="china-s")
         first.insert_text((70, 660), "关键词：证据", fontname="china-s")
         page = doc.new_page(width=595, height=842)
-        page.insert_image(pymupdf.Rect(100, 80, 480, 370), pixmap=pixel, keep_proportion=False)
+        page.insert_image(
+            pymupdf.Rect(100, 80, 480, 370), pixmap=pixel, keep_proportion=False
+        )
         page.insert_text((200, 392), "图 1 方法对比", fontname="china-s")
-        page.insert_image(pymupdf.Rect(100, 420, 480, 720), pixmap=pixel, keep_proportion=False)
+        page.insert_image(
+            pymupdf.Rect(100, 420, 480, 720), pixmap=pixel, keep_proportion=False
+        )
         page.insert_text((200, 742), "图 2 资源比较", fontname="china-s")
         doc.new_page()
         doc.save(pdf)

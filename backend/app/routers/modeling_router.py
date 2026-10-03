@@ -14,6 +14,8 @@ from app.core.workflow_checkpoint import (
 from app.schemas.enums import CompTemplate, FormatOutPut
 from app.utils.log_util import logger
 from app.services.redis_manager import redis_manager
+from app.services import call_ledger
+from app.services.async_io import run_blocking
 from app.schemas.request import ExecutionBackend, Problem
 from app.schemas.response import ApprovalMessage, SystemMessage, UserMessage
 from app.utils.common_utils import (
@@ -132,6 +134,11 @@ def _update_agent_config(prefix: str, config: dict) -> None:
     context_window = config.get("contextWindow")
     if context_window not in (None, ""):
         setattr(settings, f"{prefix}_CONTEXT_WINDOW", int(context_window))
+    max_tokens = config.get("maxTokens")
+    if max_tokens not in (None, ""):
+        if int(max_tokens) < 1:
+            raise ValueError("模型输出上限必须为正整数")
+        setattr(settings, f"{prefix}_MAX_TOKENS", int(max_tokens))
 
     if api_identity_updated:
         _runtime_configured_agents.add(prefix)
@@ -244,6 +251,26 @@ def _agent_is_configured(prefix: str) -> bool:
 
 
 def _agent_config_status(prefix: str) -> AgentApiConfigStatus:
+    if prefix == "FALLBACK":
+        from app.services.model_capabilities import fallback_config
+
+        config = fallback_config("coordinator")
+        return AgentApiConfigStatus(
+            configured=bool(
+                config["api_key"] and config["api_type"] and config["model_id"]
+            ),
+            api_key_configured=bool(config["api_key"]),
+            api_type=config["api_type"],
+            model_id=config["model_id"],
+            base_url=config["base_url"],
+            context_window=config["context_window"],
+            max_tokens=config["max_tokens"],
+            source="runtime"
+            if prefix in _runtime_configured_agents
+            else "environment"
+            if config["model_id"]
+            else "missing",
+        )
     api_key_configured = bool(getattr(settings, f"{prefix}_API_KEY"))
     api_type = getattr(settings, f"{prefix}_API_TYPE")
     model_id = getattr(settings, f"{prefix}_MODEL")
@@ -256,6 +283,7 @@ def _agent_config_status(prefix: str) -> AgentApiConfigStatus:
         model_id=model_id,
         base_url=base_url,
         context_window=int(getattr(settings, f"{prefix}_CONTEXT_WINDOW")),
+        max_tokens=getattr(settings, f"{prefix}_MAX_TOKENS"),
         source=(
             "runtime"
             if prefix in _runtime_configured_agents
@@ -276,6 +304,7 @@ async def get_api_config_status():
         "writer": _agent_config_status("WRITER"),
         "model_scout": _agent_config_status("MODEL_SCOUT"),
         "model_critic": _agent_config_status("MODEL_CRITIC"),
+        "fallback": _agent_config_status("FALLBACK"),
     }
     required_keys = ["coordinator", "modeler", "coder"]
     if settings.MODEL_COUNCIL_ENABLED:
@@ -283,6 +312,8 @@ async def get_api_config_status():
     return ApiConfigStatusResponse(
         configured=all(agents[key].configured for key in required_keys),
         model_council_enabled=settings.MODEL_COUNCIL_ENABLED,
+        shared_core=settings.MODEL_SHARED_CORE,
+        fallback_enabled=bool(settings.FALLBACK_ENABLED and settings.FALLBACK_MODEL),
         agents=agents,
     )
 
@@ -290,9 +321,31 @@ async def get_api_config_status():
 @router.post("/save-api-config")
 async def store_api_configuration(request: SaveApiConfigRequest):
     """Persist the validated role settings used by subsequent workflows."""
+    previous = settings.model_dump()
+    previous_roles = set(_runtime_configured_agents)
     try:
         for prefix, payload in request.role_payloads():
             _update_agent_config(prefix, payload)
+        if request.shared_core:
+            for prefix in ("MODELER", "CODER", "WRITER"):
+                for suffix in (
+                    "API_KEY",
+                    "API_TYPE",
+                    "MODEL",
+                    "BASE_URL",
+                    "CONTEXT_WINDOW",
+                    "MAX_TOKENS",
+                    "REASONING_EFFORT",
+                ):
+                    setattr(
+                        settings,
+                        f"{prefix}_{suffix}",
+                        getattr(settings, f"COORDINATOR_{suffix}"),
+                    )
+                _runtime_configured_agents.add(prefix)
+        settings.MODEL_SHARED_CORE = request.shared_core
+        if request.fallback_enabled is not None:
+            settings.FALLBACK_ENABLED = request.fallback_enabled
         if request.model_council_enabled is not None:
             settings.MODEL_COUNCIL_ENABLED = request.model_council_enabled
 
@@ -303,8 +356,15 @@ async def store_api_configuration(request: SaveApiConfigRequest):
 
         return {"success": True, "message": "配置已保存，重启后仍然生效"}
     except Exception as e:
-        logger.error(f"保存配置失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"保存配置失败: {str(e)}")
+        for key, value in previous.items():
+            setattr(settings, key, value)
+        _runtime_configured_agents.clear()
+        _runtime_configured_agents.update(previous_roles)
+        logger.error("保存配置失败（{}），保留原配置", type(e).__name__)
+        raise HTTPException(
+            status_code=500,
+            detail="配置未保存，请检查参数与配置目录写入权限；原配置已保留。",
+        ) from e
 
 
 @router.post("/validate-api-key", response_model=ValidateApiKeyResponse)
@@ -348,6 +408,11 @@ async def _schedule_new_task(
         await redis_manager.publish_message(
             task_id, UserMessage(content=visible_prompt)
         )
+        from app.services.work_timing import Span
+        from app.services.async_io import run_blocking
+
+        queue_span = Span(task_id, "queue")
+        await run_blocking(queue_span.start)
     except BaseException:
         _scheduled_tasks.discard(task_id)
         _pending_cancellations.discard(task_id)
@@ -368,6 +433,7 @@ async def _schedule_new_task(
         output_format,
         user_requirements,
         execution_backend=execution_backend,
+        queue_span=queue_span,
     )
     logger.info(f"任务 {task_id} 已进入后台执行队列")
     return {"task_id": task_id, "status": "processing"}
@@ -453,6 +519,7 @@ async def run_modeling_task_async(
     resume_from: str | None = None,
     continue_existing: bool = False,
     execution_backend: ExecutionBackend | None = None,
+    queue_span=None,
 ):
     """Execute a fresh or resumed workflow outside the request lifecycle."""
     logger.info(f"开始后台建模任务: {task_id}")
@@ -487,6 +554,7 @@ async def run_modeling_task_async(
     _active_tasks[task_id] = (task, cancel_event)
     _scheduled_tasks.discard(task_id)
 
+    cancelled = False
     try:
         if (
             task_id in _pending_cancellations
@@ -494,6 +562,13 @@ async def run_modeling_task_async(
         ):
             cancel_event.set()
             task.cancel()
+
+        if queue_span is not None:
+            from app.services.async_io import run_blocking
+
+            await run_blocking(
+                queue_span.finish, "cancelled" if cancel_event.is_set() else "completed"
+            )
 
         # 发送任务开始状态
         await redis_manager.publish_message(
@@ -532,9 +607,7 @@ async def run_modeling_task_async(
                 f"“{approval['node_label']}”尚未完成，已暂停，等待你决定如何修复"
             )
         elif quality_status in {"warning", "failed", "manual_review"}:
-            approval_content = (
-                f"“{approval['node_label']}”的结果仍需核验，等待你的审核"
-            )
+            approval_content = f"“{approval['node_label']}”的结果仍需核验，等待你的审核"
         else:
             approval_content = (
                 f"“{approval['node_label']}”已生成可核对产物，等待你的审核"
@@ -579,10 +652,13 @@ async def run_modeling_task_async(
         )
     except asyncio.CancelledError:
         logger.info(f"任务 {task_id} 被取消")
-        workflow.mark_status("stopped")
+        cancelled = True
+        workflow.mark_status("stopping")
         _auto_resume_counts.pop(task_id, None)
         stopped = SystemMessage(
-            content="建模任务已停止", type="warning", task_status="stopped"
+            content="正在停止，等待计算与资源释放",
+            type="warning",
+            task_status="stopping",
         )
         await redis_manager.publish_message(task_id, stopped)
     except Exception as e:
@@ -592,6 +668,16 @@ async def run_modeling_task_async(
         attempt = _auto_resume_counts.get(task_id, 0) + 1
         transient = _is_transient_task_failure(e)
         will_retry = transient and attempt <= _AUTO_RESUME_LIMIT
+        from app.services.task_failure import describe
+        from app.services.writing_workspace import write_json
+
+        try:
+            failure = describe(
+                e, Path(workflow.work_dir), retrying=will_retry, attempts=attempt - 1
+            )
+            write_json(Path(workflow.work_dir) / ".runtime-failure.json", failure)
+        except (OSError, ValueError):
+            logger.warning("错误摘要暂时无法保存；原有检查点保持不变")
         delay_seconds = settings.TASK_AUTO_RESUME_BASE_DELAY_SECONDS * attempt
         await redis_manager.publish_message(
             task_id,
@@ -640,6 +726,15 @@ async def run_modeling_task_async(
                 f"清理任务 {task_id} 的代码解释器失败: "
                 f"{_exception_message(cleanup_error)}"
             )
+        else:
+            if cancelled:
+                workflow.mark_status("stopped")
+                await redis_manager.publish_message(
+                    task_id,
+                    SystemMessage(
+                        content="建模任务已停止", type="warning", task_status="stopped"
+                    ),
+                )
         # 从注册表中清理
         _active_tasks.pop(task_id, None)
         _scheduled_tasks.discard(task_id)
@@ -730,10 +825,20 @@ class ResumeOptionsResponse(BaseModel):
     nodes: list[ResumeNodeResponse]
 
 
+class ExecutionBudgetExtension(BaseModel):
+    confirmed: Literal[True]
+    request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    stage_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_used: int = Field(ge=0, strict=True)
+    expected_limit: int = Field(ge=1, strict=True)
+    additional: int = Field(ge=1, le=48, strict=True)
+
+
 class ResumeTaskRequest(BaseModel):
     """从指定节点继续任务。"""
 
     node_id: str
+    execution_budget_extension: ExecutionBudgetExtension | None = None
 
 
 class ResumeTaskResponse(BaseModel):
@@ -897,7 +1002,7 @@ async def get_resume_options(task_id: str):
         redis_manager.task_status_from_messages(messages) if messages else "unknown"
     )
     status = str(state.get("status", durable_status))
-    if durable_status == "stopped" and status == "running":
+    if durable_status == "stopped" and status in {"running", "stopping"}:
         checkpoint.mark_status("stopped")
         state = checkpoint.load()
         status = "stopped"
@@ -915,6 +1020,27 @@ async def get_resume_options(task_id: str):
         current_node=state.get("current_node"),
         nodes=nodes,
     )
+
+
+@router.get("/modeling/{task_id}/execution-budget")
+async def get_execution_budget(task_id: str):
+    checkpoint, state = _load_workflow_checkpoint(task_id)
+    if state.get("status") not in {"stopped", "failed"}:
+        raise HTTPException(409, "任务状态已变化，请刷新后查看")
+    node = state.get("current_node")
+    if not node:
+        raise HTTPException(409, "没有可追加额度的当前阶段")
+    try:
+        budget = await run_blocking(call_ledger.execution_budget, task_id, node)
+        if budget is None:
+            raise HTTPException(409, "任务执行额度不可用")
+        return {
+            **await run_blocking(budget.snapshot),
+            "node_id": node,
+            "label": checkpoint.node_label(node, state),
+        }
+    except call_ledger.ExecutionBudgetUnavailable as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.post(
@@ -945,19 +1071,65 @@ async def resume_task(
             status_code=409, detail="任务原始配置损坏，无法续跑"
         ) from exc
 
-    await redis_manager.clear_cancellation_request(task_id)
-    _auto_resume_counts.pop(task_id, None)
+    # Reserve scheduling before the first await; double clicks cannot queue two
+    # workers while Redis or the durable budget transaction is pending.
     _scheduled_tasks.add(task_id)
-    background_tasks.add_task(
-        run_modeling_task_async,
-        task_id,
-        problem.ques_all,
-        problem.comp_template,
-        problem.format_output,
-        problem.user_requirements,
-        request.node_id,
-        execution_backend=problem.execution_backend,
-    )
+    try:
+        extension = request.execution_budget_extension
+        same_stage = request.node_id == state.get(
+            "current_node"
+        ) and request.node_id not in state.get("completed_nodes", [])
+        if extension and not same_stage:
+            raise HTTPException(409, "只能为当前未完成阶段追加执行次数")
+        if same_stage:
+            budget = await run_blocking(
+                call_ledger.execution_budget, task_id, request.node_id
+            )
+            if budget is not None:
+                if extension:
+                    await run_blocking(
+                        budget.extend,
+                        extension.request_id,
+                        extension.stage_key,
+                        extension.expected_used,
+                        extension.expected_limit,
+                        extension.additional,
+                    )
+                await run_blocking(budget.remaining)
+            elif extension:
+                raise HTTPException(409, "任务执行额度不可用")
+        await redis_manager.clear_cancellation_request(task_id)
+        _auto_resume_counts.pop(task_id, None)
+        if extension and not await run_blocking(
+            budget.mark_resume_scheduled, extension.request_id
+        ):
+            _scheduled_tasks.discard(task_id)
+            return ResumeTaskResponse(
+                success=True,
+                task_id=task_id,
+                node_id=request.node_id,
+                message="该确认请求已提交过恢复；追加次数未重复，请查看当前任务进度。",
+            )
+        background_tasks.add_task(
+            run_modeling_task_async,
+            task_id,
+            problem.ques_all,
+            problem.comp_template,
+            problem.format_output,
+            problem.user_requirements,
+            request.node_id,
+            execution_backend=problem.execution_backend,
+        )
+    except (
+        call_ledger.ExecutionBudgetExceeded,
+        call_ledger.ExecutionBudgetConflict,
+        call_ledger.ExecutionBudgetUnavailable,
+    ) as exc:
+        _scheduled_tasks.discard(task_id)
+        raise HTTPException(409, str(exc)) from exc
+    except BaseException:
+        _scheduled_tasks.discard(task_id)
+        raise
     return ResumeTaskResponse(
         success=True,
         task_id=task_id,
@@ -985,13 +1157,13 @@ async def cancel_task(task_id: str):
     if active is not None:
         try:
             checkpoint, _ = _load_workflow_checkpoint(task_id)
-            checkpoint.mark_status("stopped")
+            checkpoint.mark_status("stopping")
         except HTTPException:
             pass
-        logger.info(f"已立即取消任务 {task_id}")
+        logger.info(f"已请求取消任务 {task_id}，等待资源释放")
         return CancelTaskResponse(
             success=True,
-            message="任务已取消",
+            message="正在停止，等待当前调用与执行器退出",
         )
 
     try:

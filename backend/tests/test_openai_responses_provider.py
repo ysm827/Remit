@@ -43,23 +43,108 @@ class EventStream:
 
 
 class OpenAIResponsesProviderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_required_tool_choice_reaches_http_as_required(self):
+        requests = []
+
+        def respond(request):
+            payload = json.loads(request.content)
+            requests.append(payload)
+            self.assertEqual(payload["tool_choice"], "required")
+            terminal = {
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_tool",
+                    "status": "completed",
+                    "usage": None,
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_tool",
+                            "name": "probe",
+                            "arguments": "{}",
+                        }
+                    ],
+                },
+            }
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content="data: " + json.dumps(terminal) + "\n\n",
+            )
+
+        client = AsyncOpenAI(
+            api_key="test-key",
+            base_url="https://example.invalid/v1",
+            max_retries=0,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+        )
+        with patch(
+            "app.core.llm.providers.openai_responses.AsyncOpenAI", return_value=client
+        ):
+            result = await OpenAIResponsesProvider().call(
+                messages=[{"role": "user", "content": "Call probe"}],
+                model="test",
+                api_key="test",
+                tools=[
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "probe",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {},
+                                "additionalProperties": False,
+                            },
+                        },
+                    }
+                ],
+                tool_choice="required",
+            )
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(result.tool_calls[0].name, "probe")
+
     async def test_real_sdk_preserves_untyped_gateway_error_without_retries(self):
         for event in [
-            {"code": "InvalidParameter", "message": "Missing required parameter: 'workspaceid'. private-key-secret"},
-            {"error": {"code": "InvalidParameter", "message": "Missing required parameter: 'workspaceid'. private-key-secret"}},
+            {
+                "code": "InvalidParameter",
+                "message": "Missing required parameter: 'workspaceid'. private-key-secret",
+            },
+            {
+                "error": {
+                    "code": "InvalidParameter",
+                    "message": "Missing required parameter: 'workspaceid'. private-key-secret",
+                }
+            },
         ]:
             with self.subTest(event=event):
                 requests = []
+
                 def respond(request):
                     requests.append(request)
                     if not json.loads(request.content).get("stream"):
                         return httpx.Response(200, json=event)
-                    return httpx.Response(200, headers={"content-type": "text/event-stream"},
-                                          content="data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n")
-                client = AsyncOpenAI(api_key="test-key", base_url="https://example.invalid/v1",
-                                     http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)))
-                llm = LLM(api_type=ApiType.OPENAI_RESPONSES, api_key="test-key", model="test-model")
-                with patch("app.core.llm.providers.openai_responses.AsyncOpenAI", return_value=client):
+                    return httpx.Response(
+                        200,
+                        headers={"content-type": "text/event-stream"},
+                        content="data: " + json.dumps(event) + "\n\ndata: [DONE]\n\n",
+                    )
+
+                client = AsyncOpenAI(
+                    api_key="test-key",
+                    base_url="https://example.invalid/v1",
+                    http_client=httpx.AsyncClient(
+                        transport=httpx.MockTransport(respond)
+                    ),
+                )
+                llm = LLM(
+                    api_type=ApiType.OPENAI_RESPONSES,
+                    api_key="test-key",
+                    model="test-model",
+                )
+                with patch(
+                    "app.core.llm.providers.openai_responses.AsyncOpenAI",
+                    return_value=client,
+                ):
                     with self.assertRaises(NonRetryableLLMError) as caught:
                         await llm.chat(history=[], publish=False)
                 self.assertIn("workspaceid", str(caught.exception))
@@ -69,38 +154,101 @@ class OpenAIResponsesProviderTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_untyped_stream_error_falls_back_once_and_retains_mode(self):
         requests = []
+
         def respond(request):
             payload = json.loads(request.content)
             requests.append(payload)
             if payload.get("stream"):
-                return httpx.Response(200, headers={"content-type": "text/event-stream"},
-                    content="data: " + json.dumps({"code":"InvalidParameter", "message":"Missing required parameter: workspaceid"}) + "\n\n")
-            return httpx.Response(200, json={"id":"resp_ok", "status":"completed",
-                "output":[{"type":"function_call","call_id":"call_ok","name":"execute_code","arguments":"{}"}], "usage":None})
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "text/event-stream"},
+                    content="data: "
+                    + json.dumps(
+                        {
+                            "code": "InvalidParameter",
+                            "message": "Missing required parameter: workspaceid",
+                        }
+                    )
+                    + "\n\n",
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "id": "resp_ok",
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_ok",
+                            "name": "execute_code",
+                            "arguments": "{}",
+                        }
+                    ],
+                    "usage": None,
+                },
+            )
+
         def make_client(**kwargs):
-            return AsyncOpenAI(api_key="test-key", base_url="https://example.invalid/v1", max_retries=0,
-                http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)))
+            return AsyncOpenAI(
+                api_key="test-key",
+                base_url="https://example.invalid/v1",
+                max_retries=0,
+                http_client=httpx.AsyncClient(transport=httpx.MockTransport(respond)),
+            )
+
         provider = OpenAIResponsesProvider()
-        with patch("app.core.llm.providers.openai_responses.AsyncOpenAI", side_effect=make_client):
+        with patch(
+            "app.core.llm.providers.openai_responses.AsyncOpenAI",
+            side_effect=make_client,
+        ):
             for _ in range(2):
-                result = await provider.call(messages=[],model="test",api_key="test")
+                result = await provider.call(messages=[], model="test", api_key="test")
                 self.assertEqual(result.tool_calls[0].id, "call_ok")
-        self.assertEqual([p.get("stream", False) for p in requests], [True, False, False])
+        self.assertEqual(
+            [p.get("stream", False) for p in requests], [True, False, False]
+        )
 
     async def test_real_sdk_terminal_tool_call_is_preserved_without_created_event(self):
-        terminal = {"type": "response.completed", "response": {
-            "id": "resp_test", "status": "completed", "output": [
-                {"type": "function_call", "id": "fc_test", "call_id": "call_test",
-                 "name": "execute_code", "arguments": '{"code":"disp(1)"}'}],
-            "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5}}}
-        client = AsyncOpenAI(api_key="test-key", base_url="https://example.invalid/v1",
-            http_client=httpx.AsyncClient(transport=httpx.MockTransport(lambda r:
-                httpx.Response(200, headers={"content-type":"text/event-stream"},
-                               content="data: " + json.dumps(terminal) + "\n\n"))))
-        with patch("app.core.llm.providers.openai_responses.AsyncOpenAI", return_value=client):
-            result = await OpenAIResponsesProvider().call(messages=[],model="test",api_key="test")
+        terminal = {
+            "type": "response.completed",
+            "response": {
+                "id": "resp_test",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": "fc_test",
+                        "call_id": "call_test",
+                        "name": "execute_code",
+                        "arguments": '{"code":"disp(1)"}',
+                    }
+                ],
+                "usage": {"input_tokens": 2, "output_tokens": 3, "total_tokens": 5},
+            },
+        }
+        client = AsyncOpenAI(
+            api_key="test-key",
+            base_url="https://example.invalid/v1",
+            http_client=httpx.AsyncClient(
+                transport=httpx.MockTransport(
+                    lambda r: httpx.Response(
+                        200,
+                        headers={"content-type": "text/event-stream"},
+                        content="data: " + json.dumps(terminal) + "\n\n",
+                    )
+                )
+            ),
+        )
+        with patch(
+            "app.core.llm.providers.openai_responses.AsyncOpenAI", return_value=client
+        ):
+            result = await OpenAIResponsesProvider().call(
+                messages=[], model="test", api_key="test"
+            )
         self.assertEqual(result.tool_calls[0].id, "call_test")
-        self.assertEqual(json.loads(result.tool_calls[0].arguments), {"code":"disp(1)"})
+        self.assertEqual(
+            json.loads(result.tool_calls[0].arguments), {"code": "disp(1)"}
+        )
         self.assertEqual(result.usage.completion_tokens, 3)
 
     async def test_incomplete_terminal_preserves_budget_reason(self):
@@ -186,7 +334,13 @@ class OpenAIResponsesProviderTests(unittest.IsolatedAsyncioTestCase):
         client = SimpleNamespace(
             close=AsyncMock(),
             responses=SimpleNamespace(
-                create=AsyncMock(side_effect=[EventStream([]), TransientLLMError("upstream unavailable"), TransientLLMError("upstream unavailable")]),
+                create=AsyncMock(
+                    side_effect=[
+                        EventStream([]),
+                        TransientLLMError("upstream unavailable"),
+                        TransientLLMError("upstream unavailable"),
+                    ]
+                ),
             ),
         )
         llm = LLM(
@@ -266,9 +420,15 @@ class OpenAIResponsesProviderTests(unittest.IsolatedAsyncioTestCase):
         fake_client = SimpleNamespace(
             close=AsyncMock(),
             responses=SimpleNamespace(
-                create=AsyncMock(return_value=EventStream([
-                    SimpleNamespace(type="response.completed", response=final_response)
-                ])),
+                create=AsyncMock(
+                    return_value=EventStream(
+                        [
+                            SimpleNamespace(
+                                type="response.completed", response=final_response
+                            )
+                        ]
+                    )
+                ),
             ),
         )
 

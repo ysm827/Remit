@@ -2,7 +2,7 @@
 # 用法: powershell -NoProfile -ExecutionPolicy Bypass -File tools\package_win.ps1
 # 产物: <BuildRoot>\output\RemitSetup.exe
 #
-# 原理：把虚拟环境对应的基础 Python + site-packages 合并为"便携运行时"，
+# 原理：把基础 Python + 锁文件创建的生产 site-packages 合并为"便携运行时"，
 # 前端以静态文件形式由后端直接托管，Redis 使用包内二进制，MATLAB 缺失时自动回退 Python。
 
 [CmdletBinding()]
@@ -22,7 +22,8 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 }
 $RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
 $BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
-$VenvDir = Join-Path $RepoRoot "backend\.venv"
+$DeveloperVenv = Join-Path $RepoRoot "backend\.venv"
+$VenvDir = Join-Path $BuildRoot "dependency-env"
 $Stage = Join-Path $BuildRoot "staging\Remit"
 $InnoDir = Join-Path $BuildRoot "tools\InnoSetup"
 $IsccExe = Join-Path $InnoDir "ISCC.exe"
@@ -70,6 +71,30 @@ function Write-Utf8NoBom {
     [IO.File]::WriteAllText($Path, $text, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+function Initialize-BuildDependencies {
+    param([string]$ProjectDirectory, [string]$EnvironmentDirectory, [string]$PythonExecutable)
+    $project = [IO.Path]::GetFullPath($ProjectDirectory).TrimEnd('\')
+    $environment = [IO.Path]::GetFullPath($EnvironmentDirectory).TrimEnd('\')
+    if ($environment.Equals($project, [StringComparison]::OrdinalIgnoreCase) -or
+        $environment.StartsWith($project + '\', [StringComparison]::OrdinalIgnoreCase) -or
+        $project.StartsWith($environment + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "构建依赖环境必须与开发项目目录隔离"
+    }
+    $previousEnvironment = [Environment]::GetEnvironmentVariable("UV_PROJECT_ENVIRONMENT", "Process")
+    try {
+        $env:UV_PROJECT_ENVIRONMENT = $environment
+        & uv sync --project $project --locked --no-dev --no-install-project --no-editable --no-python-downloads --python $PythonExecutable | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw "锁定生产依赖安装失败；未修改开发环境" }
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable("UV_PROJECT_ENVIRONMENT", $previousEnvironment, "Process")
+    }
+    $python = Join-Path $environment "Scripts\python.exe"
+    Assert-Path -Path $python -Message "独立构建 Python 缺失"
+    & uv pip check --python $python | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "生产依赖一致性检查失败" }
+}
+
 function Install-InnoChineseLanguage {
     param([string]$CompilerDirectory)
     # Inno Setup 6.7.3 的安装程序未捆绑简体中文；固定官方源文件版本与摘要。
@@ -100,15 +125,20 @@ Write-Host "========== Remit 打包开始 =========="
 # ---------- 0. 校验输入 ----------
 Assert-Path -Path $RepoRoot -Message "仓库根目录不存在"
 Assert-Path -Path (Join-Path $RepoRoot "backend\app\main.py") -Message "后端代码缺失"
-Assert-Path -Path (Join-Path $VenvDir "Scripts\python.exe") -Message "后端虚拟环境缺失"
-$VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 if ([string]::IsNullOrWhiteSpace($BasePython)) {
-    $BasePython = (& $VenvPython -c "import sys; print(sys.base_prefix)").Trim()
+    $developerPython = Join-Path $DeveloperVenv "Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $developerPython)) {
+        throw "请通过 -BasePython 指定基础 Python 目录，或先准备 backend\.venv"
+    }
+    $BasePython = (& $developerPython -c "import sys; print(sys.base_prefix)").Trim()
 }
 $BasePython = [IO.Path]::GetFullPath($BasePython)
 Assert-Path -Path $BasePython -Message "基础 Python 安装目录缺失"
 Assert-Path -Path (Join-Path $BasePython "python.exe") -Message "基础 Python 可执行文件缺失"
 $PythonVersion = (& (Join-Path $BasePython "python.exe") --version).Trim()
+Write-Host "[0/7] 在独立目录安装锁定生产依赖（保留开发环境）..."
+Initialize-BuildDependencies -ProjectDirectory (Join-Path $RepoRoot "backend") -EnvironmentDirectory $VenvDir -PythonExecutable (Join-Path $BasePython "python.exe")
+$VenvPython = Join-Path $VenvDir "Scripts\python.exe"
 New-Item -ItemType Directory -Force -Path $BuildRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
@@ -164,7 +194,7 @@ $envOverrides = @{
     "^SERVER_HOST=.*" = "SERVER_HOST=http://localhost:18000"
     "^LOG_LEVEL=.*" = "LOG_LEVEL=INFO"
     "^DEBUG=.*" = "DEBUG=false"
-    "^CODE_EXECUTION_BACKEND=.*" = "CODE_EXECUTION_BACKEND=matlab"
+    "^CODE_EXECUTION_BACKEND=.*" = "CODE_EXECUTION_BACKEND=python"
     "^MATLAB_FALLBACK_TO_PYTHON=.*" = "MATLAB_FALLBACK_TO_PYTHON=true"
 }
 $envOutput = foreach ($line in $envLines) {
@@ -179,9 +209,25 @@ $envOutput = foreach ($line in $envLines) {
     if (-not $matched) { $line }
 }
 Write-Utf8NoBom -Path (Join-Path $Stage "backend\.env.dev") -Lines $envOutput
+$buildCommit = (& git -C $RepoRoot rev-parse HEAD).Trim()
+$sourceDigest = & $VenvPython -c "import hashlib,pathlib,sys; root=pathlib.Path(sys.argv[1]); h=hashlib.sha256(); [(h.update(p.relative_to(root).as_posix().encode()),h.update(p.read_bytes())) for p in sorted(root.rglob('*.py'))]; print(h.hexdigest())" (Join-Path $RepoRoot "backend\app")
+if ($LASTEXITCODE -ne 0) { throw "源码摘要计算失败" }
+$sourceDigest = $sourceDigest.Trim()
+$buildInfo = @{
+    commit = $buildCommit
+    built_at = [DateTime]::UtcNow.ToString("o")
+    source_sha256 = $sourceDigest
+    source_hash_scope = "backend/app/**/*.py"
+    dirty = [bool](& git -C $RepoRoot status --porcelain)
+    platform = "windows-x64"
+    latex_bundled = $false
+    dependency_lock_sha256 = (Get-FileHash -LiteralPath (Join-Path $RepoRoot "backend\uv.lock") -Algorithm SHA256).Hash.ToLower()
+    dependencies = "uv sync --locked --no-dev --no-install-project; isolated build environment"
+}
+Write-Utf8NoBom -Path (Join-Path $Stage "backend\build-info.json") -Lines @($buildInfo | ConvertTo-Json)
 
 # ---------- 5. 组装便携 Python 运行时 ----------
-Write-Host "[4/7] 组装便携 Python 运行时（约 1.8 GB）..."
+Write-Host "[4/7] 组装便携 Python 运行时（锁定生产依赖）..."
 $RuntimePython = Join-Path $Stage "runtime\python"
 New-Item -ItemType Directory -Force -Path $RuntimePython | Out-Null
 Invoke-Robocopy $BasePython $RuntimePython -ExcludeDirs @("Doc", "Scripts", "share", "site-packages") -ExcludeFiles @("*.pyc")
@@ -258,24 +304,24 @@ Write-Utf8NoBom -Path (Join-Path $Stage "使用说明.txt") -Lines @(
     "  4. 也可双击【停止Remit.bat】停止后台服务。",
     "",
     "二、模型配置（首次使用必填）",
-    "  1. 打开工作台后，进入界面右上角的 API 配置对话框。",
-    "  2. 为 Coordinator / Modeler / Coder / Writer 四个 Agent 分别填写：",
+    "  1. 打开工作台后，从左侧【设置】进入模型配置。",
+    "  2. 可选择四位角色共用一个模型连接；高级设置可分别配置：",
     "     - API 类型（如 openai-chat / openai-responses / anthropic）",
     "     - API 密钥",
     "     - 模型名称（如 deepseek-chat）",
     "     - API 服务地址（如 https://api.deepseek.com/v1）",
-    "  3. 也可以直接编辑安装目录 backend\.env.dev 文件后重启。",
+    "  3. 保存配置不会调用模型；文本和工具验证须在界面显式操作，可能计费。",
     "",
     "三、MATLAB 说明（重点）",
-    "  本软件不需要安装 MATLAB。默认优先使用 MATLAB（自动探测 PATH 与常见安装目录），",
-    "  检测不到 MATLAB 时自动回退到内置的 Python 计算环境，建模计算正常可用。",
-    "  无需任何额外配置；界面中会提示当前使用的计算后端。",
+    "  默认使用包内 Python。MATLAB 是可选能力，需用户安装并持有有效许可证。",
+    "  首页本地环境自检会实际验证 Python 内核、计算库、中文图与论文编译器。",
+    "  自检不调用模型，不代表真实模型解题或论文科学质量已通过。",
     "",
     "四、常见问题",
     "  1. 端口 16379/18000 被占用：关闭占用这些端口的程序后重启应用。",
     "  2. 图表中文乱码：任务工作目录会自动放入中文字体，无需手动处理。",
     "  3. 想彻底卸载：使用系统的【添加或删除程序】卸载 Remit。",
-    "  4. 日志位置：安装目录 logs\ 目录。",
+    "  4. 数据与日志：%LOCALAPPDATA%\Remit\data；界面也显示实际数据目录。",
     "  5. 源码与许可证：请阅读安装目录中的 LICENSE、NOTICE.md 与 THIRD_PARTY_NOTICES.md。",
     "",
     "五、论文 PDF 导出",
@@ -339,6 +385,10 @@ if ($leaks.Count -gt 0) {
     throw "检测到疑似密钥泄漏，已中止打包：" + [Environment]::NewLine + ($leaks -join [Environment]::NewLine)
 }
 Write-Host "  未发现真实密钥，打包安全。"
+# 包内真实执行链路必须通过后才生成安装器，避免开发机环境掩盖故障。
+Write-Host "  验证包内 Python、真实代码执行器、中文图与 CSV（不调用模型）..."
+& (Join-Path $RuntimePython "python.exe") (Join-Path $Stage "tools\verify_portable_runtime.pyc") --install-root $Stage --report (Join-Path $BuildRoot "runtime-check.json")
+if ($LASTEXITCODE -ne 0) { throw "包内计算验证失败，停止生成安装包" }
 # ---------- 8. 生成安装包 ----------
 if ($SkipInstaller) {
     Write-Host "[6/7] 跳过安装包生成（-SkipInstaller），暂存目录: $Stage"

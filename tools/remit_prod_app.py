@@ -16,6 +16,9 @@ import json
 import logging
 import os
 import socket
+import sqlite3
+from contextlib import closing
+import shutil
 import subprocess
 import sys
 import threading
@@ -45,7 +48,8 @@ else:
 RUNTIME_PYTHON = ROOT / "runtime" / "python" / "python.exe"
 REDIS_EXE = ROOT / "tools" / "redis" / "redis-server.exe"
 BACKEND_DIR = ROOT / "backend"
-LOG_DIR = ROOT / "logs"
+DATA_DIR = Path(os.environ.get("REMIT_DATA_DIR") or (Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Remit" / "data")).expanduser().resolve()
+LOG_DIR = DATA_DIR / "logs"
 APPLICATION_OWNER_PATH = LOG_DIR / "app-owner.json"
 ICON_PATH = ROOT / "assets" / "remit-m-icon.ico"
 KERNEL_JSON = (
@@ -277,12 +281,16 @@ def ensure_backend_running() -> None:
         )
     if not RUNTIME_PYTHON.is_file():
         raise RuntimeError(f"缺少包内 Python: {RUNTIME_PYTHON}")
+    prepare_user_data()
     env = os.environ.copy()
     env["PYTHONUTF8"] = "1"
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUNBUFFERED"] = "1"
     env["ENV"] = "dev"
+    env["PYTHONPATH"] = str(BACKEND_DIR)
+    env["REMIT_USER_CONFIG_PATH"] = str(DATA_DIR / ".env.user")
+    env["REMIT_MESSAGES_DIR"] = str(DATA_DIR / "logs" / "messages")
     env["PATH"] = str(RUNTIME_PYTHON.parent) + os.pathsep + env.get("PATH", "")
     _start_hidden(
         [
@@ -300,11 +308,75 @@ def ensure_backend_running() -> None:
             "--ws-ping-timeout",
             "120",
         ],
-        BACKEND_DIR,
+        DATA_DIR,
         "backend",
         env=env,
     )
     _wait_port(BACKEND_PORT, timeout=180, service="后端")
+
+
+def prepare_user_data() -> None:
+    """首次启动复制旧安装内的数据，保留原件；升级不得覆盖已有用户数据。"""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    prepare_message_archive()
+    marker = DATA_DIR / "migration-v1.json"
+    if marker.is_file():
+        return
+    old = BACKEND_DIR / "project"
+    destination = DATA_DIR / "project"
+    if old.is_dir() and not destination.exists():
+        staging = DATA_DIR / "project-migration-pending"
+        if staging.exists():
+            raise RuntimeError("发现上次未完成的数据迁移，原项目保留在旧安装目录。请核对 project-migration-pending 后重试。")
+        shutil.copytree(old, staging)
+        staging.replace(destination)
+    destination.mkdir(exist_ok=True)
+    old_config = BACKEND_DIR / ".env.user"
+    if old_config.is_file() and not (DATA_DIR / ".env.user").exists():
+        shutil.copy2(old_config, DATA_DIR / ".env.user")
+    marker.write_text(json.dumps({"schema_version": 1, "legacy_copy_preserved": True,
+                                  "rollback": "旧版本仅能读取保留的旧副本；请勿将新数据覆盖回旧目录。"}, ensure_ascii=False), encoding="utf-8")
+
+
+def prepare_message_archive() -> None:
+    """复制旧消息档案；SQLite 在线备份包含已提交的 WAL 数据，原档案保留。"""
+    marker = DATA_DIR / "migration-messages-v2.json"
+    if marker.is_file():
+        return
+    source = BACKEND_DIR / "logs" / "messages"
+    destination = DATA_DIR / "logs" / "messages"
+    if source.resolve() == destination.resolve():
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() and any(destination.iterdir()):
+        # An existing user archive is authoritative; never overwrite or merge
+        # event sequence IDs, which are also browser reconnect cursors.
+        status = "existing_user_archive_preserved"
+    else:
+        staging = destination.with_name("messages-migration-pending")
+        if staging.exists():
+            raise RuntimeError("发现未完成的消息迁移，旧对话仍保留；请核对 messages-migration-pending 后重试。")
+        staging.mkdir()
+        if source.is_dir():
+            for legacy in source.glob("*.json"):
+                shutil.copy2(legacy, staging / legacy.name)
+            database = source / "messages.sqlite3"
+            if database.is_file():
+                with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as original:
+                    with closing(sqlite3.connect(staging / database.name)) as copied:
+                        deadline = time.monotonic() + 30
+                        def check_backup_progress(_status, _remaining, _total):
+                            if time.monotonic() > deadline:
+                                raise TimeoutError("消息档案备份超时，旧档案和暂存副本均保留。")
+                        original.backup(copied, pages=256, progress=check_backup_progress)
+                        if copied.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                            raise RuntimeError("消息档案备份校验失败，已保留原始档案和迁移副本。")
+        if destination.exists():
+            destination.rmdir()  # Only the empty destination checked above.
+        staging.replace(destination)
+        status = "legacy_archive_copied"
+    marker.write_text(json.dumps({"schema_version": 2, "status": status,
+                                  "legacy_copy_preserved": True}), encoding="utf-8")
 
 
 def _wait_port(port: int, timeout: float, service: str) -> None:
@@ -501,7 +573,7 @@ def show_startup_error(message: str) -> None:
     try:
         ctypes.windll.user32.MessageBoxW(
             None,
-            f"Remit 启动失败：\n{message}\n\n请查看安装目录下的 logs 文件夹。",
+            f"Remit 启动失败：\n{message}\n\n日志目录：{LOG_DIR}",
             APP_TITLE,
             0x00000010,
         )

@@ -6,7 +6,9 @@ from app.core.prompts.persona import remit_voice
 
 def get_writer_prompt(format_output: FormatOutPut = FormatOutPut.LaTeX) -> str:
     """生成证据优先的写作提示；最终格式由确定性渲染器负责。"""
-    return remit_voice("writer") + f"""
+    return (
+        remit_voice("writer")
+        + f"""
 ## 版式硬约束
 - 本次返回值会直接成为论文章节，只输出要求的完整学术正文。不要追加进度总结、下一步建议、征求确认或对用户的聊天答复。
 - 逐项核对证据中的统计量及其含义，区分首批/非首批、质量/体积、缺失/异常等口径；不得交换类别对应的数值。证据冲突时明确注明冲突，不擅自改动已记录的结果。
@@ -218,3 +220,4 @@ HADS 焦虑得分与夜醒次数正相关（图 1）。据此保留两个维度�
 - 需要图示 → 先确认图已生成再插入
 - 需要数据解读 → 依据代码手输出的数据特征撰写
 """
+    )

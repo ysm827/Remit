@@ -4,12 +4,14 @@ export type ResultMetric = { name: string; value: string; baseline?: string };
 export function plainExcerpt(value: unknown, limit = 180): string {
  if (typeof value !== "string") return "";
  const text = value.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").replace(/[#*`>|]/g, "").replace(/\s+/g, " ").trim();
- return text.length > limit ? text.slice(0, limit) + "…" : text;
+ return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 const scalar = (v: unknown) => typeof v === "number" || typeof v === "string" ? String(v) : "";
 export function resultOverview(key: string, value: unknown) {
- const record = asRecord(value), report = asRecord(record.quality_report);
- const summary = asRecord(record.execution_summary), review = asRecord(record.modeler_review);
+ const record = asRecord(value);
+ const report = asRecord(record.quality_report);
+ const summary = asRecord(record.execution_summary);
+ const review = asRecord(record.modeler_review);
  const specific = asRecord(report.type_specific);
  const checks = Object.values(asRecord(report.checks)).concat(Array.isArray(report.robustness_checks) ? report.robustness_checks : []);
  const statuses = [summary.status, summary.modeler_verdict, review.verdict, report.status];
@@ -21,11 +23,13 @@ export function resultOverview(key: string, value: unknown) {
  const metrics: ResultMetric[] = [];
  const names: Record<string,string> = { trips: "运输架次", energy_kWh: "能耗（kWh）", cumulative_job_time_s: "累计作业时间（s）", makespan_s: "完工时间（s）" };
  for (const [name, raw] of Object.entries(asRecord(specific.objectives_detail))) {
-  const m = asRecord(raw), current = scalar(m.model ?? m.model_value ?? m.value);
+  const m = asRecord(raw);
+  const current = scalar(m.model ?? m.model_value ?? m.value);
   if (current) metrics.push({name: names[name] || artifactLabel(name), value: current, baseline: scalar(m.baseline ?? m.baseline_value) || undefined});
  }
  if (!metrics.length && Array.isArray(summary.metrics)) for (const raw of summary.metrics) {
-  const m = asRecord(raw), current = scalar(m.value ?? m.current ?? m.model_value);
+  const m = asRecord(raw);
+  const current = scalar(m.value ?? m.current ?? m.model_value);
   if (current) metrics.push({name: String(m.name ?? m.metric ?? "已记录指标") + (m.unit ? `（${m.unit}）` : ""), value: current, baseline: scalar(m.baseline ?? m.baseline_value) || undefined});
  }
  const objective = asRecord(specific.objective);

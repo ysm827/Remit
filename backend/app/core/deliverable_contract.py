@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.paper_quality import audit_paper_style
+from app.core.task_purpose import TaskPurpose
+from app.utils.notebook_text import notebook_output_text
 
 
 _REGRESSION_PATTERNS = (
@@ -154,6 +156,7 @@ class QuestionDeliverableContract:
     require_positive_oof_r2: bool = False
     minimum_candidate_models: int = 2
     minimum_robustness_checks: int = 2
+    task_purpose: TaskPurpose = "modeling"
 
     @property
     def prediction_filename(self) -> str:
@@ -172,6 +175,24 @@ class QuestionDeliverableContract:
 
     def prompt_block(self) -> str:
         """Render the non-optional contract injected into the coder prompt."""
+        if self.problem_type == "numerical_verification":
+            return f"""【指定计算的数值核验契约】
+只计算已指定的方法，不做候选选型，不以训练拟合证明泛化，不补造样本。
+先分步保存可独立运行的源码与实际计算结果，再生成报告；每次工具调用只完成一个可回读步骤，避免大段输出截断后丢失全部代码。
+必须保存 {self.quality_filename}：
+{{"status":"pass", "problem_type":"numerical_verification", "selected_model":"实际指定方法",
+"candidate_models":[], "robustness_checks":[{{"name":"独立公式复算", "passed":true, "evidence":"实际文件"}}, {{"name":"其他题目要求的实际检查", "passed":true, "evidence":"实际文件"}}],
+"limitations":["仅验证给定输入下的计算，不证明泛化或方法优越性"],
+"artifacts":["实际源码与结果文件"], "paper_ready_images":["实际图件"],
+"type_specific":{{"metric_scope":"given_inputs_only", "generalization_verified":false,
+"input_files":["实际输入文件"], "verification_file":"{self.question_key}_verification.csv",
+"reference_method":"与主实现不同的独立复算方法及公式", "tolerance_source":"题目或已批准方案中的误差容差及依据"}}}}
+检查标记必须从真实执行得到，不能照抄示例的 true。
+{self.question_key}_verification.csv 至少一行，表头 name,actual,reference,atol,rtol；逐项填写实际结果与独立复算值、非负容差。
+程序独立检查每行 abs(actual-reference)<=atol+rtol*abs(reference)，拒绝空值、NaN/Inf 和错误数值；不要自行放大容差。
+验证文件需覆盖题目要求的关键数值。所有原始输入、计算结果、复算证据必须留在本项目，供回读和源码核验。
+该检查只核对已声明的数值一致性，不替代独立审阅计算方法；缺少证据不得宣称完成。
+"""
         status_rule = (
             "所有检查真实通过后写 `pass`；若完整性检查通过、但真实质量冲突在本轮无法"
             "自动裁决，可写 `manual_review`，同时必须写 "
@@ -216,6 +237,15 @@ class QuestionDeliverableContract:
 """.strip()
 
         if self.problem_type == "eda":
+            scope = (
+                "指定计算的 EDA 只核对输入结构、有限性、重复情况和已批准方案要求的可辨识条件。"
+                "保留原始输入，不默认清洗、删行、生成清洗副本或绘图。"
+                "cleaned_rows 表示保留用于后续计算的行数。异常值筛选等不适用检查填写"
+                ' "not_applicable"，并在 limitations 说明指定输入不做筛选的原因；'
+                "不得将实际未完成的结构检查标记为通过。"
+                if self.task_purpose == "numerical_verification"
+                else "数据驱动题六项必须真实完成；机理题可将不适用项说明为 not_applicable，但必须完成量纲和物理一致性检查并写入 robustness_checks。"
+            )
             return (
                 common
                 + f"""
@@ -226,7 +256,7 @@ class QuestionDeliverableContract:
 后四项是检查标记：已完成填 JSON 布尔值 `true`，未完成填 `false`；不适用时只能填字符串 `"not_applicable"` 并在 limitations 中说明原因。
 `independent_unit_identified` 不得填写说明文字、数字、数组或对象；独立单位的具体说明放在顶层 `independent_unit` 字段。
 不得为了通过格式校验将未完成的检查改成 true，也不得将 manual_review 改成 pass。
-数据驱动题六项必须真实完成；机理题可将不适用项说明为 `not_applicable`，但必须完成量纲和物理一致性检查并写入 `robustness_checks`。
+{scope}
 """
             )
         if self.problem_type == "sensitivity":
@@ -236,6 +266,7 @@ class QuestionDeliverableContract:
 
 `{self.quality_filename}` 的 `type_specific` 还必须包含：
 `covered_questions, parameters_tested, scenarios, conclusions_grounded`。至少覆盖一个核心参数、3个扰动场景。
+`covered_questions` 为非空问题数组；`parameters_tested` 和 `scenarios` 为实际覆盖数量（JSON 数值），不能填名称数组。具体参数和场景名称可另外放入 detail 字段。
 `conclusions_grounded` 可为兼容旧报告的 `true`；推荐写为可审计数组：
 `[{{"conclusion":"...", "artifacts":["evidence.csv"]}}]`。数组中每条结论必须对应至少一个真实非空产物。
 """
@@ -390,9 +421,20 @@ def build_question_contract(
     question_key: str,
     question_text: str,
     user_requirements: str = "",
+    task_purpose: TaskPurpose = "modeling",
 ) -> QuestionDeliverableContract:
     """Build a strict contract without relying on an LLM remembering rules."""
     requirements = user_requirements.strip()
+    if task_purpose == "numerical_verification":
+        return QuestionDeliverableContract(
+            question_key=question_key,
+            user_requirements=requirements,
+            problem_type="numerical_verification",
+            minimum_candidate_models=0,
+            task_purpose=task_purpose,
+        )
+    if task_purpose != "modeling":
+        raise ValueError("未知任务目标")
     scoped_numbers = _scoped_question_numbers(requirements)
     number = _question_number(question_key)
     applies = not scoped_numbers or number in scoped_numbers
@@ -415,17 +457,28 @@ def build_question_contract(
     )
 
 
-def build_stage_contract(stage_key: str) -> QuestionDeliverableContract:
+def build_stage_contract(
+    stage_key: str,
+    task_purpose: TaskPurpose = "modeling",
+    user_requirements: str = "",
+) -> QuestionDeliverableContract:
     """Build strict contracts for EDA and sensitivity stages."""
     if stage_key not in {"eda", "sensitivity_analysis"}:
         raise ValueError(f"不支持的阶段: {stage_key}")
+    if task_purpose not in {"modeling", "numerical_verification"}:
+        raise ValueError("未知任务目标")
+    if stage_key == "sensitivity_analysis" and task_purpose == "numerical_verification":
+        return build_question_contract(
+            stage_key, "指定计算的稳定性核验", user_requirements, task_purpose
+        )
     problem_type = "eda" if stage_key == "eda" else "sensitivity"
     return QuestionDeliverableContract(
         question_key=stage_key,
-        user_requirements="",
+        user_requirements=user_requirements.strip(),
         problem_type=problem_type,
         minimum_candidate_models=0,
         minimum_robustness_checks=1,
+        task_purpose=task_purpose,
     )
 
 
@@ -611,7 +664,10 @@ def _validate_quality_report(
             )
 
     def check_selected_model() -> None:
-        if not contract.minimum_candidate_models:
+        if (
+            not contract.minimum_candidate_models
+            and contract.problem_type != "numerical_verification"
+        ):
             return
         if not str(report.get("selected_model", "")).strip():
             raise DeliverableValidationError("selected_model 不能为空")
@@ -783,6 +839,72 @@ def _validate_type_specific(
     root: Path | None = None,
 ) -> None:
     problem_type = contract.problem_type
+    if problem_type == "numerical_verification":
+        if (
+            values.get("metric_scope") != "given_inputs_only"
+            or values.get("generalization_verified") is not False
+        ):
+            raise DeliverableValidationError(
+                "数值核验必须限定给定输入且 generalization_verified=false"
+            )
+        if root is None:
+            raise DeliverableValidationError("数值核验缺少任务目录")
+        for field in ("reference_method", "tolerance_source"):
+            if not isinstance(values.get(field), str) or not values[field].strip():
+                raise DeliverableValidationError(f"数值核验缺少 {field}")
+        inputs = values.get("input_files")
+        if not isinstance(inputs, list) or not inputs:
+            raise DeliverableValidationError("数值核验缺少 input_files")
+        for name in [*inputs, values.get("verification_file")]:
+            if not isinstance(name, str) or not name.strip():
+                raise DeliverableValidationError("数值核验文件名为空")
+            path = (root / name).resolve()
+            if (
+                not path.is_relative_to(root.resolve())
+                or not path.is_file()
+                or path.stat().st_size == 0
+            ):
+                raise DeliverableValidationError(
+                    f"数值核验文件缺失、为空或越界：{name}"
+                )
+        verification = root / values["verification_file"]
+        try:
+            with verification.open(encoding="utf-8-sig", newline="") as stream:
+                reader = csv.DictReader(stream)
+                if not {"name", "actual", "reference", "atol", "rtol"}.issubset(
+                    reader.fieldnames or []
+                ):
+                    raise ValueError("复算 CSV 表头不完整")
+                count = 0
+                for row in reader:
+                    count += 1
+                    if not str(row.get("name", "")).strip():
+                        raise ValueError(f"第 {count} 行缺少指标名称")
+                    actual, reference, atol, rtol = (
+                        float(row[key])
+                        for key in ("actual", "reference", "atol", "rtol")
+                    )
+                    if (
+                        not all(
+                            math.isfinite(number)
+                            for number in (actual, reference, atol, rtol)
+                        )
+                        or min(atol, rtol) < 0
+                    ):
+                        raise ValueError(f"第 {count} 行数值或容差无效")
+                    tolerance = atol + rtol * abs(reference)
+                    if (
+                        not math.isfinite(tolerance)
+                        or abs(actual - reference) > tolerance
+                    ):
+                        raise ValueError(
+                            f"第 {count} 行 {row['name']} 与独立复算不一致"
+                        )
+                if not count:
+                    raise ValueError("复算 CSV 没有数据行")
+        except (OSError, UnicodeError, ValueError, TypeError, csv.Error) as exc:
+            raise DeliverableValidationError(f"数值核验失败：{exc}") from exc
+        return
     if problem_type in {"regression", "classification"}:
         return
     checks: list[Callable[[], None]] = []
@@ -1469,12 +1591,7 @@ def _stage_execution_preview(root: Path, stage: str) -> list[dict[str, Any]]:
             if not isinstance(output, dict):
                 continue
             failed |= output.get("output_type") == "error"
-            text = (
-                output.get("text")
-                or output.get("traceback")
-                or output.get("data", {}).get("text/plain", "")
-            )
-            text_outputs.append("".join(text) if isinstance(text, list) else str(text))
+            text_outputs.append(notebook_output_text(output))
         text = "\n".join(text_outputs)
         previews.append(
             {
@@ -1502,15 +1619,24 @@ def collect_model_quality_evidence(
         质量报告和独立验证指标的紧凑字典；缺失或损坏的文件会被明确标记。
     """
     root = Path(work_dir)
-    evidence: dict[str, Any] = {"problem_type": contract.problem_type}
+    evidence: dict[str, Any] = {
+        "problem_type": contract.problem_type,
+        "stage_scope": {
+            "question_key": contract.question_key,
+            "requires_prediction_values": contract.requires_prediction_values,
+            "minimum_candidate_models": contract.minimum_candidate_models,
+            "note": "仅复核本阶段已批准的方案和契约；后续阶段产物尚未生成不属于本阶段缺失。",
+        },
+    }
     executed = _stage_execution_preview(root, contract.question_key)
     if executed:
         evidence["executed_code_preview"] = executed
     quality_payload: dict[str, Any] | None = None
     targets = {
         "quality_report": root / contract.quality_filename,
-        "prediction_metrics": root / contract.metrics_filename,
     }
+    if contract.requires_prediction_values:
+        targets["prediction_metrics"] = root / contract.metrics_filename
     for label, path in targets.items():
         if not path.is_file():
             evidence[label] = {"missing": True, "path": path.name}
@@ -1559,14 +1685,27 @@ def collect_model_quality_evidence(
                 "robustness",
                 "sensitivity",
                 "audit",
+                "verification",
+                "structure",
             )
             for raw_name in artifact_names:
                 if len(previews) >= 8 or not isinstance(raw_name, str):
                     break
                 name = raw_name.strip()
-                if not name or not name.casefold().endswith(".csv"):
+                if not name or not name.casefold().endswith(
+                    (".csv", ".json", ".py", ".m")
+                ):
                     continue
-                if not any(hint in name.casefold() for hint in preview_hints):
+                if (
+                    name == contract.quality_filename
+                    or name == contract.metrics_filename
+                ):
+                    continue
+                if contract.problem_type not in {
+                    "eda",
+                    "sensitivity",
+                    "numerical_verification",
+                } and not any(hint in name.casefold() for hint in preview_hints):
                     continue
                 path = (root / name).resolve()
                 try:
@@ -1578,6 +1717,27 @@ def collect_model_quality_evidence(
                     or path.stat().st_size <= 0
                     or path.stat().st_size > 256_000
                 ):
+                    continue
+                if path.suffix.casefold() in {".py", ".m"}:
+                    try:
+                        source = path.read_text(encoding="utf-8-sig")
+                    except (OSError, UnicodeError):
+                        continue
+                    previews[name] = {
+                        "source": source[:6000],
+                        "truncated": len(source) > 6000,
+                    }
+                    continue
+                if path.suffix.casefold() == ".json":
+                    try:
+                        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+                        text = json.dumps(payload, ensure_ascii=False)
+                    except (OSError, ValueError):
+                        continue
+                    previews[name] = {
+                        "content": text[:6000],
+                        "truncated": len(text) > 6000,
+                    }
                     continue
                 try:
                     with path.open(
@@ -1610,6 +1770,35 @@ _METRIC_KEYWORD_PATTERN = re.compile(
 )
 # 负号仅在非数字前生效：避免把区间 "0.75-0.85" 的右端点解析成负数
 _NUMBER_PATTERN = re.compile(r"(?<![\d.])[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
+_SCIENTIFIC_NOTATION = re.compile(
+    r"(?<![\w.])([+-]?\d+(?:\.\d+)?)\s*(?:×|\\times|\\cdot|·)\s*10\s*"
+    r"(?:\^\s*\{?\s*([+−-]?\d+)\s*\}?|([⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻]+))"
+)
+_SUPERSCRIPTS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻−", "0123456789+--")
+
+
+def _normalize_scientific_notation(text: str) -> str:
+    """Parse the entire displayed value, never its mantissa as a metric."""
+    # LaTeX often puts the e marker, sign, or whole exponent in a text run.
+    # Match numeric exponent forms only; do not strip arbitrary TeX commands.
+    mantissa = r"(?<![\w.])([+-]?\d+(?:\.\d+)?)\s*"
+    marker = r"\\(?:text|mathrm|textrm)\{\s*[eE]\s*"
+    text = re.sub(
+        mantissa + marker + r"([+−-]?\d+)\s*\}",
+        lambda m: m[1] + "e" + m[2].translate(_SUPERSCRIPTS),
+        text,
+    )
+    text = re.sub(
+        mantissa + marker + r"([+−-]?)\s*\}\s*([+−-]?\d+)",
+        lambda m: m[1] + "e" + (m[2] + m[3]).translate(_SUPERSCRIPTS),
+        text,
+    )
+    return _SCIENTIFIC_NOTATION.sub(
+        lambda match: match[1] + "e" + (match[2] or match[3]).translate(_SUPERSCRIPTS),
+        text,
+    )
+
+
 # 显著性水平、常见比例等惯用常数不参与溯源，避免误杀
 _GROUNDING_COMMON_CONSTANTS = {
     0.0,
@@ -1641,7 +1830,9 @@ def collect_grounding_values(evidence: dict[str, Any]) -> set[float]:
                 values.add(number)
             return
         if isinstance(node, str):
-            for match in _NUMBER_PATTERN.findall(node[:2000]):
+            for match in _NUMBER_PATTERN.findall(
+                _normalize_scientific_notation(node[:2000])
+            ):
                 try:
                     number = float(match)
                 except ValueError:
@@ -1677,6 +1868,70 @@ def _is_grounded_number(
     return False
 
 
+def validate_revision_numbers(
+    original: str, revised: str, *, grounding_values: set[float] | None = None
+) -> None:
+    """保留原数值，允许等值写法及证据支持的精度补全。
+
+    只检查数值遗漏或变更，不证明指标名称、单位或科学语义正确。
+    """
+    from decimal import Decimal, localcontext
+
+    def values(text: str) -> set[Decimal]:
+        return {
+            Decimal(number)
+            for number in _NUMBER_PATTERN.findall(_normalize_scientific_notation(text))
+        }
+
+    revised_values = values(revised)
+    grounded = {
+        Decimal(str(number))
+        for number in grounding_values or ()
+        if math.isfinite(number)
+    }
+
+    def restored_precision(value: Decimal) -> bool:
+        # Only restore more precise evidence, never round a nonzero residual to
+        # zero or loosen integer counts. This is not a scientific tolerance.
+        if not value or value.as_tuple().exponent >= 0:
+            return False
+        for candidate in revised_values & grounded:
+            if (
+                not candidate
+                or candidate.is_signed() != value.is_signed()
+                or candidate.adjusted() != value.adjusted()
+                or candidate.as_tuple().exponent >= value.as_tuple().exponent
+            ):
+                continue
+            with localcontext() as context:
+                context.prec = (
+                    max(
+                        28,
+                        len(candidate.as_tuple().digits),
+                        len(value.as_tuple().digits),
+                    )
+                    + 2
+                )
+                if (
+                    candidate.quantize(Decimal(1).scaleb(value.as_tuple().exponent))
+                    == value
+                ):
+                    return True
+        return False
+
+    missing = {
+        value
+        for value in values(original) - revised_values
+        if not restored_precision(value)
+    }
+    if missing:
+        raise DeliverableValidationError(
+            "文字返修遗漏或改变了原稿数值："
+            + "、".join(str(value) for value in sorted(missing)[:20])
+            + "。请保留每项指标名称、数值、单位及适用范围；不能把不同指标合并为一个名称。"
+        )
+
+
 def validate_writer_section(
     section_key: str,
     content: Any,
@@ -1686,14 +1941,18 @@ def validate_writer_section(
     grounding_values: set[float] | None = None,
     expected_question_count: int = 0,
     omitted_images: dict[str, str] | None = None,
+    mode: str = "full_paper",
 ) -> None:
     """Reject empty, failed or evidence-free writer sections."""
     if not isinstance(content, str):
         raise DeliverableValidationError(f"{section_key} 写作结果必须是文本")
+    from app.core.paper_mode import paper_mode, section_minimum
+
+    mode = paper_mode(mode)
 
     def check_length() -> None:
         compact = re.sub(r"\s+", "", content)
-        minimum = 600 if section_key.startswith("ques") else (100 if section_key in {"modelAssumption", "symbol"} else 250)
+        minimum = section_minimum(section_key, mode)
         if len(compact) < minimum:
             raise DeliverableValidationError(
                 f"{section_key} 正文过短: {len(compact)} < {minimum}"
@@ -1702,7 +1961,7 @@ def validate_writer_section(
     def check_style() -> None:
         from app.core.paper_style import style_issues
 
-        issues = style_issues(section_key, content)
+        issues = style_issues(section_key, content, mode=mode)
         if issues:
             raise DeliverableValidationError("；".join(issues))
 
@@ -1777,7 +2036,7 @@ def validate_writer_section(
                 "not_applicable",
             }:
                 continue
-            concise_name = selected_model.split("(", maxsplit=1)[0].strip()
+            concise_name = re.split(r"[（(]", selected_model, maxsplit=1)[0].strip()
             accepted_names = {selected_model, concise_name}
             if not any(
                 normalize_model_name(name) in normalized_content
@@ -1797,12 +2056,28 @@ def validate_writer_section(
         referenced = set(re.findall(r"!\[[^\]]*\]\(([^)]+)\)", content))
         cited = {Path(image).name for image in referenced}
         for name, reason in omitted.items():
-            if name not in candidates or not isinstance(reason, str) or len(reason.strip()) < 12:
-                raise DeliverableValidationError(f"{section_key} 图片取舍记录无效：{name}，请说明替代证据与保留位置")
+            if name not in candidates:
+                raise DeliverableValidationError(
+                    f"{section_key} 图片取舍记录 {name} 不属于本节候选图片；"
+                    "请删除这条其他章节图片的取舍记录，不要补写其理由。"
+                    f"本节候选仅有：{', '.join(sorted(candidates)) or '无'}"
+                )
+            if not isinstance(reason, str) or len(reason.strip()) < 12:
+                raise DeliverableValidationError(
+                    f"{section_key} 图片取舍记录无效：{name}，请说明替代证据与保留位置"
+                )
             if name in referenced:
-                raise DeliverableValidationError(f"{section_key} 同一图片既插入又标为未采用：{name}")
-        if candidates and omitted and not any(Path(image).name in cited for image in candidates):
-            raise DeliverableValidationError(f"{section_key} 不可仅以取舍说明省略全部证据图片")
+                raise DeliverableValidationError(
+                    f"{section_key} 同一图片既插入又标为未采用：{name}"
+                )
+        if (
+            candidates
+            and omitted
+            and not any(Path(image).name in cited for image in candidates)
+        ):
+            raise DeliverableValidationError(
+                f"{section_key} 不可仅以取舍说明省略全部证据图片"
+            )
         missing = [
             str(image)
             for image in required_images or ()
@@ -1817,15 +2092,16 @@ def validate_writer_section(
         # 指标关键词附近的数字必须能在真实产物中溯源，防止编造/错误舍入
         if not grounding_values or not section_key.startswith("ques"):
             return
+        numeric_content = _normalize_scientific_notation(content)
         keyword_spans = [
             (match.end(), match.group())
-            for match in _METRIC_KEYWORD_PATTERN.finditer(content)
+            for match in _METRIC_KEYWORD_PATTERN.finditer(numeric_content)
         ]
         if not keyword_spans:
             return
         ungrounded: list[str] = []
         # 在全文上匹配数字再按距离筛选，避免固定窗口把数字拦腰截断
-        for number_match in _NUMBER_PATTERN.finditer(content):
+        for number_match in _NUMBER_PATTERN.finditer(numeric_content):
             start = number_match.start()
             keyword = next(
                 (text for end, text in keyword_spans if 0 <= start - end <= 40),
@@ -1847,7 +2123,9 @@ def validate_writer_section(
                 # 问题编号、折数等小整数不参与溯源
                 continue
             mantissa, _, exponent = raw.lower().partition("e")
-            decimals = (len(mantissa.split(".")[1]) if "." in mantissa else 0) - int(exponent or "0")
+            decimals = (len(mantissa.split(".")[1]) if "." in mantissa else 0) - int(
+                exponent or "0"
+            )
             if not _is_grounded_number(number, decimals, grounding_values):
                 snippet = f"{keyword}…{raw}"
                 if snippet not in ungrounded:
@@ -2070,11 +2348,7 @@ def get_repair_execution_limit(
     needs_review_repair = (
         _peek_quality_report(root, contract).get("status") == "manual_review"
     )
-    return (
-        4
-        if needs_review_repair or not has_evidence
-        else 2
-    )
+    return 4 if needs_review_repair or not has_evidence else 2
 
 
 def build_repair_prompt(
@@ -2130,6 +2404,7 @@ def build_repair_prompt(
 【原任务与方案（返修不得改变目标）】
 {task_context or "沿用当前阶段的原始任务要求，不得从质量报告字段推导新任务。"}
 请继续执行代码修正产物，不要只用文字解释。{repair_scope}禁止直接篡改 JSON 数值绕过门禁。
+若产物由已保存脚本生成，修复必须同步到生成脚本并重新生成相关产物；不能只修改一次性输出文件，否则用户重跑会恢复旧错误。保留已验证计算，仅重跑受此修复影响的步骤。
 {disk_status}
 {last_failure}
 {contract.prompt_block()}

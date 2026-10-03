@@ -56,6 +56,8 @@ class Agent:
     ) -> None:
         self.task_id = task_id
         self.model = model
+        if isinstance(model, LLM):
+            model.context_window = context_window
         self.context_window = context_window
         self.token_threshold_ratio = token_threshold_ratio
         self.cancel_event = cancel_event
@@ -80,10 +82,15 @@ class Agent:
     async def _chat(self, **kwargs: Any) -> Any:
         if self.cancel_event and self.cancel_event.is_set():
             raise asyncio.CancelledError("任务被用户停止")
+        model_window = getattr(self.model, "context_window", None)
+        if type(model_window) is int and model_window > 0:
+            self.context_window = model_window
         if kwargs.get("history") is self.chat_history:
             await self.compress_if_needed()
             kwargs["history"] = self.chat_history
-            reserve = min(int(kwargs.get("max_tokens") or 4096), self.context_window // 4)
+            reserve = min(
+                int(kwargs.get("max_tokens") or 4096), self.context_window // 4
+            )
             if self.current_token_count > self.context_window - reserve:
                 raise ValueError("工作记忆仍超出上下文预算；已保留产物，请拆分当前步骤")
         response = await self._send_chat(**kwargs)
@@ -232,7 +239,9 @@ class Agent:
     def _pending_tools(self) -> bool:
         pending: set[str] = set()
         for msg in self.chat_history:
-            pending.update(tc["id"] for tc in (msg.get("tool_calls") or []) if tc.get("id"))
+            pending.update(
+                tc["id"] for tc in (msg.get("tool_calls") or []) if tc.get("id")
+            )
             if msg.get("role") == "tool":
                 pending.discard(msg.get("tool_call_id"))
         return bool(pending)
@@ -252,9 +261,14 @@ class Agent:
             path.write_text(content, encoding="utf-8")
 
         await asyncio.to_thread(save)
-        return {**msg, "content": (
-            content[:8000] + f"\n[完整工具输出已保存：{path}；中间内容省略]\n" + content[-8000:]
-        )}
+        return {
+            **msg,
+            "content": (
+                content[:8000]
+                + f"\n[完整工具输出已保存：{path}；中间内容省略]\n"
+                + content[-8000:]
+            ),
+        }
 
     async def compress_if_needed(self) -> None:
         """上下文逼近窗口上限时，把旧对话总结成一段摘要。"""
@@ -290,8 +304,9 @@ class Agent:
             logger.info(f"{self.__class__.__name__}:无需压缩，记录数量合理")
             return
 
-        stale_text = "\n".join(self._summary_excerpt(m)
-                               for m in self.chat_history[first_stale:keep_from])
+        stale_text = "\n".join(
+            self._summary_excerpt(m) for m in self.chat_history[first_stale:keep_from]
+        )
         prompt_messages = ([system_msg] if system_msg else []) + [
             {
                 "role": "user",
@@ -302,8 +317,14 @@ class Agent:
                 ),
             }
         ]
-        response = await self._send_chat(history=prompt_messages, max_tokens=2048,
-                                         max_retries=2, publish=False)
+        response = await self._send_chat(
+            history=prompt_messages,
+            max_tokens=2048,
+            max_retries=2,
+            publish=False,
+            agent_name=self.__class__.__name__,
+            purpose="context_summary",
+        )
         summary = response.content or ""
         if not summary.strip():
             raise ValueError("工作记忆摘要为空")
@@ -320,14 +341,28 @@ class Agent:
     def _summary_excerpt(msg: dict) -> str:
         text = json.dumps(msg, ensure_ascii=False)
         limit = _SUMMARY_SNIPPET_LIMIT
-        return text if len(text) <= limit * 2 else text[:limit] + "\n[中间省略]\n" + text[-limit:]
+        return (
+            text
+            if len(text) <= limit * 2
+            else text[:limit] + "\n[中间省略]\n" + text[-limit:]
+        )
 
     def _constraint_messages(self, before: int) -> list[dict]:
         # Keep the task contract and most recent user correction verbatim.
-        users = [i for i, msg in enumerate(self.chat_history) if msg.get("role") == "user"]
-        first_reply = next((i for i, msg in enumerate(self.chat_history)
-                            if msg.get("role") in {"assistant", "tool"}), len(self.chat_history))
-        indices = sorted({i for i in users if i < first_reply} | {users[-1]}) if users else []
+        users = [
+            i for i, msg in enumerate(self.chat_history) if msg.get("role") == "user"
+        ]
+        first_reply = next(
+            (
+                i
+                for i, msg in enumerate(self.chat_history)
+                if msg.get("role") in {"assistant", "tool"}
+            ),
+            len(self.chat_history),
+        )
+        indices = (
+            sorted({i for i in users if i < first_reply} | {users[-1]}) if users else []
+        )
         return [self.chat_history[i] for i in indices if i < before]
 
     def _recount_tokens(self) -> None:

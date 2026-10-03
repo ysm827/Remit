@@ -2,6 +2,32 @@ import request from "@/utils/request";
 import type { ApprovalMessage } from "@/utils/response";
 import type { ModelingSubmission } from "./submitModelingApi";
 
+export interface ExecutionBudgetSnapshot {
+	stage_key: string;
+	used: number;
+	limit: number;
+	remaining: number;
+	node_id: string;
+	label: string;
+}
+export interface ExecutionBudgetExtension {
+	confirmed: true;
+	request_id: string;
+	stage_key: string;
+	expected_used: number;
+	expected_limit: number;
+	additional: number;
+}
+export function getExecutionBudget(id: string) {
+	return request.get<ExecutionBudgetSnapshot>(`/modeling/${encodeURIComponent(id)}/execution-budget`);
+}
+export function resumeWithExecutionBudget(id: string, nodeId: string, extension?: ExecutionBudgetExtension) {
+	return request.post(`/modeling/${encodeURIComponent(id)}/resume`, {
+		node_id: nodeId,
+		...(extension ? { execution_budget_extension: extension } : {}),
+	});
+}
+
 export interface ProjectEntry {
 	task_id: string;
 	title: string;
@@ -70,6 +96,8 @@ export function prepareProject(
 		competition_year?: string;
 		paper_language?: string;
 		competition_requirements?: string;
+		literature_enabled?: string;
+		task_purpose?: "modeling" | "numerical_verification";
 	},
 	files: File[],
 ) {
@@ -130,6 +158,51 @@ export interface TeamStep {
 	issues?: string[];
 }
 export interface TeamState {
+	timing?: {
+		categories: Record<
+			string,
+			{
+				count: number;
+				measured: number;
+				work_seconds: number | null;
+				unfinished: number;
+				failed: number;
+				cancelled: number;
+			}
+		>;
+		workflow?: {
+			modeling_wall_seconds?: number | null;
+			first_question_completed_seconds?: number | null;
+			node_runs?: number;
+			measured_node_runs?: number;
+			node_work_seconds?: number | null;
+			closed_human_wait_seconds?: number | null;
+			current_human_wait_seconds?: number | null;
+		};
+	};
+	task_purpose?: "modeling" | "numerical_verification";
+	failure?: {
+		code: string;
+		layer: string;
+		reason: string;
+		technical_detail: string;
+		retrying: boolean;
+		attempts_used: number;
+		saved_result_count: number;
+	} | null;
+	usage?: {
+		attempts: number;
+		usage_complete: boolean;
+		purpose_counts?: Record<string, number>;
+		request_work_seconds?: number | null;
+		retry_wait_work_seconds?: number | null;
+		request_active_seconds?: number | null;
+		observed_request_span_seconds?: number | null;
+		timing_complete?: boolean;
+		requests_with_intervals?: number;
+		requests_with_retry_wait?: number;
+		metadata_complete?: boolean;
+	};
 	task_id: string;
 	title: string;
 	status: string;

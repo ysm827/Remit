@@ -43,13 +43,18 @@ coverage/
 # 微软版权字体：仅保留在本地，不随仓库分发（打包时由本地复制）
 backend/fonts/simhei.ttf
 
-# Local-only development and user material
+# Local investigations and user-run evidence are not source deliverables.
+.firecrawl/
+backend/project/*.log
+docs/monitoring/
+docs/optimization/
+docs/screenshots/
+
+# Upstream distribution exclusions
 /.agents/
 /.claude/
 /.cursor/
 /.firecrawl/
-docs/monitoring/
-docs/screenshots/
 *.sqlite3*
 *.db
 *.pid

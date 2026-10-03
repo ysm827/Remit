@@ -145,6 +145,8 @@ async def _json_chat(llm: LLM, system: str, user: str) -> dict[str, Any] | None:
 
 def build_literature_brief(review: dict[str, Any]) -> str:
     """把文献调研结果压缩成注入 prompt 的短摘要。"""
+    if review.get("status") == "not_requested":
+        return "用户未启用建模前文献检索，本次没有新增文献证据或方法卡。只能依据题目与已核验附件制定方案，不得声称完成文献调研。"
     questions = review.get("questions")
     if not isinstance(questions, dict) or not questions:
         return ""
@@ -541,6 +543,7 @@ async def run_literature_review(
     work_dir: str | Path,
     extra_guidance: str = "",
     openalex_email: str = "",
+    enabled: bool = True,
 ) -> dict[str, Any]:
     """执行文献调研全流程；失败降级但保留可审计原因。
 
@@ -556,6 +559,19 @@ async def run_literature_review(
     Returns:
         文献调研结果字典；status 明确标记 completed/partial/failed。
     """
+    if not enabled:
+        review = {
+            "status": "not_requested",
+            "paper_count": 0,
+            "questions": {},
+            "searched_queries": [],
+            "papers": [],
+            "method_cards": [],
+            "fulltext_stats": {"attempted": 0, "succeeded": 0},
+            "summary": "用户在创建项目时关闭了建模前文献检索；附件核验仍执行。",
+        }
+        _persist_review(work_dir, review)
+        return review
     question_items = {
         key: value
         for key, value in questions.items()

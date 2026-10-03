@@ -67,6 +67,7 @@ class OpenAIChatProvider(BaseProvider):
                 for tc in message.tool_calls or []
             ],
             usage=Usage(
+                known=response.usage is not None,
                 prompt_tokens=response.usage.prompt_tokens if response.usage else 0,
                 completion_tokens=response.usage.completion_tokens
                 if response.usage

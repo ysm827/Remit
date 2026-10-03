@@ -8,7 +8,10 @@ from app.services.writer_evidence import source_excerpt
 def test_actual_table_precedes_summary_and_clips_only_complete_rows(tmp_path):
     assets = tmp_path / "assets"
     assets.mkdir()
-    values = {"summary.json": '{"old_gap":0}', "gap_detail.csv": "k,gap\n2,2\n3,3\n" * 1000}
+    values = {
+        "summary.json": '{"old_gap":0}',
+        "gap_detail.csv": "k,gap\n2,2\n3,3\n" * 1000,
+    }
     hashes = {}
     for name, text in values.items():
         (assets / name).write_text(text, encoding="utf-8")
@@ -16,6 +19,7 @@ def test_actual_table_precedes_summary_and_clips_only_complete_rows(tmp_path):
     entry = {"artifacts": list(values), "paper_ready_images": ["gap.png"]}
     result = source_excerpt(tmp_path, entry, hashes, budget=6000)
     import json
+
     data = json.loads(result.split("\n")[-1])
     assert data["sources"][0]["file"] == "gap_detail.csv"
     assert data["sources"][0]["incomplete"]

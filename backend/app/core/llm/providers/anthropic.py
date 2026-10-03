@@ -40,7 +40,9 @@ class AnthropicProvider(BaseProvider):
             if request.parallel_tool_calls is not None:
                 choice = payload.setdefault("tool_choice", {"type": "auto"})
                 if choice.get("type") != "none":
-                    choice["disable_parallel_tool_use"] = not request.parallel_tool_calls
+                    choice[
+                        "disable_parallel_tool_use"
+                    ] = not request.parallel_tool_calls
 
         response = await client.messages.create(**payload)
 
@@ -73,6 +75,7 @@ class AnthropicProvider(BaseProvider):
             finish_reason=response.stop_reason,
             tool_calls=calls,
             usage=Usage(
+                known=True,
                 prompt_tokens=response.usage.input_tokens,
                 completion_tokens=response.usage.output_tokens,
             ),

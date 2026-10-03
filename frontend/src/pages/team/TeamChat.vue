@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PaperProposalReview from "@/pages/writing/PaperProposalReview.vue";
 import {
 	type ExecutionBackend,
 	explainModelingSubmissionFailure,
@@ -27,8 +28,7 @@ import {
 import ProblemPdfDropzone from "@/components/ProblemPdfDropzone.vue";
 import ApiDialog from "@/pages/chat/components/ApiDialog.vue";
 import HumanApprovalCard from "@/pages/team/HumanApprovalCard.vue";
-import PaperEditor from "@/pages/writing/PaperEditor.vue";
-import { renderMarkdown } from "@/utils/markdown";
+import type PaperEditor from "@/pages/writing/PaperEditor.vue";
 import { onClickOutside, useMediaQuery } from "@vueuse/core";
 import {
 	ArrowUp,
@@ -57,29 +57,48 @@ import {
 } from "reka-ui";
 import {
 	computed,
+	defineAsyncComponent,
+	h,
 	nextTick,
 	onBeforeUnmount,
 	onMounted,
 	ref,
+	shallowRef,
 	watch,
 } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import ActivitySummary from "./ActivitySummary.vue";
+import MessageContent from "./MessageContent.vue";
 import RoleAvatar from "./RoleAvatar.vue";
 import RemitWelcome from "./RemitWelcome.vue";
 import { roleLabels as labels } from "./roles";
 import ProjectFiles from "./ProjectFiles.vue";
 import UserMessage from "./UserMessage.vue";
+import RuntimePanel from "./RuntimePanel.vue";
+import TaskFailureNotice from "./TaskFailureNotice.vue";
 
 const props = defineProps<{ task_id?: string }>();
 const approvalExplanationRequest =
 	"请用第一次参加数模比赛的人也能听懂的话解释当前成果。用约200至400字说清：现在做了什么、哪些还没做、最重要的1至2个风险、点批准后会做什么以及你的建议。风险请用这道题的具体例子解释，不要堆算法缩写、内部状态或文件名。如果还没计算，直接说明目前只有方案、效果尚未验证。只解释，不批准、不启动或重做任务。";
-const PaperEditorView = PaperEditor;
+const PaperEditorView = defineAsyncComponent({
+	loader: () =>
+		import("@/pages/writing/PaperEditor.vue").then((module) => module.default),
+	errorComponent: {
+		render: () =>
+			h(
+				"p",
+				{ role: "alert", style: "padding:24px" },
+				"论文界面加载失败。请先保留未发送的消息，再刷新页面重试；已保存的项目仍保留。",
+			),
+	},
+});
 const competitions = ref<CompetitionProfile[]>([]);
 const competitionId = ref("cumcm");
 const competitionYear = ref(2026);
 const paperLanguage = ref("");
 const competitionRequirements = ref("");
+const literatureEnabled = ref(true);
+const taskPurpose = ref<"modeling" | "numerical_verification">("modeling");
 const contestOptionsOpen = ref(false);
 const selectedCompetition = computed(() =>
 	competitions.value.find((item) => item.id === competitionId.value),
@@ -218,11 +237,58 @@ async function decideProposal(proposal: PaperProposal, accept: boolean) {
 const historyError = ref("");
 const search = ref("");
 const state = ref<TeamState | null>(null);
-const events = ref<TeamEvent[]>([]);
+// Event records are immutable; replay replaces the array and any corrected record.
+const events = shallowRef<TeamEvent[]>([]);
 const draft = ref("");
 const sending = ref(false);
 const error = ref("");
 const connection = ref("连接中");
+const CONNECTION_HINT =
+	"页面与本地服务之间的实时同步状态。中断期间后台计算与写作照常进行，恢复后自动补齐消息；长时间未恢复请检查本地服务是否仍在运行。";
+let connectionWasInterrupted = false;
+let disconnectNoticeTimer: ReturnType<typeof setTimeout> | undefined;
+let reconnectFlashTimer: ReturnType<typeof setTimeout> | undefined;
+let longDisconnectTimer: ReturnType<typeof setTimeout> | undefined;
+
+function clearConnectionTimers() {
+	clearTimeout(disconnectNoticeTimer);
+	clearTimeout(reconnectFlashTimer);
+	clearTimeout(longDisconnectTimer);
+}
+
+function handleStreamOpen() {
+	clearConnectionTimers();
+	if (connectionWasInterrupted) {
+		connectionWasInterrupted = false;
+		connection.value = "已重新连接";
+		reconnectFlashTimer = setTimeout(() => {
+			connection.value = "实时同步";
+		}, 3000);
+	} else {
+		connection.value = "实时同步";
+	}
+}
+
+/** 瞬时断线由 EventSource 自动恢复；延迟确认仍中断才提示，避免状态栏闪烁。 */
+function handleStreamError() {
+	clearConnectionTimers();
+	if (stream?.readyState === EventSource.CLOSED) {
+		stream.close();
+		connection.value =
+			"页面同步已停止，请确认项目仍存在、本地服务可用后刷新页面；此状态不会停止后台任务";
+		return;
+	}
+	disconnectNoticeTimer = setTimeout(() => {
+		connectionWasInterrupted = true;
+		connection.value =
+			"页面同步暂时断开，正在自动重连；建模与写作在后台照常进行，恢复后自动补齐消息";
+		longDisconnectTimer = setTimeout(() => {
+			connection.value =
+				"同步仍未恢复：后台任务不受影响；如持续数分钟，请确认本地服务在运行后刷新页面";
+		}, 30000);
+	}, 4000);
+}
+
 const settingsOpen = ref(false);
 const sidebarOpen = ref(false);
 const narrowScreen = useMediaQuery("(max-width: 850px)");
@@ -303,6 +369,7 @@ const statuses: Record<string, string> = {
 	warning: "部分完成，需核验",
 	skipped: "已跳过，未验证",
 	stopped: "已停止",
+	stopping: "正在停止",
 	cancelled: "已取消",
 	interrupted: "已中断",
 	ready: "可开始",
@@ -326,15 +393,27 @@ const filteredEvents = computed(() =>
 );
 // Page conversation groups, so heartbeats cannot evict their own milestones.
 const visibleEvents = filteredEvents;
+const timelinePlanId = computed(() => state.value?.preflight?.id);
 const timelineItems = computed(() => {
-	const items: { id: number | string; event?: TeamEvent; preflight?: boolean; activity: TeamEvent[] }[] = [];
-	const plan = state.value?.preflight;
-	const anchor = events.value.find(event => event.kind === "preflight" && event.data.id === plan?.id);
-	if (plan && (filter.value === "all" || filter.value === "coordinator") && (!anchor || !visibleEvents.value.some(event => event.seq === anchor.seq))) {
-		items.push({ id: `preflight:${plan.id}`, preflight: true, activity: [] });
+	const items: {
+		id: number | string;
+		event?: TeamEvent;
+		preflight?: boolean;
+		activity: TeamEvent[];
+	}[] = [];
+	const planId = timelinePlanId.value;
+	const anchor = events.value.find(
+		(event) => event.kind === "preflight" && event.data.id === planId,
+	);
+	if (
+		planId &&
+		(filter.value === "all" || filter.value === "coordinator") &&
+		(!anchor || !visibleEvents.value.some((event) => event.seq === anchor.seq))
+	) {
+		items.push({ id: `preflight:${planId}`, preflight: true, activity: [] });
 	}
 	for (const event of visibleEvents.value) {
-		if (plan && event.seq === anchor?.seq) {
+		if (planId && event.seq === anchor?.seq) {
 			items.push({ id: event.seq, preflight: true, activity: [] });
 			continue;
 		}
@@ -358,8 +437,13 @@ const timelineItems = computed(() => {
 const activeStep = computed(() =>
 	state.value?.steps.find((step) => step.status === "running"),
 );
-const visibleTimelineItems = computed(() => timelineItems.value.slice(-visibleCount.value));
-const latestActivityId = computed(() => [...timelineItems.value].reverse().find(item => item.activity.length)?.id);
+const visibleTimelineItems = computed(() =>
+	timelineItems.value.slice(-visibleCount.value),
+);
+const latestActivityId = computed(
+	() =>
+		[...timelineItems.value].reverse().find((item) => item.activity.length)?.id,
+);
 const canSend = computed(
 	() =>
 		!sending.value &&
@@ -421,6 +505,10 @@ async function scrollToLatest() {
 }
 async function importAttachments(files: File[], documentText = "") {
 	if (!files.length) return false;
+	if (sending.value) {
+		attachmentNotice.value = "正在处理上一项操作，请完成后再导入文件。";
+		return false;
+	}
 	error.value = "";
 	if (props.task_id) {
 		try {
@@ -457,15 +545,11 @@ async function importAttachments(files: File[], documentText = "") {
 	}
 	return true;
 }
-async function addAttachments(event: Event) {
-	const input = event.target as HTMLInputElement;
-	const selected = Array.from(input.files || []);
-	input.value = "";
+async function selectAttachments(selected: File[]) {
 	attachmentNotice.value = "";
 	const files = selected.filter(
 		(file) =>
-			!file.webkitRelativePath ||
-			!file.webkitRelativePath
+			!(file.webkitRelativePath || file.name)
 				.split("/")
 				.some(
 					(part) =>
@@ -476,6 +560,21 @@ async function addAttachments(event: Event) {
 	await importAttachments(files);
 	if (skipped)
 		attachmentNotice.value += ` 已跳过 ${skipped} 个隐藏或系统文件。`;
+}
+async function addAttachments(event: Event) {
+	const input = event.target as HTMLInputElement;
+	const selected = Array.from(input.files || []);
+	input.value = "";
+	await selectAttachments(selected);
+}
+function acceptFileDrag(event: DragEvent) {
+	if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
+}
+async function dropAttachments(event: DragEvent) {
+	const files = Array.from(event.dataTransfer?.files || []);
+	if (!files.length) return;
+	event.preventDefault();
+	await selectAttachments(files);
 }
 async function acceptProblemDocument(payload: { file: File; text: string }) {
 	if (props.task_id) {
@@ -527,6 +626,8 @@ async function send(
 					competition_year: String(competitionYear.value),
 					paper_language: paperLanguage.value,
 					competition_requirements: competitionRequirements.value,
+					literature_enabled: String(literatureEnabled.value),
+					task_purpose: taskPurpose.value,
 				},
 				[
 					...attachments.value,
@@ -567,7 +668,8 @@ async function send(
 			content: message,
 			action,
 			timing: pendingRequest.timing,
-			conversation_only: !action && !timing && state.value?.status === "running",
+			conversation_only:
+				!action && !timing && state.value?.status === "running",
 			role: target.value,
 			checkpoint_id: state.value?.pending_approval?.checkpoint_id,
 			plan_id: pendingRequest.planId,
@@ -614,6 +716,44 @@ watch(
 		if (following.value) void scrollToLatest();
 	},
 );
+// Backlog pages arrive in a burst. Keep every sequence but publish one update
+// once caught up, or within 50 ms if the stream is slow. Live updates stay immediate.
+let streamUpdateTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingStreamState: TeamState | null = null;
+const pendingStreamEvents = new Map<number, TeamEvent>();
+function flushStreamUpdate() {
+	clearTimeout(streamUpdateTimer);
+	streamUpdateTimer = undefined;
+	const nextState = pendingStreamState;
+	pendingStreamState = null;
+	const incoming = [...pendingStreamEvents.values()];
+	pendingStreamEvents.clear();
+	if (disposed || !nextState) return;
+	if (incoming.length) events.value = mergeTeamEvents(events.value, incoming);
+	state.value = nextState;
+	const entry = history.value.find((item) => item.task_id === props.task_id);
+	if (entry) {
+		entry.title = nextState.title;
+		entry.status = nextState.status;
+	}
+	if (incoming.some((event) => ["proposal", "review"].includes(event.kind)))
+		void refreshProposals().catch(() => {});
+}
+function queueStreamUpdate(incoming: TeamEvent[], nextState: TeamState) {
+	for (const event of incoming) pendingStreamEvents.set(event.seq, event);
+	pendingStreamState = nextState;
+	let latest = 0;
+	for (const seq of pendingStreamEvents.keys()) latest = Math.max(latest, seq);
+	if (
+		!incoming.length ||
+		!Number.isFinite(nextState.sequence) ||
+		latest >= nextState.sequence
+	) {
+		flushStreamUpdate();
+	} else if (streamUpdateTimer === undefined) {
+		streamUpdateTimer = setTimeout(flushStreamUpdate, 50);
+	}
+}
 onMounted(async () => {
 	draft.value =
 		sessionStorage.getItem(`team-draft:${props.task_id || "home"}`) || "";
@@ -636,10 +776,10 @@ onMounted(async () => {
 			if (!disposed) void router.push("/home");
 		});
 		stream.onopen = () => {
-			connection.value = "实时同步";
+			handleStreamOpen();
 		};
 		stream.onerror = () => {
-			connection.value = "连接中断 · 自动重连";
+			handleStreamError();
 		};
 		stream.onmessage = (message) => {
 			if (disposed) return;
@@ -648,21 +788,7 @@ onMounted(async () => {
 					events: TeamEvent[];
 					state: TeamState;
 				};
-				events.value = mergeTeamEvents(events.value, data.events);
-				state.value = data.state;
-				const entry = history.value.find(
-					(item) => item.task_id === props.task_id,
-				);
-				if (entry) {
-					entry.title = data.state.title;
-					entry.status = data.state.status;
-				}
-				if (
-					data.events.some((event) =>
-						["proposal", "review"].includes(event.kind),
-					)
-				)
-					void refreshProposals().catch(() => {});
+				queueStreamUpdate(data.events, data.state);
 			} catch {
 				connection.value = "同步数据异常，请刷新";
 			}
@@ -674,6 +800,10 @@ onMounted(async () => {
 });
 onBeforeUnmount(() => {
 	disposed = true;
+	clearTimeout(streamUpdateTimer);
+	pendingStreamEvents.clear();
+	pendingStreamState = null;
+	clearConnectionTimers();
 	stream?.close();
 });
 </script>
@@ -699,10 +829,11 @@ onBeforeUnmount(() => {
  <main class="workspace">
   <header class="workspace-header">
    <button class="icon-button" aria-label="切换项目导航" :aria-expanded="narrowScreen ? sidebarOpen : !sidebarCollapsed" :title="(narrowScreen ? sidebarOpen : !sidebarCollapsed) ? '折叠侧栏' : '展开侧栏'" @click="toggleSidebar"><PanelLeft :size="19" /></button>
-   <div class="header-title"><span>{{ task_id ? state?.title || '加载项目…' : '新建项目' }}</span><small v-if="state && !['chat','idle'].includes(state.status)">{{ statusLabel(state.status) }}</small></div>
+   <div class="header-title"><span>{{ task_id ? state?.title || '加载项目…' : '新建项目' }}</span><small v-if="state && !['chat','idle'].includes(state.status)">{{ statusLabel(state.status) }}</small><small v-if="state?.task_purpose === 'numerical_verification'" title="仅核对指定方法与给定输入的计算，不证明泛化能力">数值核验</small></div>
   <nav v-if="task_id" class="workspace-tabs" aria-label="项目视图"><button v-for="tab in [{id:'chat',label:'对话'},{id:'files',label:'文件与结果'},{id:'paper',label:'论文'}]" :key="tab.id" :aria-current="view === tab.id ? 'page' : undefined" @click="changeView(tab.id)">{{ tab.label }}</button></nav>
-   <div class="header-actions"><span v-if="task_id && connection !== '实时同步'" class="connection">{{ connection }}</span><button v-if="task_id && view !== 'chat'" class="icon-button" aria-label="切换项目对话" :aria-pressed="chatOpen" @click="chatOpen = !chatOpen; boardOpen = false"><MessageSquare :size="18" /></button><button v-if="task_id" class="icon-button" :aria-expanded="boardOpen" aria-label="切换共享状态表" @click="boardOpen = !boardOpen; chatOpen = false"><ListChecks :size="18" /></button><button v-if="task_id" class="icon-button" aria-label="对话显示选项" :aria-expanded="optionsOpen" @click="optionsOpen = !optionsOpen"><MoreHorizontal :size="18" /></button></div>
+   <div class="header-actions"><span v-if="task_id && connection !== '实时同步'" class="connection" :title="CONNECTION_HINT">{{ connection }}</span><button v-if="task_id && view !== 'chat'" class="icon-button" aria-label="切换项目对话" :aria-pressed="chatOpen" @click="chatOpen = !chatOpen; boardOpen = false"><MessageSquare :size="18" /></button><button v-if="task_id" class="icon-button" :aria-expanded="boardOpen" aria-label="切换共享状态表" @click="boardOpen = !boardOpen; chatOpen = false"><ListChecks :size="18" /></button><button v-if="task_id" class="icon-button" aria-label="对话显示选项" :aria-expanded="optionsOpen" @click="optionsOpen = !optionsOpen"><MoreHorizontal :size="18" /></button></div>
   </header>
+  <RuntimePanel v-if="!task_id || state?.status === 'failed' || state?.status === 'stopped'" :task-id="task_id" @settings="settingsOpen = true" />
 
   <div v-if="optionsOpen" ref="displayOptions" class="display-options"><div class="timeline-filters"><select v-model="filter" aria-label="筛选角色"><option value="all">全部角色</option><option value="coordinator">{{ labels.coordinator }}</option><option value="modeler">{{ labels.modeler }}</option><option value="coder">{{ labels.coder }}</option><option value="writer">{{ labels.writer }}</option></select><label><input v-model="showDetails" type="checkbox" />展开执行明细</label></div></div>
   <div v-if="state?.archived" class="archive-banner">此项目已归档。请在左侧项目菜单中恢复后继续。</div>
@@ -722,7 +853,7 @@ onBeforeUnmount(() => {
        <article v-else-if="item.event" class="event" :class="{ 'user-event':item.event.role === 'user','event-error':item.event.kind === 'error' }">
         <header v-if="item.event.role !== 'user'" class="role-heading"><RoleAvatar :role="item.event.role" /><span>{{ labels[item.event.role] || 'Remit' }}</span></header>
         <UserMessage v-if="item.event.role === 'user'" :content="item.event.content" />
-        <div v-else class="event-content markdown-body" v-html="renderMarkdown(item.event.content)" />
+        <MessageContent v-else :content="item.event.content" :task-id="task_id" />
         <button v-if="eventLink(item.event)" class="text-link" @click="changeView('paper')">打开论文 →</button>
         <footer class="message-tools"><span v-if="item.event.role === 'user'">你</span><time>{{ formatTime(item.event.at) }}</time><button v-if="item.event.role !== 'user'" class="icon-button" :aria-label="copied === item.event.seq ? '已复制回复' : '复制回复'" @click="copyReply(item.event)"><Check v-if="copied === item.event.seq" :size="14" /><Copy v-else :size="14" /></button></footer>
        </article>
@@ -730,19 +861,19 @@ onBeforeUnmount(() => {
       </template>
       <div v-if="conversationPending" class="thinking"><LoaderCircle :size="15" class="spin" />{{ activeStep?.label || '正在思考' }}</div>
       <HumanApprovalCard v-if="state?.pending_approval" :approval="state.pending_approval" :deciding="sending" @approve="send('批准当前步骤','approve')" @revise="setDraft('请退回当前步骤重做，修改要求：')" @explain="send(approvalExplanationRequest)" @veto="feedback => setDraft('请退回重做：' + feedback)" />
-      <section v-for="proposal in proposals" :key="proposal.id" class="review-card" aria-label="论文修改建议"><header><strong>{{ proposal.name }}</strong><span>{{ proposal.status === 'pending' ? '待审阅' : proposal.status === 'accepted' ? '已接受' : '已拒绝' }}</span></header><p>{{ proposal.summary }}</p><details :open="proposal.status === 'pending'"><summary>源码差异</summary><pre class="source-diff"><span v-for="(line,index) in proposal.diff.split('\n')" :key="index" :class="{added:line.startsWith('+'),removed:line.startsWith('-')}">{{ line }}{{ '\n' }}</span></pre></details><div v-if="proposal.status === 'pending'" class="review-actions"><button :disabled="!!deciding" @click="decideProposal(proposal,false)">拒绝</button><button class="primary-button" :disabled="!!deciding" @click="decideProposal(proposal,true)">{{ deciding === proposal.id ? '处理中…' : '接受并编译' }}</button></div></section>
+      <PaperProposalReview v-for="proposal in proposals" :key="proposal.id" :proposal="proposal" :disabled="!!deciding" :processing="deciding === proposal.id" @decide="decideProposal(proposal,$event)" />
      </section>
     </div>
     <div class="composer-area">
-     <div v-if="state?.status === 'failed'" class="recovery-notice" role="status"><span>执行已暂停，文件和进度已保留。</span><button :disabled="sending || conversationPending || state.archived" @click="send('重试当前失败步骤','resume')">重试当前步骤</button></div>
+     <TaskFailureNotice v-if="state?.status === 'failed'" :state="state" :sending="sending || conversationPending || !!state.archived" @resume="send('重试当前失败步骤','resume')" @resumed="refreshState" @settings="settingsOpen = true" @view="value => router.replace({ query: { ...route.query, view: value } })" />
      <button v-if="!following" class="latest-button" @click="scrollToLatest">回到最新 ↓</button>
      <div v-if="uploadsOpen" class="intake-panel"><header><strong>赛题文档</strong><button class="icon-button" aria-label="收起赛题文档" @click="uploadsOpen = false"><X :size="16" /></button></header><ProblemPdfDropzone @parsed="acceptProblemDocument" @cleared="() => { problemDocument = null; problemText = ''; }" /></div>
      <div v-if="!task_id" class="attachment-list"><span v-if="problemDocument"><FileText :size="13" />{{ problemDocument.name }}<button aria-label="移除赛题文档" @click="problemDocument = null; problemText = ''"><X :size="12" /></button></span><span v-for="group in attachmentGroups" :key="group.key"><FolderOpen v-if="group.folder" :size="13" /><Paperclip v-else :size="13" />{{ group.label }}<small v-if="group.folder">{{ group.count }} 个文件</small><button :aria-label="'移除 ' + group.label" @click="removeAttachmentGroup(group.key)"><X :size="12" /></button></span></div>
-     <p v-if="uploadProgress !== null" role="status" class="attachment-notice">{{ uploadProgress < 100 ? `正在上传 ${uploadProgress}%` : '正在保存附件…' }}</p><p v-else-if="attachmentNotice" role="status" class="attachment-notice">{{ attachmentNotice }}</p>
-     <section v-if="!task_id && contestOptionsOpen" class="contest-options" aria-label="赛事设置"><header><strong>{{ selectedCompetition?.name }}</strong><button class="icon-button" aria-label="关闭赛事设置" @click="contestOptionsOpen = false"><X :size="15" /></button></header><div class="contest-fields"><label>年份 <input v-model.number="competitionYear" aria-label="赛事年份" type="number" min="2000" max="2100" /></label><label>论文语言 <select v-model="paperLanguage" aria-label="论文语言"><option value="">赛事默认</option><option value="zh">中文</option><option value="en">英文</option></select></label></div><textarea v-model="competitionRequirements" aria-label="补充赛事要求" placeholder="补充当届规则、组别、题号、页数或提交要求（可选）" /><small>{{ selectedCompetition?.event_note || (selectedCompetition?.rules_status === 'format_verified' && competitionYear === selectedCompetition.year ? '已核对所列年份的主要版式要求，赛区与提交要求仍需复核' : '已加载建模技能，具体版式请结合当届规则核对') }}</small><a v-for="source in selectedCompetition?.sources" :key="source.url" :href="source.url" target="_blank" rel="noopener">查看赛事资料 ↗</a></section>
+     <p v-if="uploadProgress !== null" role="status" class="attachment-notice">{{ uploadProgress < 100 ? `正在上传 ${uploadProgress}%` : '正在保存附件…' }}</p><p v-if="attachmentNotice" role="status" class="attachment-notice">{{ attachmentNotice }}</p>
+     <section v-if="!task_id && contestOptionsOpen" class="contest-options" aria-label="赛事设置"><header><strong>{{ selectedCompetition?.name }}</strong><button class="icon-button" aria-label="关闭赛事设置" @click="contestOptionsOpen = false"><X :size="15" /></button></header><div class="contest-fields"><label>年份 <input v-model.number="competitionYear" aria-label="赛事年份" type="number" min="2000" max="2100" /></label><label>论文语言 <select v-model="paperLanguage" aria-label="论文语言"><option value="">赛事默认</option><option value="zh">中文</option><option value="en">英文</option></select></label></div><label>任务目标 <select v-model="taskPurpose" aria-label="任务目标"><option value="modeling">建模与性能评估</option><option value="numerical_verification">指定计算与数值核验</option></select></label><small v-if="taskPurpose === 'numerical_verification'">仅核对指定方法与给定输入的计算，不证明泛化能力或方法优越性。</small><label><input v-model="literatureEnabled" type="checkbox" aria-label="建模前检索文献" /> 建模前检索文献</label><small>只依赖已有方法的小任务可关闭；附件核验与计算检查仍会执行。</small><textarea v-model="competitionRequirements" aria-label="补充赛事要求" placeholder="补充当届规则、组别、题号、页数或提交要求（可选）" /><small>{{ selectedCompetition?.event_note || (selectedCompetition?.rules_status === 'format_verified' && competitionYear === selectedCompetition.year ? '已核对所列年份的主要版式要求，赛区与提交要求仍需复核' : '已加载建模技能，具体版式请结合当届规则核对') }}</small><a v-for="source in selectedCompetition?.sources" :key="source.url" :href="source.url" target="_blank" rel="noopener">查看赛事资料 ↗</a></section>
      <div v-if="error" role="alert" class="send-error">{{ error }}</div>
      <div v-if="adjustmentOpen" class="adjustment-menu" role="dialog" aria-label="选择调整时机"><header><strong>何时应用这条修改要求？</strong><button class="icon-button" aria-label="关闭调整选项" @click="adjustmentOpen = false"><X :size="15" /></button></header><button @click="send(draft, undefined, 'immediate')"><strong>立即调整</strong><small>停止当前步骤，按新要求继续</small></button><button @click="send(draft, undefined, 'after_step')"><strong>当前步骤完成后调整</strong><small>保留当前执行，将要求加入后续步骤</small></button></div>
-     <div class="composer"><textarea ref="composerInput" v-model="draft" rows="1" :aria-label="task_id ? '给团队发送指令' : '描述建模问题'" :placeholder="view === 'paper' && editPaper ? '描述修改要求，可先在源码中选中一段…' : task_id ? '继续对话，或提出修改…' : problemText ? '补充要求（可选）' : '把题目、想法，或卡住的地方告诉 Remit…'" @keydown="handleKey" />
+     <div class="composer" @dragover="acceptFileDrag" @drop="dropAttachments"><textarea ref="composerInput" v-model="draft" rows="1" :aria-label="task_id ? '给团队发送指令' : '描述建模问题'" :placeholder="view === 'paper' && editPaper ? '描述修改要求，可先在源码中选中一段…' : task_id ? '继续对话，或提出修改…' : problemText ? '补充要求（可选）' : '把题目、想法，或卡住的地方告诉 Remit…'" @keydown="handleKey" />
       <div class="composer-toolbar"><div class="composer-options">
        <div class="attachment-control"><button class="icon-button" aria-label="添加赛题或数据" :disabled="sending || state?.archived" :aria-expanded="attachmentMenu" @click="attachmentMenu = !attachmentMenu"><Plus :size="19" /></button><div v-if="attachmentMenu" class="attachment-menu"><button @click="uploadsOpen = true; attachmentMenu = false"><FileText :size="15" />赛题文档 <small>PDF / Word</small></button><button @click="fileInput?.click(); attachmentMenu = false"><Paperclip :size="15" />数据附件 <small>不限格式 · 多选</small></button><button @click="folderInput?.click(); attachmentMenu = false"><FolderOpen :size="15" />数据文件夹 <small>包含子文件夹</small></button></div></div>
        <template v-if="!task_id"><select v-model="executionBackend" aria-label="计算环境"><option value="python">Python</option><option value="matlab">MATLAB</option></select><select v-model="competitionId" aria-label="选择数学建模竞赛"><option v-for="contest in competitions" :key="contest.id" :value="contest.id">{{ contest.name }}</option></select><button class="icon-button" aria-label="赛事设置" @click="contestOptionsOpen = !contestOptionsOpen"><Settings2 :size="15" /></button></template>
@@ -752,7 +883,7 @@ onBeforeUnmount(() => {
      <p class="composer-hint">{{ !task_id ? '普通消息直接对话；建模任务先确认计划，再开始执行' : view === 'paper' && editPaper ? '修改建议经你接受后才写入源码' : state?.status === 'running' ? 'Enter 对话 · 调整执行请点“调整任务”' : 'Enter 发送 · Shift + Enter 换行' }}</p>
     </div>
    </section>
-   <aside v-if="task_id && boardOpen" class="shared-board" aria-label="共享全局状态表"><header><h2>项目进度</h2><button class="icon-button" aria-label="关闭状态表" @click="boardOpen = false"><X :size="17" /></button></header><div class="role-grid"><div v-for="role in ['coordinator','modeler','coder','writer']" :key="role"><span class="role-name"><RoleAvatar :role="role" compact />{{ labels[role] }}</span><small>{{ statusLabel(roleStatus(role)) }}</small></div></div><ol class="step-list"><li v-for="step in state?.steps" :key="step.id"><Check v-if="step.status === 'completed'" :size="14" /><span v-else class="step-dot" /><div>{{ step.label }}<small>{{ statusLabel(step.status) }}</small></div></li></ol><button v-if="state?.status === 'completed'" class="primary-button" @click="send('用已验收成果生成论文初稿','write')">开始论文写作</button><button v-if="['stopped','failed'].includes(state?.status || '')" class="primary-button" @click="send('继续建模','resume')">继续建模</button><div v-for="item in state?.directives" :key="item.id" class="directive"><p>{{ item.content }}</p><small>{{ item.seen.map(role => labels[role]).join('、') || '等待角色读取' }}</small></div></aside>
+   <aside v-if="task_id && boardOpen" class="shared-board" aria-label="共享全局状态表"><header><h2>项目进度</h2><button class="icon-button" aria-label="关闭状态表" @click="boardOpen = false"><X :size="17" /></button></header><div class="role-grid"><div v-for="role in ['coordinator','modeler','coder','writer']" :key="role"><span class="role-name"><RoleAvatar :role="role" compact />{{ labels[role] }}</span><small>{{ statusLabel(roleStatus(role)) }}</small></div></div><ol class="step-list"><li v-for="step in state?.steps" :key="step.id"><Check v-if="step.status === 'completed'" :size="14" /><span v-else class="step-dot" /><div>{{ step.label }}<small>{{ statusLabel(step.status) }}</small></div></li></ol><button v-if="state?.status === 'completed'" class="primary-button" @click="send('用已验收成果生成论文初稿','write')">开始论文写作</button><button v-if="['stopped','failed'].includes(state?.status || '') && state?.failure?.code !== 'EXECUTION_BUDGET'" class="primary-button" @click="send('继续建模','resume')">继续建模</button><div v-for="item in state?.directives" :key="item.id" class="directive"><p>{{ item.content }}</p><small>{{ item.seen.map(role => labels[role]).join('、') || '等待角色读取' }}</small></div></aside>
   </div>
  </main>
  <input ref="fileInput" type="file" multiple hidden aria-label="选择数据附件" @change="addAttachments" /><input ref="folderInput" type="file" webkitdirectory multiple hidden aria-label="选择数据文件夹" @change="addAttachments" /><ApiDialog v-model:open="settingsOpen" />

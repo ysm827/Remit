@@ -9,12 +9,8 @@ dependencies = [
     # Web 框架与实时通道
     "fastapi[standard]>=0.141.1",
     "uvicorn[standard]>=0.52.4",
-    "websocket>=0.2.1",
-    "aiofile>=3.9.0",
-    # 任务队列与状态存储
-    "celery>=5.4.0",
+    # 状态存储（异步接口由 redis.asyncio 提供）
     "redis>=5.2.1",
-    "aioredis>=2.0.1",
     # LLM 供应商 SDK 与 HTTP 客户端
     "openai>=1.65.4",
     "anthropic>=0.40.0",
@@ -41,7 +37,8 @@ dependencies = [
     "matplotlib>=3.10.1",
     "seaborn>=0.13.2",
     # 文献检索与向量检索
-    "semanticscholar>=0.10.0",
+    "chromadb>=0.4.0",
+    "sentence-transformers>=2.2.0",
     # 文档读写与转换
     "openpyxl>=3.1.5",
     "xlrd>=2.0.1",
@@ -54,16 +51,10 @@ dependencies = [
     "pystray>=0.19.5",
     "pywebview>=6.2.1",
     "psutil>=7.0.0",
-    # 日志与调试
+    # 日志
     "loguru>=0.7.3",
-    "icecream>=2.1.4",
     "h5py>=3.11",
 ]
-
-[project.optional-dependencies]
-# Reserved for users developing embedding integrations; the current workbench
-# uses its local method library and does not import these packages.
-embeddings = ["chromadb>=0.4.0", "sentence-transformers>=2.2.0", "rank-bm25>=0.2.2"]
 
 [dependency-groups]
 dev = [

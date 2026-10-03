@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from app.schemas.enums import CompTemplate, FormatOutPut
+from app.core.task_purpose import TaskPurpose
 
 
 ExecutionBackend = Literal["matlab", "python"]
@@ -25,6 +26,8 @@ class Problem(BaseModel):
     comp_template: CompTemplate = CompTemplate.CHINA
     format_output: FormatOutPut = FormatOutPut.LaTeX
     execution_backend: ExecutionBackend | None = None
+    literature_enabled: bool = True
+    task_purpose: TaskPurpose = "modeling"
 
     def model_dump(self, **kwargs: Any) -> dict[str, Any]:
         """导出时把枚举还原为其线协议取值。"""

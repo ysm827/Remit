@@ -1,12 +1,13 @@
 """通用路由模块，提供配置查询、消息获取和健康检查等接口。"""
 
 import json
+import asyncio
 import shutil
 from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from app.core.llm.llm_factory import LLMFactory
 from app.core.prompts.persona import remit_voice
@@ -21,7 +22,7 @@ from app.services.redis_manager import redis_manager
 from app.utils.log_util import logger
 
 router = APIRouter()
-TASK_WORK_DIR_ROOT = Path(__file__).resolve().parents[2] / "project" / "work_dir"
+TASK_WORK_DIR_ROOT = Path("project") / "work_dir"
 _REDIS_STATUS_TIMEOUT_SECONDS = 2.0
 
 
@@ -263,6 +264,7 @@ async def _build_task_copilot_context(task_id: str) -> dict[str, Any]:
         "workflow": {},
         "quality_reports": {},
         "prediction_metrics": {},
+        "results_digest": {},
         "recent_events": [],
     }
     if work_dir.parent == TASK_WORK_DIR_ROOT.resolve() and work_dir.is_dir():
@@ -284,6 +286,26 @@ async def _build_task_copilot_context(task_id: str) -> dict[str, Any]:
                         "model_execution_reviews",
                     )
                 }
+                # 用户最常问"每一问的结果是什么"：把已落盘的每问结果摘要
+                # 交给协调手，避免它只凭进度记录回答而显得答非所问。
+                solution_results = state.get("solution_results")
+                if isinstance(solution_results, dict):
+                    for key, entry in solution_results.items():
+                        if not isinstance(entry, dict):
+                            continue
+                        summary = str(entry.get("execution_summary") or "").strip()
+                        if not summary:
+                            coder = entry.get("coder_response")
+                            if isinstance(coder, dict):
+                                summary = str(coder.get("code_response") or "")
+                        if not summary:
+                            continue
+                        context["results_digest"][str(key)] = {
+                            "summary": _compact_value(summary, 1200),
+                            "grounding_values": _compact_value(
+                                entry.get("grounding_values") or [], 200
+                            ),
+                        }
 
         for path in sorted(work_dir.glob("*_quality_report.json"))[-8:]:
             try:
@@ -356,7 +378,8 @@ async def post_task_copilot(task_id: str, request: TaskCopilotRequest):
                 {
                     "role": "system",
                     "content": (
-                        remit_voice() + "你正在只读复核建模成果。只依据真实落盘证据回答，"
+                        remit_voice()
+                        + "你正在只读复核建模成果。只依据真实落盘证据回答，"
                         "严格区分已运行结果、候选方案和推测；禁止虚构指标。"
                         "本次回答不得改变工作流、不得调用代码工具，也不得调用 Fable。"
                         "用简洁中文先给结论，再列证据与下一步。"
@@ -426,7 +449,13 @@ def _task_is_scheduled(task_id: str) -> bool:
     from app.routers.writing_router import _generations, _compiling
     from app.routers.team_router import task_busy
 
-    return task_id in _active_tasks or task_id in _scheduled_tasks or task_id in _generations or task_id in _compiling or task_busy(task_id)
+    return (
+        task_id in _active_tasks
+        or task_id in _scheduled_tasks
+        or task_id in _generations
+        or task_id in _compiling
+        or task_busy(task_id)
+    )
 
 
 @router.delete("/tasks", response_model=ClearTaskHistoryResponse)
@@ -494,4 +523,123 @@ async def get_service_status():
     return {
         "backend": {"status": "running", "message": "Remit 后端运行正常"},
         "redis": {"status": "running" if healthy else "error", "message": message},
+    }
+
+
+_local_check_lock = asyncio.Lock()
+
+
+@router.get("/api/runtime")
+async def get_runtime_info():
+    """为首次使用与设置页面显示当前环境和版本。"""
+    from app.services.runtime_diagnostics import runtime_info
+
+    return runtime_info()
+
+
+@router.post("/api/runtime/check")
+async def check_runtime():
+    """用户主动执行固定环境检查，拒绝重复启动多个内核。"""
+    from app.services.runtime_diagnostics import local_check
+
+    if _local_check_lock.locked():
+        raise HTTPException(409, "环境检查正在进行，请等待结果。")
+    async with _local_check_lock:
+        return await local_check()
+
+
+@router.get("/api/diagnostics")
+async def get_diagnostic_preview(task_id: str | None = None):
+    """导出前显示完整预览；响应不包含用户内容和原始错误。"""
+    from app.services.runtime_diagnostics import diagnostic_preview
+    from app.utils.common_utils import get_work_dir
+
+    try:
+        root = Path(get_work_dir(http_task_id(task_id))) if task_id else None
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="项目不存在") from None
+    return diagnostic_preview(root)
+
+
+@router.post("/api/diagnostics/export")
+async def export_diagnostics(task_id: str | None = None):
+    """下载与预览使用同一允许清单的 JSON 文件。"""
+    payload = await get_diagnostic_preview(task_id)
+    return JSONResponse(
+        payload,
+        headers={
+            "Content-Disposition": 'attachment; filename="remit-diagnostics.json"'
+        },
+    )
+
+
+class CapabilityCheckRequest(BaseModel):
+    """只测试用户选择的已保存角色，明确授权有上限的供应商调用。"""
+
+    role: Literal[
+        "coordinator",
+        "modeler",
+        "coder",
+        "writer",
+        "vision",
+        "model_scout",
+        "model_critic",
+    ]
+    authorized: bool = False
+    fallback: bool = False
+
+
+_capability_locks: dict[str, asyncio.Lock] = {}
+
+
+@router.post("/api/model-capabilities")
+async def check_model_capabilities(request: CapabilityCheckRequest):
+    from app.services.api_probe import check_capabilities
+    from app.services.model_capabilities import (
+        role_config,
+        fallback_config,
+        profile_path,
+        requirements,
+    )
+    from app.services.writing_workspace import write_json
+
+    if not request.authorized:
+        raise HTTPException(
+            422, "请明确授权能力验证：每个角色最多 3 次请求，每次最多 8192 输出 token。"
+        )
+    key = f"fallback-{request.role}" if request.fallback else request.role
+    lock = _capability_locks.setdefault(key, asyncio.Lock())
+    if lock.locked():
+        raise HTTPException(409, "该角色正在验证，请等待当前检查结束。")
+    async with lock:
+        config = (
+            fallback_config(request.role)
+            if request.fallback
+            else role_config(request.role)
+        )
+        if not config["api_key"] or not config["model_id"]:
+            raise HTTPException(422, "请先保存完整的模型配置。")
+        checks = requirements(request.role)
+        profile = await check_capabilities(
+            config,
+            needs_tools=checks["needs_tools"],
+            needs_vision=checks["needs_vision"],
+            structured_mode=checks["structured_mode"],
+            parallel_tool_calls=checks.get("parallel_tool_calls"),
+        )
+        profile["requirements"] = checks
+        await asyncio.to_thread(write_json, profile_path(key), profile)
+        return profile
+
+
+@router.get("/api/model-capabilities")
+async def get_model_capabilities():
+    from app.services.model_capabilities import load_profile, ROLE_REQUIREMENTS
+
+    return {
+        **{role: load_profile(role) for role in ROLE_REQUIREMENTS},
+        **{
+            f"fallback:{role}": load_profile(role, fallback=True)
+            for role in ROLE_REQUIREMENTS
+        },
     }

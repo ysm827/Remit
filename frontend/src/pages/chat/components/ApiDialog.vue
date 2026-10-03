@@ -35,6 +35,7 @@ import {
 	XCircle,
 } from "lucide-vue-next";
 import { computed, reactive, ref, watch } from "vue";
+import CapabilityPanel from "./CapabilityPanel.vue";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<(e: "update:open", value: boolean) => void>();
@@ -55,7 +56,8 @@ type AgentKey =
 	| "coder"
 	| "writer"
 	| "model_scout"
-	| "model_critic";
+	| "model_critic"
+	| "fallback";
 
 interface AgentFormConfig {
 	apiKey: string;
@@ -63,6 +65,7 @@ interface AgentFormConfig {
 	modelId: string;
 	apiType: string;
 	contextWindow: number;
+    maxTokens?: number;
 }
 
 interface AgentFieldMeta {
@@ -72,8 +75,9 @@ interface AgentFieldMeta {
 	councilOnly: boolean;
 }
 
-/** 六个可配置 Agent 的表单元数据 */
+/** 角色连接与可选备用连接共用表单。 */
 const AGENT_FIELDS: AgentFieldMeta[] = [
+	{ key: "fallback", label: "备用模型连接", defaultContextWindow: 128000, councilOnly: false },
 	{
 		key: "coordinator",
 		label: "协调者模型配置",
@@ -128,6 +132,9 @@ function buildEmptyAgentForms(): Record<AgentKey, AgentFormConfig> {
 /** 本地表单数据 */
 const agentForms = reactive(buildEmptyAgentForms());
 const modelCouncilEnabled = ref(false);
+const sharedCore = ref(true);
+const fallbackEnabled = ref(false);
+const capabilityRevision = ref(0);
 const openalexEmail = ref("");
 
 /** 验证加载状态 */
@@ -157,26 +164,17 @@ const validationResults = ref(blankVerdicts());
 
 /** 当前需要展示的 Agent 配置区块（评审组仅在启用时出现） */
 const visibleFields = computed(() =>
-	AGENT_FIELDS.filter(
-		(field) => !field.councilOnly || modelCouncilEnabled.value,
+	AGENT_FIELDS.filter((field) =>
+		field.key === "fallback" ? fallbackEnabled.value : field.councilOnly
+			? modelCouncilEnabled.value
+			: !sharedCore.value || field.key === "coordinator",
 	),
 );
-
-/** 判断所有验证是否都通过 */
-const allValid = computed(() => {
-	const keys: AgentKey[] = ["coordinator", "modeler", "coder", "writer"];
-	if (modelCouncilEnabled.value) {
-		keys.push("model_scout", "model_critic");
-	}
-	const modelsValid = keys.every((key) => validationResults.value[key].valid);
-	const openalexValid =
-		!openalexEmail.value.trim() || validationResults.value.openalex_email.valid;
-	return modelsValid && openalexValid;
-});
 
 /** 从 store 加载数据到表单 */
 function loadFromStore(): void {
 	const storeConfigs: Record<AgentKey, ModelConfig> = {
+		fallback: { ...blankAgentForm(128000), maxTokens: 8192 },
 		coordinator: apiKeyStore.coordinatorConfig,
 		modeler: apiKeyStore.modelerConfig,
 		coder: apiKeyStore.coderConfig,
@@ -225,10 +223,14 @@ async function loadEffectiveConfig(): Promise<boolean> {
 			AgentApiConfigStatus
 		>;
 		effectiveAgents.value = agents;
+		fallbackEnabled.value = response.data.fallback_enabled === true;
+		sharedCore.value =
+			response.data.shared_core === true ||
+			Object.values(agents).every((agent) => !agent.configured);
 		modelCouncilEnabled.value = response.data.model_council_enabled;
 		apiKeyStore.setModelCouncilEnabled(response.data.model_council_enabled);
 
-		for (const field of visibleFields.value) {
+		for (const field of AGENT_FIELDS) {
 			const current = agents[field.key];
 			if (!current) {
 				continue;
@@ -239,6 +241,7 @@ async function loadEffectiveConfig(): Promise<boolean> {
 				baseUrl: current.base_url || "",
 				modelId: current.model_id || "",
 				contextWindow: current.context_window || field.defaultContextWindow,
+                ...(field.key === "fallback" ? { maxTokens: current.max_tokens ?? 8192 } : {}),
 			};
 		}
 		return true;
@@ -268,15 +271,18 @@ async function saveToStore(): Promise<boolean> {
 	try {
 		const response = await saveApiConfig({
 			...agentForms,
+			shared_core: sharedCore.value,
+			fallback_enabled: fallbackEnabled.value,
 			model_council_enabled: modelCouncilEnabled.value,
 			openalex_email: openalexEmail.value,
 		});
+		capabilityRevision.value += 1;
 		if (!(await loadEffectiveConfig())) {
 			throw new Error("保存后无法读取后端有效配置");
 		}
 		const missingAgents = AGENT_FIELDS.filter(
 			(field) =>
-				(!field.councilOnly || modelCouncilEnabled.value) &&
+				(field.key === "fallback" ? fallbackEnabled.value : !field.councilOnly || modelCouncilEnabled.value) &&
 				!effectiveAgents.value[field.key]?.configured,
 		).map((field) => field.label);
 		if (missingAgents.length) {
@@ -339,7 +345,7 @@ async function validateModelApiKey(
 				identity.every((value, index) => (value || "") === formIdentity[index]),
 		);
 		return canReuse
-			? { valid: true, message: "✓ 使用后端现有密钥（密钥不会回显到浏览器）" }
+			? { valid: false, message: "已保存密钥；连接和能力仍需主动验证" }
 			: { valid: false, message: "请填写 API Key，或恢复后端当前模型配置" };
 	}
 
@@ -392,7 +398,6 @@ async function validateAllApiKeys(): Promise<void> {
 			if (index < fields.length - 1) await pauseBetweenProviders();
 		}
 		validationResults.value.openalex_email = await validateOpenAlexSetting();
-		if (allValid.value) await saveToStore();
 	} catch (error) {
 		console.error("configuration validation aborted", error);
 		const fallback = { valid: false, message: explainValidationFailure(error) };
@@ -423,7 +428,7 @@ function resetAll(): void {
     <DialogContent class="max-w-xl max-h-[85vh] overflow-y-auto">
       <DialogHeader>
         <DialogTitle>设置</DialogTitle>
-        <DialogDescription>为每个 Agent 配置 API 类型和模型</DialogDescription>
+        <DialogDescription>先保存连接，再按需要授权模型能力验证。</DialogDescription>
       </DialogHeader>
 
       <div v-if="statusLoading"
@@ -461,6 +466,10 @@ function resetAll(): void {
       </div>
 
       <div class="space-y-4 py-2">
+        <label class="flex items-center gap-2 text-sm"><input v-model="sharedCore" type="checkbox" />四位角色共用协调者的模型连接</label>
+        <p class="text-xs text-muted-foreground">关闭共用可为角色独立配置；已有连接仅表示已配置，不能证明工具调用可用。</p>
+        <label class="flex items-center gap-2 text-sm"><input v-model="fallbackEnabled" type="checkbox" />启用备用模型</label>
+        <p v-if="fallbackEnabled" class="text-xs text-muted-foreground">主模型连接持续失败后，仅在相同服务地址与协议内切换。保存备用连接后，在能力验证中选择备用连接及对应角色；未经验证不会自动调用。请填写备用模型自己的上下文容量。</p>
         <section class="rounded-lg border border-[#d8ddc4] bg-[#f4f5e8]/70 p-3" aria-labelledby="model-council-title">
           <div class="flex items-start justify-between gap-4">
             <div>
@@ -569,6 +578,11 @@ function resetAll(): void {
             <Input :id="`${field.key}-context-window`" v-model.number="agentForms[field.key].contextWindow"
               type="number" placeholder="128000" class="h-7 text-xs" min="4096" step="1024" />
           </div>
+          <div v-if="field.key === 'fallback'" class="space-y-1">
+            <Label for="fallback-max-tokens" class="text-xs text-muted-foreground">备用模型单次输出上限（token）</Label>
+            <Input id="fallback-max-tokens" v-model.number="agentForms.fallback.maxTokens" type="number" min="1" step="1024" class="h-7 text-xs" />
+            <p class="text-xs text-muted-foreground">修改容量或输出上限后需重新验证；超过上限的请求会停止，不会自动截短。</p>
+          </div>
           <div v-if="validationResults[field.key].message" :class="[
             'text-xs px-2 py-1 rounded text-left border',
             validationResults[field.key].valid
@@ -605,7 +619,7 @@ function resetAll(): void {
         <div class="flex justify-between items-center gap-2">
           <Button variant="secondary" class="h-7 text-xs px-3" :disabled="validating || saving"
             @click="validateAllApiKeys">
-            {{ validating ? '验证中...' : saving ? '保存中...' : '验证并保存' }}
+            {{ validating ? '验证中...' : '测试文本连接（可能计费）' }}
           </Button>
           <Button variant="secondary" class="h-7 text-xs px-3" :disabled="validating || saving" @click="resetAll">
             重置
@@ -620,6 +634,7 @@ function resetAll(): void {
           </Button>
         </div>
       </div>
+      <CapabilityPanel :key="capabilityRevision" />
     </DialogContent>
   </Dialog>
 </template>

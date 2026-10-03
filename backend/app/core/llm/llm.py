@@ -2,12 +2,17 @@
 
 import asyncio
 import random
+import sqlite3
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from uuid import uuid4
+from urllib.parse import urlsplit
 from typing import Any
 
 import httpx
 
-from app.config.setting import ApiType, settings
+from app.config.setting import ApiType, settings, effective_api_timeout_seconds
 from app.core.activity import AGENT_LABELS, publish_activity
 from app.core.llm.errors import NonRetryableLLMError, TransientLLMError
 from app.core.llm.providers.anthropic import AnthropicProvider
@@ -25,6 +30,7 @@ from app.schemas.response import (
     WriterMessage,
 )
 from app.services.redis_manager import redis_manager
+from app.services.call_ledger import CallPurpose
 from app.utils.common_utils import split_footnotes, transform_link
 from app.utils.log_util import logger
 
@@ -80,7 +86,13 @@ def _server_hinted_delay(error: Exception) -> float | None:
             float(settings.LLM_RETRY_AFTER_MAX_SECONDS),
         )
     except (TypeError, ValueError):
-        return None
+        try:
+            seconds = (
+                parsedate_to_datetime(str(hint)) - datetime.now(timezone.utc)
+            ).total_seconds()
+            return min(max(seconds, 1.0), float(settings.LLM_RETRY_AFTER_MAX_SECONDS))
+        except (TypeError, ValueError, OverflowError):
+            return None
 
 
 def _retry_delay_seconds(error: Exception, attempt: int, base_delay: float) -> float:
@@ -161,6 +173,7 @@ class LLM:
         task_id: str = "",
         max_tokens: int | None = None,
         reasoning_effort: str | None = None,
+        context_window: int = 128000,
     ) -> None:
         self.api_type = api_type
         self.api_key = api_key
@@ -169,6 +182,9 @@ class LLM:
         self.task_id = task_id
         self.max_tokens = max_tokens
         self.reasoning_effort = reasoning_effort
+        self.context_window = context_window
+        self.capabilities: dict = {}
+        self.capability_role: str | None = None
         self.chat_count = 0
         self._fallback_active = False
         self.provider = _resolve_provider(api_type)
@@ -181,24 +197,93 @@ class LLM:
         if not self.api_key or not str(self.api_key).strip():
             raise ValueError(f"{agent_name} 未配置 API Key，请设置对应的 *_API_KEY")
 
-    def _activate_fallback(self) -> bool:
+    def _activate_fallback(self, messages, tools, max_tokens) -> bool:
         """主模型重试耗尽后切换备用模型；未配置或已切换过则放弃。"""
         if (
             self._fallback_active
+            or not settings.FALLBACK_ENABLED
             or not settings.FALLBACK_MODEL
             or not settings.FALLBACK_API_KEY
         ):
             return False
+
+        def origin(url):
+            return urlsplit(url or "https://api.openai.com/v1").netloc.casefold()
+
+        if (settings.FALLBACK_API_TYPE or self.api_type) != self.api_type or origin(
+            settings.FALLBACK_BASE_URL or self.base_url
+        ) != origin(self.base_url):
+            logger.warning("备用模型使用不同服务地址或协议，请先单独配置与验证后重试")
+            return False
+        from app.services.model_capabilities import fallback_config, load_profile
+        from app.core.llm.request_budget import check_request
+
+        if self.capability_role is None:
+            raise NonRetryableLLMError(
+                "备用模型尚无对应角色的能力验证，请在设置中验证后重试。"
+            )
+        config = fallback_config(self.capability_role)
+        # The profile must describe the exact effective connection of this run.
+        if config["api_type"] != (
+            settings.FALLBACK_API_TYPE or self.api_type
+        ) or config["base_url"] != (settings.FALLBACK_BASE_URL or self.base_url):
+            raise NonRetryableLLMError("备用模型连接已变更，请重新验证对应角色后重试。")
+        profile = load_profile(
+            self.capability_role, fallback=True, effective_config=config
+        )
+        if self.capability_role != "vision":
+            # A tool role may later receive an image. Reuse only a vision probe
+            # bound to this exact fallback connection and parameter fingerprint.
+            vision = load_profile("vision", fallback=True, effective_config=config)
+            profile = {**profile, "vision": vision.get("vision", "unknown")}
+        self._check_capabilities(profile, messages, tools, strict=True)
+        output = int(max_tokens or config["max_tokens"])
+        if output > config["max_tokens"]:
+            raise NonRetryableLLMError(
+                "本次请求超过备用模型输出上限，请调整配置并重新验证。"
+            )
+        check_request(messages, tools, output, config["context_window"])
         self._fallback_active = True
-        self.api_type = settings.FALLBACK_API_TYPE or self.api_type
-        self.api_key = settings.FALLBACK_API_KEY
-        self.model = settings.FALLBACK_MODEL
-        self.base_url = settings.FALLBACK_BASE_URL or self.base_url
-        # 备用模型不一定支持原档位，改用其专属配置（未设则回落全局）
-        self.reasoning_effort = settings.FALLBACK_REASONING_EFFORT
+        self.api_type = config["api_type"]
+        self.api_key = config["api_key"]
+        self.model = config["model_id"]
+        self.base_url = config["base_url"]
+        self.reasoning_effort = config["reasoning_effort"]
+        self.context_window = config["context_window"]
+        self.max_tokens = config["max_tokens"]
+        self.capabilities = profile
         self.provider = _resolve_provider(self.api_type)
         logger.warning(f"主模型连接持续失败，已切换备用模型 {self.model}")
         return True
+
+    @staticmethod
+    def _check_capabilities(profile, messages, tools, *, strict=False):
+        from app.core.llm.content import has_image_content
+
+        required = {"connection", "text", "structured_output"} if strict else set()
+        if tools:
+            required.update(("tools", "tool_result"))
+        if has_image_content(messages):
+            required.add("vision")
+        missing = [
+            key
+            for key in sorted(required)
+            if (
+                profile.get(key) != "supported"
+                if strict
+                else profile.get(key) == "unsupported"
+            )
+        ]
+        if missing:
+            if strict:
+                raise NonRetryableLLMError(
+                    "备用模型的本次请求所需能力尚未验证通过，请在设置中验证对应角色后重试："
+                    + ", ".join(missing)
+                )
+            reason = "识图" if "vision" in missing else "工具调用"
+            raise NonRetryableLLMError(
+                f"当前配置的{reason}能力验证未通过，请修改模型配置或重新验证。"
+            )
 
     # ---- 主调用 ----
 
@@ -215,9 +300,17 @@ class LLM:
         sub_title: str | None = None,
         publish: bool = True,
         parallel_tool_calls: bool | None = None,
+        purpose: CallPurpose | None = None,
     ) -> StandardResponse:
         """发起一次对话调用，内建重试、备用模型与前端播报。"""
         self._validate_config(agent_name)
+        self._check_capabilities(
+            self.capabilities, history or [], tools, strict=self._fallback_active
+        )
+        if self._fallback_active and max_tokens and max_tokens > self.max_tokens:
+            raise NonRetryableLLMError(
+                "本次请求超过备用模型输出上限，请调整配置并重新验证。"
+            )
         messages = _repair_tool_call_chain(history) if history else []
         from app.services.team_state import context_for
 
@@ -238,37 +331,136 @@ class LLM:
             retry_limit = 3
         retry_limit = min(max(int(retry_limit), 1), settings.LLM_HARD_RETRY_LIMIT)
 
+        from app.core.llm.request_budget import check_request
+
+        check_request(
+            messages,
+            tools,
+            int(max_tokens or self.max_tokens or 4096),
+            self.context_window,
+        )
+
         on_delta = self._make_delta_hook(agent_name, sub_title, publish)
 
         attempt = 0
+        call_id = uuid4().hex
+        from app.services.call_ledger import context, reserve
+
+        metadata = await asyncio.to_thread(
+            context, self.task_id, sub_title, str(agent_name)
+        )
+        if purpose is not None:
+            metadata["logical_purpose"] = purpose
+        request_index = 0
         while True:
+            attempt_id = uuid4().hex
+            request_index += 1
+
+            stage_seconds = await asyncio.to_thread(
+                reserve,
+                self.task_id,
+                f"{agent_name}:{sub_title or 'default'}",
+                call_id,
+                attempt_id,
+            )
+            started = time.perf_counter()
+            started_at = datetime.now(timezone.utc).isoformat()
+            elapsed_seconds = None
+            retry_wait_seconds = 0.0
+            finished_at = None
+
+            async def record_attempt(status, response=None, error=None):
+                from app.services.call_ledger import record
+
+                usage = getattr(response, "usage", None)
+                known = bool(getattr(usage, "known", False))
+                entry = {
+                    **metadata,
+                    "purpose": "transport_retry"
+                    if request_index > 1
+                    else metadata["logical_purpose"],
+                    "request_index": request_index,
+                    "is_fallback": self._fallback_active,
+                    "retry_wait_seconds": retry_wait_seconds,
+                    "finished_at": finished_at,
+                    "attempt_id": attempt_id,
+                    "call_id": call_id,
+                    "role": str(agent_name),
+                    "model": self.model,
+                    "status": status,
+                    "started_at": started_at,
+                    "elapsed_seconds": round(elapsed_seconds or 0.0, 6),
+                    "prompt_tokens": usage.prompt_tokens if known else None,
+                    "completion_tokens": usage.completion_tokens if known else None,
+                    "cost": None,
+                    "currency": None,
+                    "error_code": str(
+                        getattr(error, "status_code", None) or type(error).__name__
+                    )
+                    if error
+                    else None,
+                }
+                try:
+                    await asyncio.to_thread(record, self.task_id, entry)
+                except (OSError, ValueError, RuntimeError, sqlite3.Error):
+                    logger.warning("调用账本暂时不可写；模型响应保持有效，不重新调用")
+
             try:
-                response = await self.provider.call(
-                    messages=messages,
-                    model=self.model,  # type: ignore[arg-type]
-                    api_key=self.api_key,  # type: ignore[arg-type]
-                    base_url=self.base_url,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    max_tokens=self.max_tokens if max_tokens is None else max_tokens,
-                    top_p=top_p,
-                    on_delta=on_delta,
-                    reasoning_effort=self.reasoning_effort,
-                    parallel_tool_calls=parallel_tool_calls,
+                await record_attempt("started_outcome_unknown")
+                response = await asyncio.wait_for(
+                    self.provider.call(
+                        messages=messages,
+                        model=self.model,  # type: ignore[arg-type]
+                        api_key=self.api_key,  # type: ignore[arg-type]
+                        base_url=self.base_url,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        max_tokens=self.max_tokens
+                        if max_tokens is None
+                        else max_tokens,
+                        top_p=top_p,
+                        on_delta=on_delta,
+                        reasoning_effort=self.reasoning_effort,
+                        parallel_tool_calls=parallel_tool_calls,
+                    ),
+                    timeout=min(effective_api_timeout_seconds(), stage_seconds)
+                    if stage_seconds is not None
+                    else effective_api_timeout_seconds(),
                 )
+            except asyncio.CancelledError:
+                elapsed_seconds = time.perf_counter() - started
+                finished_at = datetime.now(timezone.utc).isoformat()
+                await record_attempt("cancelled_outcome_unknown")
+                raise
             except Exception as error:
+                elapsed_seconds = time.perf_counter() - started
+                finished_at = datetime.now(timezone.utc).isoformat()
+                await record_attempt("failed_outcome_unknown", error=error)
                 attempt += 1
                 retry_limit_now = self._handle_failure(
                     error, agent_name, attempt, retry_limit
                 )
                 if attempt >= retry_limit_now:
-                    if await self._switch_to_fallback_quietly():
+                    if await self._switch_to_fallback_quietly(
+                        messages, tools, max_tokens
+                    ):
                         attempt = 0
                         continue
                     raise
-                await asyncio.sleep(_retry_delay_seconds(error, attempt, retry_delay))
+                waiting = time.perf_counter()
+                try:
+                    await asyncio.sleep(
+                        _retry_delay_seconds(error, attempt, retry_delay)
+                    )
+                finally:
+                    # 记录实际退避，包括中途取消；不把等待再次计入模型请求耗时。
+                    retry_wait_seconds = round(time.perf_counter() - waiting, 6)
+                    await record_attempt("failed_outcome_unknown", error=error)
                 continue
 
+            elapsed_seconds = time.perf_counter() - started
+            finished_at = datetime.now(timezone.utc).isoformat()
+            await record_attempt("completed", response=response)
             logger.info(
                 "API返回: content_chars={}, tool_calls={}, finish_reason={}, "
                 "prompt_tokens={}, completion_tokens={}",
@@ -293,7 +485,17 @@ class LLM:
         self, error: Exception, agent_name: str, attempt: int, retry_limit: int
     ) -> int:
         """记录失败并返回本次适用的重试上限；不可重试错误直接抛出。"""
-        if isinstance(error, NonRetryableLLMError):
+        status_code = getattr(error, "status_code", None)
+        if isinstance(error, NonRetryableLLMError) or status_code in {
+            400,
+            401,
+            403,
+            404,
+            405,
+            413,
+            415,
+            422,
+        }:
             logger.error(
                 "API非重试错误: model={}, prompt_tokens={}, completion_tokens={}",
                 self.model,
@@ -308,11 +510,13 @@ class LLM:
                 max(retry_limit, settings.GATEWAY_MAX_RETRIES),
                 settings.LLM_HARD_RETRY_LIMIT,
             )
+        if isinstance(error, (ValueError, TypeError)):
+            raise error
         return retry_limit
 
-    async def _switch_to_fallback_quietly(self) -> bool:
+    async def _switch_to_fallback_quietly(self, messages, tools, max_tokens) -> bool:
         """切换到备用模型并向前端播报；播报失败不影响切换本身。"""
-        if not self._activate_fallback():
+        if not self._activate_fallback(messages, tools, max_tokens):
             return False
         if self.task_id:
             try:
@@ -337,22 +541,23 @@ class LLM:
         display = AGENT_LABELS.get(agent_name, agent_name)
         if sub_title:
             display = f"{display}({sub_title})"
-        buffer: list[str] = []
+        tail = ""
         last_emit = 0.0
 
         async def _hook(delta: str) -> None:
-            nonlocal last_emit
-            buffer.append(delta)
+            nonlocal last_emit, tail
+            tail = (tail + delta)[-160:]
             now = time.monotonic()
             if now - last_emit < 1.0:
                 return
             last_emit = now
-            await publish_activity(
-                self.task_id,
-                f"{display}正在输出…",
-                category="llm",
-                detail="".join(buffer)[-160:],
-            )
+            try:
+                await publish_activity(
+                    self.task_id, f"{display}正在输出…", category="llm", detail=tail
+                )
+            except Exception:
+                # 流式进度丢失也不能使已被供应商处理的请求重做。
+                logger.warning("输出进度暂时无法同步，继续接收模型响应")
 
         return _hook
 

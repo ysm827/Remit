@@ -3,8 +3,17 @@
 import json
 from typing import Literal
 
-TaskStatus = Literal["running", "awaiting_approval", "completed", "failed", "stopped"]
-TASK_STATUSES = {"running", "awaiting_approval", "completed", "failed", "stopped"}
+TaskStatus = Literal[
+    "running", "stopping", "awaiting_approval", "completed", "failed", "stopped"
+]
+TASK_STATUSES = {
+    "running",
+    "stopping",
+    "awaiting_approval",
+    "completed",
+    "failed",
+    "stopped",
+}
 
 
 def message_task_status(message: dict) -> TaskStatus | None:

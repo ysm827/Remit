@@ -4,7 +4,7 @@ from app.core.llm.llm import LLM
 from app.core.llm.types import StandardResponse
 
 
-DEFAULT_STRUCTURED_OUTPUT_TOKENS = 8192
+DEFAULT_STRUCTURED_OUTPUT_TOKENS = 32768
 MAX_STRUCTURED_OUTPUT_TOKENS = 65536
 TRUNCATION_REASONS = {
     "length",

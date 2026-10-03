@@ -22,14 +22,23 @@ def test_polish_markdown_applies_em_dash_budget(tmp_path: Path) -> None:
 
 
 def test_normalize_unicode_greek_wraps_text_mode_letters() -> None:
-    assert _normalize_unicode_greek("并用ε-约束") == "并用`\\(\\varepsilon\\)`{=latex}-约束"
-    assert _normalize_unicode_greek("$\\alpha$ 与 ρ") == "$\\alpha$ 与 `\\(\\rho\\)`{=latex}"
+    assert (
+        _normalize_unicode_greek("并用ε-约束")
+        == "并用`\\(\\varepsilon\\)`{=latex}-约束"
+    )
+    assert (
+        _normalize_unicode_greek("$\\alpha$ 与 ρ")
+        == "$\\alpha$ 与 `\\(\\rho\\)`{=latex}"
+    )
     assert _normalize_unicode_greek("无希腊字母") == "无希腊字母"
-    assert _normalize_unicode_greek("体积 0.25 m³") == "体积 0.25 m`\\({}^{3}\\)`{=latex}"
+    assert (
+        _normalize_unicode_greek("体积 0.25 m³") == "体积 0.25 m`\\({}^{3}\\)`{=latex}"
+    )
 
 
 def test_unicode_minus_before_digit_cannot_swallow_chinese_prose(tmp_path):
     from app.utils.paper_polish import _markdown_fragment_to_latex
+
     result = _markdown_fragment_to_latex("秩相关为 −1，说明边界稳定，$k=2$。", tmp_path)
     assert r"\(-\)1，说明边界稳定" in result
     assert r"\(k=2\)" in result
@@ -57,13 +66,24 @@ def test_normalize_figures_uniform_width_and_caption() -> None:
 
 
 def test_normalize_keywords_uses_dunhao() -> None:
-    assert _normalize_keywords("集合划分  列生成  局部搜索") == "集合划分、列生成、局部搜索"
-    assert _normalize_keywords("集合划分, 列生成;局部搜索") == "集合划分、列生成、局部搜索"
+    assert (
+        _normalize_keywords("集合划分  列生成  局部搜索")
+        == "集合划分、列生成、局部搜索"
+    )
+    assert (
+        _normalize_keywords("集合划分, 列生成;局部搜索") == "集合划分、列生成、局部搜索"
+    )
 
 
 def test_figures_attach_detached_title_preserve_math_and_prose():
-    figure = "\\begin{figure}\n\\includegraphics{x.png}\n\\caption{x.png}\n\\end{figure}\n"
-    result = _normalize_figures("\\section{六、分析}\n" + figure + "\n图 6-6(a)　需求 $x_{i}$ 变化\n\n图 6-6 给出结果。\n")
+    figure = (
+        "\\begin{figure}\n\\includegraphics{x.png}\n\\caption{x.png}\n\\end{figure}\n"
+    )
+    result = _normalize_figures(
+        "\\section{六、分析}\n"
+        + figure
+        + "\n图 6-6(a)　需求 $x_{i}$ 变化\n\n图 6-6 给出结果。\n"
+    )
     assert result.count("需求") == 1
     assert r"\caption*{图 6-6(a)　需求 $x_{i}$ 变化}" in result
     assert "图 6-6 给出结果。" in result
@@ -79,7 +99,8 @@ def test_numeric_table_keeps_values_and_attaches_title():
         "\\begin{longtable}[]{@{}rrrr@{}}\n\\toprule\\noalign{}\n"
         r"$\rho$ & 平均 $q_{max}$/kg & 作业时间/s & 可行 \\" + "\n"
         "\\midrule\\noalign{}\n\\endhead\n\\bottomrule\\noalign{}\n\\endlastfoot\n"
-        + data + "\\end{longtable}\n}\n"
+        + data
+        + "\\end{longtable}\n}\n"
     )
     result = _normalize_numeric_tables(table)
     assert data in result

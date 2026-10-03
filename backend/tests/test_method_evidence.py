@@ -197,6 +197,45 @@ class CandidateProvenanceTests(unittest.IsolatedAsyncioTestCase):
                 method_cards={"ques1": [_card("ques1-C1")]},
             )
 
+    async def test_inapplicable_cards_may_be_excluded_with_reasons(self) -> None:
+        payload = _plan().model_dump(mode="json")
+        question = payload["questions"]["ques1"]
+        question["candidates"][1]["source_card_id"] = ""
+        question["excluded_cards"] = {
+            "ques1-C1": "数据不包含有序时间序列，无法使用该分解方法"
+        }
+        plan = await self._design(payload, {"ques1": [_card("ques1-C1")]})
+        self.assertIn("ques1-C1", plan.questions["ques1"].excluded_cards)
+
+    async def test_fixed_method_can_explicitly_decline_model_comparison(self) -> None:
+        reason = "本题已限定 OLS 数值核验，不允许增加候选模型或合成数据。"
+        agent = self._agent(
+            json.dumps({"questions": {}, "not_applicable_reason": reason})
+        )
+        plan = await agent.design_pilot_plan(
+            questions={"ques1": "读取数据并核对 OLS"},
+            questions_solution={"ques1": "仅运行 OLS 和独立公式复算"},
+            literature_brief="",
+            data_profile_summary="六行",
+            backend_language="python",
+            task_constraints="禁止生成新数据或替换已批准方法",
+        )
+        self.assertEqual(plan.not_applicable_reason, reason)
+        self.assertFalse(plan.questions)
+
+    def test_empty_or_conflicting_pilot_is_not_a_valid_opt_out(self) -> None:
+        for payload in (
+            {"questions": {}},
+            {"not_applicable_reason": "无"},
+            {
+                **_plan().model_dump(),
+                "not_applicable_reason": "已固定方法，只进行正确性核验",
+            },
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaises(ValueError):
+                    PilotPlan.model_validate(payload)
+
     async def test_finalize_requires_a_verdict_for_every_cited_card(self) -> None:
         payload = _decision().model_dump(mode="json")
         payload["questions"]["ques1"]["citation_decisions"] = []

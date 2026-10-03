@@ -1,14 +1,12 @@
 """按配置装配各角色 LLM 实例的工厂。"""
 
-from collections.abc import Callable
-
 from app.config.setting import Settings, settings
 from app.core.llm.llm import LLM
 
 
 def _agent_llm(cfg: Settings, role: str, task_id: str) -> LLM:
     """按角色前缀（COORDINATOR 等）读取一组配置并实例化。"""
-    return LLM(
+    model = LLM(
         api_type=getattr(cfg, f"{role}_API_TYPE"),
         api_key=getattr(cfg, f"{role}_API_KEY"),
         model=getattr(cfg, f"{role}_MODEL"),
@@ -16,7 +14,21 @@ def _agent_llm(cfg: Settings, role: str, task_id: str) -> LLM:
         task_id=task_id,
         max_tokens=getattr(cfg, f"{role}_MAX_TOKENS"),
         reasoning_effort=getattr(cfg, f"{role}_REASONING_EFFORT", None),
+        context_window=getattr(cfg, f"{role}_CONTEXT_WINDOW", 128000),
     )
+    model.capability_role = role.lower()
+    if role in {
+        "COORDINATOR",
+        "MODELER",
+        "CODER",
+        "WRITER",
+        "MODEL_SCOUT",
+        "MODEL_CRITIC",
+    }:
+        from app.services.model_capabilities import load_profile
+
+        model.capabilities = load_profile(role.lower(), cfg)
+    return model
 
 
 class LLMFactory:
@@ -36,8 +48,10 @@ class LLMFactory:
 
     def get_modeling_llms(self) -> tuple[LLM, LLM, LLM]:
         """建模流程只初始化协调、建模与编码角色。"""
-        return tuple(_agent_llm(settings, role, self.task_id)
-                     for role in ("COORDINATOR", "MODELER", "CODER"))
+        return tuple(
+            _agent_llm(settings, role, self.task_id)
+            for role in ("COORDINATOR", "MODELER", "CODER")
+        )
 
     def get_writer_llm(self) -> LLM:
         """论文工作区按需初始化独立写作角色。"""
@@ -49,20 +63,23 @@ class LLMFactory:
         Raises:
             ValueError: 协调者与 VISION_* 都没有可用配置。
         """
-        pick: Callable[[str], object] = lambda name: (  # noqa: E731
-            getattr(settings, f"VISION_{name}", None)
-            or getattr(settings, f"COORDINATOR_{name}", None)
-        )
-        if not pick("API_KEY") or not pick("MODEL"):
+        from app.services.model_capabilities import role_config, load_profile
+
+        config = role_config("vision", settings)
+        if not config["api_key"] or not config["model_id"]:
             raise ValueError("识图未配置模型：请填写 VISION_* 或 COORDINATOR_* 配置")
-        return LLM(
-            api_type=pick("API_TYPE"),  # type: ignore[arg-type]
-            api_key=pick("API_KEY"),  # type: ignore[arg-type]
-            model=pick("MODEL"),  # type: ignore[arg-type]
-            base_url=pick("BASE_URL"),  # type: ignore[arg-type]
+        model = LLM(
+            api_type=config["api_type"],
+            api_key=config["api_key"],
+            model=config["model_id"],
+            base_url=config["base_url"],
             task_id=self.task_id,
-            max_tokens=settings.VISION_MAX_TOKENS,
+            max_tokens=config["max_tokens"],
+            context_window=config["context_window"],
         )
+        model.capability_role = "vision"
+        model.capabilities = load_profile("vision", settings)
+        return model
 
     def get_model_council_llms(self) -> tuple[LLM, LLM]:
         """返回评审组使用的 ``(探索者, 盲审者)`` LLM。
