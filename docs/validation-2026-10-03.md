@@ -21,4 +21,6 @@
 
 ## GitHub Linux 回归修复
 
-提交 `85ab383` 的远程后端检查出现 10 项失败，Windows 本地通过不能替代该结果。主要原因是系统 Pandoc 不支持 `--syntax-highlighting=none`，以及 Linux 测试机缺少中文字体。已改用兼容旧版和随包版本的 `--no-highlight`，并在集成测试前安装 Noto CJK 字体；保留实际转换、取消和中文绘图测试，不跳过失败用例。相关 Windows 回归 67 项通过，修复后的 GitHub 检查结果待确认。
+提交 `85ab383` 的远程后端检查出现 10 项失败，Windows 本地通过不能替代该结果。主要原因是系统 Pandoc 不支持 `--syntax-highlighting=none`，以及 Linux 测试机缺少中文字体。已改用兼容旧版和随包版本的 `--no-highlight`，并在集成测试前安装 Noto CJK 字体；保留实际转换、取消和中文绘图测试，不跳过失败用例。相关 Windows 回归 67 项通过，修复提交 `79760f1` 的 [GitHub 检查](https://github.com/zhou2030109-glitch/Remit/actions/runs/37130925445) 全部通过：Linux 后端 734 项通过、35 项跳过、54 项子测试通过；启动器 26 项通过、22 项跳过；前端 105 项通过并完成构建。
+
+构建候选包时发现便携验证脚本未保留上游的用户数据目录、跨平台 Python 路径和包内 Pandoc/TeX 来源检查，已恢复这些检查。Windows 候选包验证另行记录，不能用源码 CI 代替安装验收。
