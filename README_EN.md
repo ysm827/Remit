@@ -4,6 +4,8 @@
 
 A local mathematical modeling workbench with coordinator, modeler, coder and writer roles. [中文说明](README.md).
 
+**[Windows candidate — 2026-10-03](https://github.com/zhou2030109-glitch/Remit/releases/tag/candidate-20261003-7407a60)** includes the current optimization and CI fixes. CI and bundled runtime checks pass; installer lifecycle and independent user-machine validation are pending. Its embedded version remains 2.0.1, so use the candidate filename and checksum to identify it.
+
 ## Product preview
 
 [![Remit modeling workbench](./assets/remit-2-workbench.png)](./assets/remit-2-workbench.png)

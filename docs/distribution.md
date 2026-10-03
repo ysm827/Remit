@@ -1,5 +1,7 @@
 # 构建和运行发布包
 
+**Windows 最新候选包（2026-10-03）：[前往下载](https://github.com/zhou2030109-glitch/Remit/releases/tag/candidate-20261003-7407a60)。** 包含本轮优化和 CI 修复，源码检查及包内运行验证通过；实际安装、升级、卸载和独立用户电脑验收仍待完成。程序内版本号仍为 2.0.1，请按候选文件名与校验值区分。
+
 ## Docker 发布镜像
 
 根目录 `Dockerfile` 将生产前端和后端装入同一 Linux 镜像，包含 Python

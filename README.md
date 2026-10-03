@@ -85,7 +85,9 @@ flowchart TB
 
 ## 桌面安装
 
-2.0 源码已发布，Windows x64、Mac Apple 芯片与 Intel 安装包由原生构建流程生成。
+**Windows 最新候选包（2026-10-03）：[前往下载](https://github.com/zhou2030109-glitch/Remit/releases/tag/candidate-20261003-7407a60)。** 包含本轮优化和 CI 修复，源码检查及包内运行验证通过；实际安装、升级、卸载和独立用户电脑验收仍待完成。程序内版本号仍为 2.0.1，请按候选文件名与校验值区分。
+
+正式版 2.0.1 的 Windows x64、Mac Apple 芯片与 Intel 安装包由原生构建流程生成。
 [Releases](https://github.com/zhou2030109-glitch/Remit/releases/tag/v2.0.1) 中只有出现对应的安装附件后才可下载；
 构建和安装验证未通过时不会上传该批安装包。旧预览包不等于 2.0。
 安装包内置计算与论文工具，首次打开仍需填写自己的模型服务信息。详细范围见 [桌面分发说明](docs/desktop-distribution.md)。

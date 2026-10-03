@@ -2,6 +2,8 @@
 
 ## 使用
 
+**Windows 最新候选包（2026-10-03）：[前往下载](https://github.com/zhou2030109-glitch/Remit/releases/tag/candidate-20261003-7407a60)。** 包含本轮优化和 CI 修复，源码检查及包内运行验证通过；实际安装、升级、卸载和独立用户电脑验收仍待完成。程序内版本号仍为 2.0.1，请按候选文件名与校验值区分。
+
 从 [GitHub Releases](https://github.com/zhou2030109-glitch/Remit/releases) 选择与电脑相符的安装包；没有附件的版本还不能下载。
 
 - Windows x64：运行 Setup.exe。安装器会准备 Microsoft C++ 运行库，需要管理员确认。保留默认英文安装目录，避免 TeX Live 的非 ASCII 安装路径限制；项目目录和用户名可以包含中文。
