@@ -23,10 +23,12 @@ class ApiConfigUiContractTests(unittest.TestCase):
 
         self.assertIn('if (!email) return { valid: true', dialog)
         # 保存与付费验证已经拆分：空邮箱不能触发验证或阻止保存。
-        handler = dialog.split("async function saveAndClose", 1)[1].split("async function", 1)[0]
-        self.assertIn("saveToStore()", handler)
+        # 分页设置直接保存并留在当前页，保存处理仍不得隐式验证。
+        self.assertIn('@click="saveToStore"', dialog)
+        handler = dialog.split("async function saveToStore", 1)[1].split("\nwatch(", 1)[0]
+        self.assertIn("await saveApiConfig(", handler)
         self.assertNotIn("validate", handler)
-        self.assertNotIn("openalexEmail", handler)
+        self.assertIn("openalex_email: openalexEmail.value", handler)
 
     def test_save_is_not_silently_skipped_after_validation(self) -> None:
         dialog = (
