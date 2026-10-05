@@ -30,6 +30,11 @@ import { explainValidationFailure } from "@/utils/apiValidation";
 import type { ModelConfig } from "@/utils/interface";
 import {
 	CheckCircle,
+	Cable,
+	ShieldCheck,
+	Users,
+	BookOpen,
+	Waypoints,
 	CircleAlert,
 	LoaderCircle,
 	XCircle,
@@ -162,14 +167,29 @@ function blankVerdicts(): Record<AgentKey | "openalex_email", Verdict> {
 /** 各配置项的验证结果 */
 const validationResults = ref(blankVerdicts());
 
-/** 当前需要展示的 Agent 配置区块（评审组仅在启用时出现） */
-const visibleFields = computed(() =>
-	AGENT_FIELDS.filter((field) =>
-		field.key === "fallback" ? fallbackEnabled.value : field.councilOnly
-			? modelCouncilEnabled.value
-			: !sharedCore.value || field.key === "coordinator",
-	),
-);
+const SETTINGS_PAGES = [
+	{ key: "connections", label: "模型连接", description: "配置小队使用的模型与服务商。", icon: Cable },
+	{ key: "fallback", label: "备用模型", description: "主连接失败时使用的备用连接。", icon: Waypoints },
+	{ key: "council", label: "模型评审组", description: "独立探索候选方案，再进行匿名盲审。", icon: Users },
+	{ key: "capabilities", label: "能力验证", description: "先保存连接，再验证模型的实际能力。", icon: ShieldCheck },
+	{ key: "literature", label: "文献服务", description: "管理文献检索使用的联系信息。", icon: BookOpen },
+] as const;
+type SettingsPage = typeof SETTINGS_PAGES[number]["key"];
+const activePage = ref<SettingsPage>("connections");
+const contentPane = ref<HTMLElement | null>(null);
+watch(activePage, () => { if (contentPane.value) contentPane.value.scrollTop = 0; });
+const selectedCore = ref<AgentKey>("coordinator");
+const selectedCouncil = ref<AgentKey>("model_scout");
+const currentPage = computed(() => SETTINGS_PAGES.find((page) => page.key === activePage.value) ?? SETTINGS_PAGES[0]);
+const coreFields = AGENT_FIELDS.filter((field) => field.key !== "fallback" && !field.councilOnly);
+const councilFields = AGENT_FIELDS.filter((field) => field.councilOnly);
+const activeFields = computed(() => {
+	const key = activePage.value === "connections"
+		? sharedCore.value ? "coordinator" : selectedCore.value
+		: activePage.value === "fallback" && fallbackEnabled.value ? "fallback"
+		: activePage.value === "council" && modelCouncilEnabled.value ? selectedCouncil.value : null;
+	return AGENT_FIELDS.filter((field) => field.key === key);
+});
 
 /** 从 store 加载数据到表单 */
 function loadFromStore(): void {
@@ -202,14 +222,6 @@ function sourceLabel(source?: AgentApiConfigStatus["source"]): string {
 		default:
 			return "未配置";
 	}
-}
-
-function apiTypeLabel(value?: string | null): string {
-	return (
-		API_TYPE_OPTIONS.find((option) => option.value === value)?.label ||
-		value ||
-		"未设置"
-	);
 }
 
 /** 读取后端当前真正用于创建 Agent 的有效配置，密钥只返回是否存在。 */
@@ -320,13 +332,6 @@ function updateOpen(value: boolean): void {
 	emit("update:open", value);
 }
 
-/** 保存并关闭弹窗 */
-async function saveAndClose(): Promise<void> {
-	if (await saveToStore()) {
-		updateOpen(false);
-	}
-}
-
 /** 验证大模型 API Key；留空密钥时尝试沿用后端已生效配置 */
 async function validateModelApiKey(
 	config: AgentFormConfig,
@@ -366,9 +371,6 @@ async function validateModelApiKey(
 	}
 }
 
-const pauseBetweenProviders = () =>
-	new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
-
 async function validateOpenAlexSetting(): Promise<Verdict> {
 	const email = openalexEmail.value.trim();
 	if (!email) return { valid: true, message: "未填写，可稍后配置" };
@@ -379,45 +381,32 @@ async function validateOpenAlexSetting(): Promise<Verdict> {
 	}
 }
 
-/** 一键验证所有 API Keys */
-async function validateAllApiKeys(): Promise<void> {
+/** 只测试当前连接，避免分页后发起看不见的其他角色请求。 */
+async function validateCurrentConnection(): Promise<void> {
+	if (validating.value) return;
+	const field = activeFields.value[0];
 	validating.value = true;
-	validationResults.value = blankVerdicts();
-
 	try {
-		const fields = visibleFields.value;
-		for (const [index, field] of fields.entries()) {
-			validationResults.value[field.key] = {
-				valid: false,
-				message: "正在连接…",
-			};
-			validationResults.value[field.key] = await validateModelApiKey(
-				agentForms[field.key],
-				field.key,
-			);
-			if (index < fields.length - 1) await pauseBetweenProviders();
-		}
-		validationResults.value.openalex_email = await validateOpenAlexSetting();
-	} catch (error) {
-		console.error("configuration validation aborted", error);
-		const fallback = { valid: false, message: explainValidationFailure(error) };
-		for (const key of Object.keys(
-			validationResults.value,
-		) as (keyof typeof validationResults.value)[]) {
-			if (!validationResults.value[key].message)
-				validationResults.value[key] = fallback;
+		if (field) {
+			validationResults.value[field.key] = { valid: false, message: "正在连接…" };
+			validationResults.value[field.key] = await validateModelApiKey(agentForms[field.key], field.key);
+		} else if (activePage.value === "literature") {
+			validationResults.value.openalex_email = await validateOpenAlexSetting();
 		}
 	} finally {
 		validating.value = false;
 	}
 }
 
-/** 重置所有表单数据 */
-function resetAll(): void {
-	Object.assign(agentForms, buildEmptyAgentForms());
-	modelCouncilEnabled.value = false;
-	openalexEmail.value = "";
-	validationResults.value = blankVerdicts();
+function resetCurrentConnection(): void {
+	for (const field of activeFields.value) {
+		agentForms[field.key] = { ...blankAgentForm(field.defaultContextWindow), ...(field.key === "fallback" ? { maxTokens: 8192 } : {}) };
+		validationResults.value[field.key] = { valid: false, message: "" };
+	}
+	if (activePage.value === "literature") {
+		openalexEmail.value = "";
+		validationResults.value.openalex_email = { valid: false, message: "" };
+	}
 	saveError.value = "";
 	saveSuccess.value = "";
 }
@@ -425,217 +414,203 @@ function resetAll(): void {
 
 <template>
   <Dialog :open="props.open" @update:open="updateOpen">
-    <DialogContent class="max-w-xl max-h-[85vh] overflow-y-auto">
-      <DialogHeader>
-        <DialogTitle>设置</DialogTitle>
-        <DialogDescription>先保存连接，再按需要授权模型能力验证。</DialogDescription>
+    <DialogContent class="settings-dialog max-w-none gap-0 p-0">
+      <DialogHeader class="settings-header">
+        <DialogTitle class="text-xl">设置</DialogTitle>
+        <DialogDescription class="sr-only">按分类管理模型连接、备用模型、评审组、能力验证和文献服务。</DialogDescription>
+        <div class="settings-status" role="status">
+          <template v-if="statusLoading"><LoaderCircle class="h-3.5 w-3.5 animate-spin" />正在读取后端当前生效配置…</template>
+          <template v-else-if="!statusError && Object.keys(effectiveAgents).length"><CheckCircle class="h-3.5 w-3.5" />已读取后端实际配置</template>
+        </div>
       </DialogHeader>
 
-      <div v-if="statusLoading"
-        class="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600"
-        role="status">
-        <LoaderCircle class="h-3.5 w-3.5 animate-spin" />
-        正在读取后端当前生效配置…
-      </div>
-      <div v-else-if="statusError"
-        class="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
-        role="alert">
-        <CircleAlert class="h-3.5 w-3.5 shrink-0" />
-        <span class="flex-1">{{ statusError }}</span>
-        <Button variant="outline" size="sm" @click="loadEffectiveConfig">重试读取</Button>
-      </div>
-      <div v-else-if="Object.keys(effectiveAgents).length"
-        class="flex items-center justify-between rounded-md border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs">
-        <span class="flex items-center gap-2 font-medium text-emerald-800">
-          <span class="h-2 w-2 rounded-full bg-emerald-500" aria-hidden="true"></span>
-          已读取后端实际配置
-        </span>
-        <span class="text-emerald-700">API Key 仅显示配置状态，不回显内容</span>
-      </div>
+      <div class="settings-body">
+        <nav class="settings-nav" aria-label="设置分类">
+          <button v-for="page in SETTINGS_PAGES" :key="page.key" type="button"
+            :aria-current="activePage === page.key ? 'page' : undefined"
+            :class="{ selected: activePage === page.key }" @click="activePage = page.key">
+            <component :is="page.icon" class="h-4 w-4" aria-hidden="true" />{{ page.label }}
+          </button>
+        </nav>
+        <label class="settings-mobile-nav">设置分类
+          <select v-model="activePage" aria-label="设置分类">
+            <option v-for="page in SETTINGS_PAGES" :key="page.key" :value="page.key">{{ page.label }}</option>
+          </select>
+        </label>
 
-      <div v-if="saveError"
-        class="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
-        role="alert">
-        <XCircle class="h-3.5 w-3.5 shrink-0" />
-        {{ saveError }}
-      </div>
-      <div v-else-if="saveSuccess"
-        class="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700"
-        role="status">
-        <CheckCircle class="h-3.5 w-3.5 shrink-0" />
-        {{ saveSuccess }}
-      </div>
+        <main ref="contentPane" class="settings-content" :aria-label="currentPage.label">
+          <div class="settings-page-heading">
+            <h3>{{ currentPage.label }}</h3>
+            <p>{{ currentPage.description }}</p>
+          </div>
 
-      <div class="space-y-4 py-2">
-        <label class="flex items-center gap-2 text-sm"><input v-model="sharedCore" type="checkbox" />四位角色共用协调者的模型连接</label>
-        <p class="text-xs text-muted-foreground">关闭共用可为角色独立配置；已有连接仅表示已配置，不能证明工具调用可用。</p>
-        <label class="flex items-center gap-2 text-sm"><input v-model="fallbackEnabled" type="checkbox" />启用备用模型</label>
-        <p v-if="fallbackEnabled" class="text-xs text-muted-foreground">主模型连接持续失败后，仅在相同服务地址与协议内切换。保存备用连接后，在能力验证中选择备用连接及对应角色；未经验证不会自动调用。请填写备用模型自己的上下文容量。</p>
-        <section class="rounded-lg border border-[#d8ddc4] bg-[#f4f5e8]/70 p-3" aria-labelledby="model-council-title">
-          <div class="flex items-start justify-between gap-4">
-            <div>
-              <div class="flex flex-wrap items-center gap-2">
-                <h3 id="model-council-title" class="text-sm font-semibold text-slate-900">多模型建模评审组</h3>
-                <span
-                  class="rounded-full border border-[#d8ddc4] bg-white px-2 py-0.5 text-[11px] font-medium text-[#55601f]">
-                  AI 生成 · 人工最终确认
-                </span>
+          <div v-if="activePage === 'connections'" class="settings-section-intro">
+            <label class="settings-toggle"><span>四位角色共用协调者的模型连接</span><input v-model="sharedCore" type="checkbox" /></label>
+            <div v-if="!sharedCore" class="settings-role-picker" role="group" aria-label="选择小队角色">
+              <button v-for="field in coreFields" :key="field.key" type="button" :aria-pressed="selectedCore === field.key"
+                @click="selectedCore = field.key">{{ field.label.replace('模型配置', '') }}</button>
+            </div>
+            <p v-else class="settings-hint">四位角色使用同一连接，只需填写一次。</p>
+          </div>
+
+          <div v-else-if="activePage === 'fallback'" class="settings-section-intro">
+            <label class="settings-toggle"><span>启用备用模型</span><input v-model="fallbackEnabled" type="checkbox" /></label>
+            <p class="settings-hint">主连接持续失败时，在相同服务地址与协议内切换。保存后需在能力验证中检查备用连接。</p>
+            <p v-if="!fallbackEnabled" class="settings-empty">启用后可配置备用模型的连接和容量。</p>
+          </div>
+
+          <div v-else-if="activePage === 'council'" class="settings-section-intro">
+            <label class="settings-toggle"><span>启用多模型建模评审组</span><input v-model="modelCouncilEnabled" type="checkbox" /></label>
+            <div v-if="modelCouncilEnabled" class="settings-role-picker" role="group" aria-label="选择评审角色">
+              <button v-for="field in councilFields" :key="field.key" type="button" :aria-pressed="selectedCouncil === field.key"
+                @click="selectedCouncil = field.key">{{ field.key === 'model_scout' ? '候选探索' : '匿名盲审' }}</button>
+            </div>
+            <p v-else class="settings-empty">启用后，分别配置候选探索与匿名盲审使用的模型。</p>
+          </div>
+
+          <section v-for="field in activeFields" :key="field.key" class="settings-connection" :aria-label="field.label">
+            <div class="settings-connection-heading">
+              <h4>{{ field.label }}</h4>
+              <span v-if="effectiveAgents[field.key]" class="settings-hint">
+                {{ effectiveAgents[field.key]?.configured ? '已配置' : '未配置完整' }} · {{ sourceLabel(effectiveAgents[field.key]?.source) }}
+              </span>
+            </div>
+            <div class="settings-form-grid">
+              <div class="settings-field">
+                <Label :for="`${field.key}-api-type`">API 类型</Label>
+                <Select v-model="agentForms[field.key].apiType">
+                  <SelectTrigger :id="`${field.key}-api-type`"><SelectValue placeholder="选择 API 类型" /></SelectTrigger>
+                  <SelectContent><SelectGroup><SelectLabel>API 类型</SelectLabel>
+                    <SelectItem v-for="opt in API_TYPE_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</SelectItem>
+                  </SelectGroup></SelectContent>
+                </Select>
               </div>
-              <p class="mt-1 text-[11px] leading-5 text-slate-600">
-                独立探索候选 → 匿名盲审 → 主建模手综合 → MATLAB 同口径实测。评审组只能提出方案，不能绕过质量门禁或人工审核。
-              </p>
-            </div>
-            <label class="inline-flex shrink-0 cursor-pointer items-center gap-2 text-xs font-medium text-slate-700">
-              <input v-model="modelCouncilEnabled" type="checkbox"
-                class="h-4 w-4 rounded border-slate-300 text-[#5f7000] focus:ring-2 focus:ring-[#7a8c00] focus:ring-offset-2" />
-              启用
-            </label>
-          </div>
-          <div v-if="modelCouncilEnabled" class="mt-2 flex flex-wrap gap-1.5" aria-label="模型评审组流程">
-            <span class="rounded-full bg-white px-2 py-1 text-[10px] text-slate-600 ring-1 ring-slate-200">主建模方案 A</span>
-            <span class="rounded-full bg-white px-2 py-1 text-[10px] text-slate-600 ring-1 ring-slate-200">独立候选 B</span>
-            <span class="rounded-full bg-white px-2 py-1 text-[10px] text-slate-600 ring-1 ring-slate-200">匿名质疑</span>
-            <span class="rounded-full bg-white px-2 py-1 text-[10px] text-slate-600 ring-1 ring-slate-200">统一实验矩阵</span>
-          </div>
-        </section>
-
-        <div v-for="field in visibleFields" :key="field.key" class="space-y-2">
-          <div class="flex items-center justify-between gap-3">
-            <h3 class="text-sm font-medium">{{ field.label }}</h3>
-            <span v-if="effectiveAgents[field.key]" :class="[
-              'inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium',
-              effectiveAgents[field.key]?.configured
-                ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                : 'border-amber-200 bg-amber-50 text-amber-700'
-            ]">
-              <span :class="[
-                'h-1.5 w-1.5 rounded-full',
-                effectiveAgents[field.key]?.configured ? 'bg-emerald-500' : 'bg-amber-500'
-              ]" aria-hidden="true"></span>
-              {{ effectiveAgents[field.key]?.configured ? '当前生效' : '配置不完整' }}
-              · {{ sourceLabel(effectiveAgents[field.key]?.source) }}
-            </span>
-          </div>
-          <div v-if="effectiveAgents[field.key]?.configured"
-            class="rounded-md bg-[hsl(var(--surface-subtle))] px-2.5 py-1.5 text-[11px] leading-5 text-slate-600">
-            <div class="font-medium text-slate-800">
-              {{ apiTypeLabel(effectiveAgents[field.key]?.api_type) }}
-              · {{ effectiveAgents[field.key]?.model_id }}
-            </div>
-            <div class="break-all">{{ effectiveAgents[field.key]?.base_url || '使用供应商 SDK 默认地址' }}</div>
-          </div>
-
-          <div class="grid grid-cols-2 gap-2">
-            <div class="space-y-1">
-              <Label :for="`${field.key}-api-type`" class="text-xs text-muted-foreground">API 类型</Label>
-              <Select v-model="agentForms[field.key].apiType">
-                <SelectTrigger class="w-full h-7 text-xs">
-                  <SelectValue placeholder="选择 API 类型" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    <SelectLabel>API 类型</SelectLabel>
-                    <SelectItem v-for="opt in API_TYPE_OPTIONS" :key="opt.value" :value="opt.value">
-                      {{ opt.label }}
-                    </SelectItem>
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div class="space-y-1">
-              <Label :for="`${field.key}-api-key`" class="text-xs text-muted-foreground">API Key</Label>
-              <Input :id="`${field.key}-api-key`" v-model.trim="agentForms[field.key].apiKey" type="password"
-                :placeholder="effectiveAgents[field.key]?.api_key_configured && !agentForms[field.key].apiKey
-                  ? '后端已配置（安全起见不回显）'
-                  : '请输入 API Key'" class="h-7 text-xs flex-1" />
-              <p v-if="effectiveAgents[field.key]?.api_key_configured && !agentForms[field.key].apiKey"
-                class="text-[11px] leading-4 text-emerald-700">
-                密钥正在使用；留空会继续沿用后端配置
-              </p>
-              <div v-if="validationResults[field.key].message" class="flex items-center">
-                <CheckCircle v-if="validationResults[field.key].valid" class="h-4 w-4 text-green-500" />
-                <XCircle v-else class="h-4 w-4 text-red-500" />
+              <div class="settings-field">
+                <Label :for="`${field.key}-api-key`">API Key</Label>
+                <Input :id="`${field.key}-api-key`" v-model.trim="agentForms[field.key].apiKey" type="password" autocomplete="off"
+                  :placeholder="effectiveAgents[field.key]?.api_key_configured ? '已保存，留空继续使用' : '请输入 API Key'" />
+              </div>
+              <div class="settings-field">
+                <Label :for="`${field.key}-base-url`">Base URL</Label>
+                <Input :id="`${field.key}-base-url`" v-model.trim="agentForms[field.key].baseUrl" placeholder="https://api.openai.com/v1" />
+              </div>
+              <div class="settings-field">
+                <Label :for="`${field.key}-model-id`">Model ID</Label>
+                <Input :id="`${field.key}-model-id`" v-model.trim="agentForms[field.key].modelId" placeholder="服务商提供的模型 ID" />
+              </div>
+              <div class="settings-field">
+                <Label :for="`${field.key}-context-window`">上下文窗口（token）</Label>
+                <Input :id="`${field.key}-context-window`" v-model.number="agentForms[field.key].contextWindow" type="number" min="4096" step="1024" />
+              </div>
+              <div v-if="field.key === 'fallback'" class="settings-field">
+                <Label for="fallback-max-tokens">单次输出上限（token）</Label>
+                <Input id="fallback-max-tokens" v-model.number="agentForms.fallback.maxTokens" type="number" min="1" step="1024" />
               </div>
             </div>
-          </div>
-
-          <div class="grid grid-cols-2 gap-2">
-            <div class="space-y-1">
-              <Label :for="`${field.key}-base-url`" class="text-xs text-muted-foreground">Base URL</Label>
-              <Input :id="`${field.key}-base-url`" v-model.trim="agentForms[field.key].baseUrl"
-                placeholder="https://api.openai.com/v1" class="h-7 text-xs" />
+            <p class="settings-hint">密钥不会回显；留空沿用已保存的密钥。{{ field.key === 'fallback' ? '容量或输出上限修改后需重新验证。' : '已有配置不代表能力验证通过。' }}</p>
+            <div class="settings-connection-actions">
+              <Button variant="outline" size="sm" :disabled="validating || saving || statusLoading" @click="validateCurrentConnection">
+                {{ validating ? '验证中…' : '测试当前文本连接（可能计费）' }}
+              </Button>
+              <button type="button" class="settings-text-button" @click="activePage = 'capabilities'">前往能力验证 →</button>
             </div>
-            <div class="space-y-1">
-              <Label :for="`${field.key}-model-id`" class="text-xs text-muted-foreground">Model ID</Label>
-              <Input :id="`${field.key}-model-id`" v-model.trim="agentForms[field.key].modelId"
-                placeholder="gpt-4o / claude-sonnet-4-20250514" class="h-7 text-xs" />
+            <p v-if="validationResults[field.key].message" role="status" class="settings-hint">{{ validationResults[field.key].message }}</p>
+          </section>
+
+          <p v-if="activePage === 'council'" class="settings-hint settings-note">AI 提出方案 → 主建模手综合 → 同口径实测。最终方案仍需人工确认。</p>
+
+          <section v-if="activePage === 'literature'" class="settings-literature">
+            <div class="settings-field">
+              <Label for="openalex-email">OpenAlex Email</Label>
+              <Input id="openalex-email" v-model.trim="openalexEmail" placeholder="用于文献检索的联系邮箱" />
             </div>
+            <p class="settings-hint">可选。了解 <a href="https://openalex.org/" target="_blank" rel="noopener noreferrer">OpenAlex 文献服务 ↗</a></p>
+            <Button variant="outline" size="sm" :disabled="validating || saving" @click="validateCurrentConnection">{{ validating ? '检查中…' : '检查邮箱设置' }}</Button>
+            <p v-if="validationResults.openalex_email.message" role="status" class="settings-hint">{{ validationResults.openalex_email.message }}</p>
+          </section>
+          <!-- 切换分类不丢失正在进行的验证。 -->
+          <div v-show="activePage === 'capabilities'" class="settings-capabilities">
+            <CapabilityPanel :key="capabilityRevision" />
           </div>
-          <div class="space-y-1">
-            <Label :for="`${field.key}-context-window`" class="text-xs text-muted-foreground">
-              上下文窗口（token）
-            </Label>
-            <Input :id="`${field.key}-context-window`" v-model.number="agentForms[field.key].contextWindow"
-              type="number" placeholder="128000" class="h-7 text-xs" min="4096" step="1024" />
-          </div>
-          <div v-if="field.key === 'fallback'" class="space-y-1">
-            <Label for="fallback-max-tokens" class="text-xs text-muted-foreground">备用模型单次输出上限（token）</Label>
-            <Input id="fallback-max-tokens" v-model.number="agentForms.fallback.maxTokens" type="number" min="1" step="1024" class="h-7 text-xs" />
-            <p class="text-xs text-muted-foreground">修改容量或输出上限后需重新验证；超过上限的请求会停止，不会自动截短。</p>
-          </div>
-          <div v-if="validationResults[field.key].message" :class="[
-            'text-xs px-2 py-1 rounded text-left border',
-            validationResults[field.key].valid
-              ? 'bg-green-50 text-green-700 border-green-200'
-              : 'bg-red-50 text-red-700 border-red-200'
-          ]">
-            {{ validationResults[field.key].message }}
-          </div>
-        </div>
+        </main>
       </div>
 
-      <div class="space-y-2">
-        <h3 class="text-sm font-medium">其他</h3>
-        <Label for="openalex-email" class="text-xs text-muted-foreground">OpenAlex Email</Label>
-        <div class="text-xs text-muted-foreground">
-          使用 email 注册账号从
-          <a href="https://openalex.org/" target="_blank" rel="noopener noreferrer"
-            class="text-blue-600 hover:text-blue-800 underline text-xs">OpenAlex</a>
-          获取访问文献权利
+      <footer class="settings-footer">
+        <div class="settings-footer-status">
+          <div v-if="statusError" role="alert" class="settings-error"><CircleAlert class="h-4 w-4 shrink-0" /><span>{{ statusError }}</span><button type="button" @click="loadEffectiveConfig">重试读取</button></div>
+          <div v-else-if="saveError" role="alert" class="settings-error"><XCircle class="h-4 w-4 shrink-0" /><span>{{ saveError }}</span></div>
+          <span v-else-if="saveSuccess" role="status">{{ saveSuccess }}</span>
+          <span v-else>切换分类保留编辑，保存后生效</span>
         </div>
-        <Input id="openalex-email" v-model.trim="openalexEmail" placeholder="请输入 OpenAlex Email"
-          class="h-7 text-xs flex-1" />
-        <div v-if="validationResults.openalex_email.message" :class="[
-          'text-xs px-2 py-1 rounded text-left border',
-          validationResults.openalex_email.valid
-            ? 'bg-green-50 text-green-700 border-green-200'
-            : 'bg-red-50 text-red-700 border-red-200'
-        ]">
-          {{ validationResults.openalex_email.message }}
+        <div class="settings-footer-actions">
+          <Button v-if="activeFields.length || activePage === 'literature'" variant="ghost" size="sm" :disabled="validating || saving" @click="resetCurrentConnection">清空当前页</Button>
+          <Button variant="outline" size="sm" :disabled="saving" @click="updateOpen(false)">关闭</Button>
+          <Button size="sm" :disabled="validating || saving || statusLoading || !!statusError" @click="saveToStore">{{ saving ? '保存中…' : '保存设置' }}</Button>
         </div>
-      </div>
-
-      <div class="flex justify-between items-center pt-3 border-t">
-        <div class="flex justify-between items-center gap-2">
-          <Button variant="secondary" class="h-7 text-xs px-3" :disabled="validating || saving"
-            @click="validateAllApiKeys">
-            {{ validating ? '验证中...' : '测试文本连接（可能计费）' }}
-          </Button>
-          <Button variant="secondary" class="h-7 text-xs px-3" :disabled="validating || saving" @click="resetAll">
-            重置
-          </Button>
-        </div>
-        <div class="flex space-x-2">
-          <Button variant="outline" class="h-7 text-xs px-3" :disabled="saving" @click="updateOpen(false)">
-            取消
-          </Button>
-          <Button class="h-7 text-xs px-3" :disabled="validating || saving" @click="saveAndClose">
-            {{ saving ? '保存中...' : '保存' }}
-          </Button>
-        </div>
-      </div>
-      <CapabilityPanel :key="capabilityRevision" />
+      </footer>
     </DialogContent>
   </Dialog>
 </template>
+
+<style scoped>
+:global(.settings-dialog) {
+  width: min(960px, calc(100vw - 40px)); max-width: none;
+  height: min(660px, calc(100dvh - 48px));
+  display: flex; flex-direction: column; gap: 0; padding: 0; overflow: hidden;
+  border-radius: 18px;
+}
+.settings-header { flex: none; padding: 20px 28px 16px; border-bottom: 1px solid hsl(var(--border)); text-align: left; }
+.settings-status { display: flex; align-items: center; gap: 6px; min-height: 18px; font-size: 12px; color: hsl(var(--muted-foreground)); }
+.settings-body { position: relative; display: grid; grid-template-columns: 174px minmax(0, 1fr); flex: 1; min-height: 0; }
+.settings-nav { display: flex; flex-direction: column; gap: 5px; padding: 20px 12px; border-right: 1px solid hsl(var(--border)); background: hsl(var(--muted) / .35); }
+.settings-nav button { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border-radius: 9px; font-size: 13px; text-align: left; color: hsl(var(--muted-foreground)); }
+.settings-nav button:hover, .settings-nav button.selected { color: hsl(var(--foreground)); background: hsl(var(--muted)); }
+.settings-nav button.selected { font-weight: 600; }
+.settings-content { grid-column: 2; grid-row: 1; min-height: 0; min-width: 0; padding: 20px 28px; overflow-y: auto; overscroll-behavior: contain; }
+.settings-page-heading { margin-bottom: 14px; }
+.settings-page-heading h3 { font-size: 18px; font-weight: 600; line-height: 1.4; }
+.settings-page-heading p, .settings-hint { font-size: 12px; line-height: 1.65; color: hsl(var(--muted-foreground)); }
+.settings-page-heading p { margin-top: 4px; }
+.settings-section-intro { margin-bottom: 12px; }
+.settings-toggle { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 13px; cursor: pointer; }
+.settings-toggle input { width: 16px; height: 16px; accent-color: hsl(var(--foreground)); }
+.settings-section-intro > .settings-hint { margin-top: 8px; }
+.settings-role-picker { display: flex; gap: 4px; margin-top: 14px; padding: 3px; border-radius: 9px; background: hsl(var(--muted) / .65); }
+.settings-role-picker button { flex: 1; border-radius: 6px; padding: 6px 8px; font-size: 12px; color: hsl(var(--muted-foreground)); }
+.settings-role-picker button[aria-pressed="true"] { background: hsl(var(--background)); color: hsl(var(--foreground)); box-shadow: 0 1px 3px #00000010; }
+.settings-connection-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.settings-connection-heading h4 { font-size: 13px; font-weight: 600; }
+.settings-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 16px; }
+.settings-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.settings-field label { font-size: 12px; color: hsl(var(--muted-foreground)); }
+.settings-field :deep(input), .settings-field :deep(button[role="combobox"]) { height: 34px; border-radius: 8px; font-size: 13px; }
+.settings-connection > .settings-hint { margin-top: 10px; }
+.settings-connection-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.settings-text-button { font-size: 12px; color: hsl(var(--muted-foreground)); }
+.settings-text-button:hover, .settings-literature a { color: hsl(var(--foreground)); text-decoration: underline; text-underline-offset: 3px; }
+.settings-empty { margin-top: 24px; padding: 24px; border: 1px dashed hsl(var(--border)); border-radius: 10px; font-size: 13px; color: hsl(var(--muted-foreground)); }
+.settings-note { margin-top: 14px; }
+.settings-literature { display: grid; justify-items: start; gap: 16px; }
+.settings-literature .settings-field { width: 100%; }
+.settings-capabilities { min-width: 0; }
+.settings-footer { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 24px; border-top: 1px solid hsl(var(--border)); }
+.settings-footer-status { min-width: 0; font-size: 11px; line-height: 1.5; color: hsl(var(--muted-foreground)); }
+.settings-footer-actions { display: flex; flex-shrink: 0; gap: 8px; }
+.settings-error { display: flex; align-items: center; gap: 6px; color: hsl(var(--destructive)); }
+.settings-error button { flex-shrink: 0; text-decoration: underline; }
+.settings-mobile-nav { display: none; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
+@media (max-width: 640px) {
+  :global(.settings-dialog) { width: calc(100vw - 20px); height: calc(100dvh - 24px); border-radius: 14px; }
+  .settings-header { padding: 18px 20px 12px; }
+  .settings-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .settings-nav { display: none; }
+  .settings-mobile-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 20px; border-bottom: 1px solid hsl(var(--border)); font-size: 12px; }
+  .settings-mobile-nav select { min-width: 150px; padding: 7px 10px; border: 1px solid hsl(var(--border)); border-radius: 8px; background: hsl(var(--background)); }
+  .settings-content { grid-column: 1; grid-row: 2; padding: 18px 20px; }
+  .settings-form-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .settings-footer { padding: 12px 16px; flex-wrap: wrap; }
+  .settings-footer-actions { margin-left: auto; }
+  .settings-connection-heading { flex-wrap: wrap; gap: 4px; }
+}
+</style>
