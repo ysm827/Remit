@@ -441,7 +441,8 @@ function resetAll(): void {
         class="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
         role="alert">
         <CircleAlert class="h-3.5 w-3.5 shrink-0" />
-        {{ statusError }}
+        <span class="flex-1">{{ statusError }}</span>
+        <Button variant="outline" size="sm" @click="loadEffectiveConfig">重试读取</Button>
       </div>
       <div v-else-if="Object.keys(effectiveAgents).length"
         class="flex items-center justify-between rounded-md border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs">

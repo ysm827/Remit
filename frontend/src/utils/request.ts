@@ -14,4 +14,18 @@ const http = axios.create({
 	timeout: 10_000,
 });
 
+// 开发服务器或反向代理的 SPA 回退可能以 200 返回 HTML。
+// 阻止它进入配置、项目列表等状态，避免后续渲染报错而冻结界面。
+http.interceptors.response.use((response) => {
+	if (
+		(!response.config.responseType || response.config.responseType === "json") &&
+		typeof response.data === "string" &&
+		(/text\/html/i.test(String(response.headers["content-type"] || "")) ||
+			/^\s*(?:<!doctype html|<html)/i.test(response.data))
+	) {
+		throw new Error("接口返回了网页，请检查后端连接后重试");
+	}
+	return response;
+});
+
 export default http;

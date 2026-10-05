@@ -85,8 +85,21 @@ export function validateApiKey(params: ValidateApiKeyRequest) {
 }
 
 /** 查询后端各 Agent 的配置来源与完整度 */
-export function getApiConfigStatus() {
-	return request.get<ApiConfigStatusResponse>(CONFIG_ENDPOINTS.status);
+export async function getApiConfigStatus() {
+	const response = await request.get<ApiConfigStatusResponse>(CONFIG_ENDPOINTS.status);
+	const data = response.data;
+	if (
+		!data || typeof data !== "object" ||
+		!data.agents || typeof data.agents !== "object" || Array.isArray(data.agents) ||
+		!data.agents.coordinator ||
+		typeof data.model_council_enabled !== "boolean" ||
+		Object.values(data.agents).some((agent) =>
+			!agent || typeof agent !== "object" || typeof agent.configured !== "boolean",
+		)
+	) {
+		throw new Error("后端配置响应不完整，请重试");
+	}
+	return response;
 }
 
 /** 校验 OpenAlex 联系邮箱 */
