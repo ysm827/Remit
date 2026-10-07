@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ComposerSelect from "@/pages/team/ComposerSelect.vue";
 import {
 	type AgentApiConfigStatus,
 	getApiConfigStatus,
@@ -433,9 +434,7 @@ function resetCurrentConnection(): void {
           </button>
         </nav>
         <label class="settings-mobile-nav">设置分类
-          <select v-model="activePage" aria-label="设置分类">
-            <option v-for="page in SETTINGS_PAGES" :key="page.key" :value="page.key">{{ page.label }}</option>
-          </select>
+          <ComposerSelect :model-value="activePage" @update:model-value="activePage = $event as SettingsPage" label="设置分类" title="设置分类" :options="SETTINGS_PAGES.map(page=>({value:page.key,label:page.label}))" />
         </label>
 
         <main ref="contentPane" class="settings-content" :aria-label="currentPage.label">

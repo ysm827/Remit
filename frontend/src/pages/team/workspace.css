@@ -6,7 +6,7 @@
 	display: flex;
 	height: 100dvh;
 	overflow: hidden;
-	background: #fff;
+	background: #f7f7f7;
 	color: var(--ink);
 	font: 14px / 1.5 -apple-system, BlinkMacSystemFont, "Segoe UI",
 		"Microsoft YaHei", sans-serif;
@@ -23,15 +23,15 @@ button:disabled {
 	cursor: not-allowed;
 }
 .project-rail {
-	--rail-width: 240px;
+	--rail-width: 244px;
 	width: var(--rail-width);
 	flex-shrink: 0;
 	background: #f7f7f7;
-	border-right: 1px solid #ebebeb;
-	padding: 16px 12px 12px;
+	border-right: 0;
+	padding: 0 12px 12px;
 	display: flex;
 	flex-direction: column;
-	gap: 10px;
+	gap: 4px;
 	overflow: hidden;
 	opacity: 1;
 	transition:
@@ -49,14 +49,15 @@ button:disabled {
 	display: flex;
 	align-items: center;
 	gap: 9px;
-	padding: 0 8px 14px;
-	height: 38px;
-	font-size: 18px;
-	letter-spacing: -.4px;
+	padding: 0 10px;
+	height: 56px;
+	flex-shrink: 0;
+	font-size: 16px;
+	letter-spacing: -.3px;
 }
 .brand img {
-	width: 24px;
-	height: 24px;
+	width: 22px;
+	height: 22px;
 	object-fit: contain;
 }
 .new-chat,
@@ -81,7 +82,8 @@ button:disabled {
 	background: transparent;
 	border: 0;
 	border-radius: 6px;
-	padding: 8px 10px;
+	padding: 8px 0;
+	min-width: 0;
 	width: 100%;
 	font-size: 13px;
 }
@@ -89,8 +91,8 @@ button:disabled {
 	display: flex;
 	justify-content: space-between;
 	color: var(--muted);
-	font-size: 11px;
-	padding: 12px 9px 0;
+	font-size: 12px;
+	padding: 24px 10px 8px;
 }
 .project-list {
 	flex: 1;
@@ -154,7 +156,7 @@ button:disabled {
 	background: #f4f4f4;
 }
 .rail-empty {
-	padding: 15px 10px;
+	padding: 8px 10px;
 	font-size: 12px;
 }
 .rail-link {
@@ -172,10 +174,10 @@ button:disabled {
 	display: flex;
 	align-items: center;
 	gap: 10px;
-	height: 52px;
+	height: 56px;
 	flex-shrink: 0;
 	padding: 0 16px;
-	border-bottom: 1px solid #eeeeee;
+	border-bottom: 0;
 }
 .header-title {
 	min-width: 0;
@@ -225,34 +227,24 @@ button:disabled {
 	background: #eee;
 	color: #111;
 }
-.workspace-tabs {
-	display: flex;
-	gap: 3px;
-	padding: 3px;
-	flex-shrink: 0;
-	border-radius: 7px;
-	background: #f5f5f5;
-}
-.workspace-tabs button {
-	color: #737373;
-	padding: 5px 11px;
-	font-size: 12px;
-	border-radius: 5px;
-}
-.workspace-tabs button[aria-current="page"] {
-	color: #202020;
-	background: #fff;
-	box-shadow: 0 1px 3px #00000012;
-}
-.workspace-tabs button[aria-current="page"]::after {
-	content: none;
-}
+.rail-views { display: grid; gap: 3px; padding: 8px 0 12px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+.rail-views .rail-navigation { color: var(--ink); font-size: 13px; }
+.rail-views .rail-navigation svg { color: #737373; flex-shrink: 0; }
+.rail-views .rail-navigation.selected { background: #e9e9e9; font-weight: 550; }
+.header-library-link { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.header-library-link:hover { color: var(--ink); }
+.header-title > .header-separator { color: #b8b8b8; font-weight: 400; flex-shrink: 0; }
 .workspace-content {
 	display: flex;
 	flex: 1;
 	min-height: 0;
 	min-width: 0;
 	position: relative;
+	margin: 0 8px 8px 0;
+	border: 1px solid #e7e7e7;
+	border-radius: 12px;
+	overflow: hidden;
+	background: #fff;
 }
 .conversation {
 	flex: 1;
@@ -264,7 +256,7 @@ button:disabled {
 .conversation.new-project {
 	justify-content: flex-start;
 	overflow-y: auto;
-	padding-top: clamp(24px, 8vh, 88px);
+	padding-top: clamp(48px, 13vh, 150px);
 	padding-bottom: 24px;
 }
 .new-project > .composer-area { flex-shrink: 0; }
@@ -274,7 +266,7 @@ button:disabled {
 	overflow-y: auto;
 }
 .timeline {
-	max-width: 840px;
+	max-width: 792px;
 	margin: 0 auto;
 	padding: 36px 28px 12px;
 }
@@ -367,44 +359,46 @@ details pre {
 .composer-area {
 	position: relative;
 	width: 100%;
-	max-width: 840px;
+	max-width: 792px;
 	margin: 0 auto;
 	padding: 8px 24px 12px;
 	flex-shrink: 0;
 }
 .composer {
 	border: 1px solid #dedede;
-	border-radius: 16px;
+	border-radius: 14px;
 	background: #fafafa;
 	box-shadow: 0 2px 8px #00000005;
+	transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 .composer:focus-within {
 	border-color: #a9a9a9;
+	box-shadow: 0 0 0 2px #00000004;
 }
 .composer textarea {
 	display: block;
 	width: 100%;
-	height: 56px;
-	min-height: 56px;
+	height: 72px;
+	min-height: 72px;
 	max-height: 160px;
 	resize: none;
 	padding: 15px 16px 9px;
 	font: inherit;
-	font-size: 14px;
+	font-size: 15px;
 	line-height: 1.65;
 	outline: none;
 	background: transparent;
 	border: 0;
 }
 .composer textarea::placeholder {
-	color: #8a8a8a;
+	color: #767676;
 }
 .composer-toolbar {
 	display: flex;
 	justify-content: space-between;
 	align-items: center;
 	gap: 6px;
-	padding: 2px 9px 9px;
+	padding: 4px 12px 12px;
 }
 .composer-options,
 .send-actions {
@@ -417,7 +411,7 @@ details pre {
 	background: transparent;
 	border: 0;
 	color: #626262;
-	font-size: 12px;
+	font-size: 13px;
 	padding: 5px 3px;
 	max-width: 190px;
 }
@@ -436,8 +430,8 @@ details pre {
 .composer-hint {
 	text-align: center;
 	font-size: 11px;
-	color: #8b8b8b;
-	padding: 7px 0 0;
+	color: #737373;
+	padding: 9px 0 0;
 }
 .attachment-control {
 	position: relative;
@@ -516,21 +510,6 @@ details pre {
 }
 .attachment-list button {
 	display: flex;
-}
-.intake-panel {
-	border: 1px solid #ddd;
-	padding: 12px;
-	background: white;
-	border-radius: 10px;
-	margin-bottom: 10px;
-	max-height: 40vh;
-	overflow: auto;
-}
-.intake-panel > header {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	margin-bottom: 10px;
 }
 .send-error {
 	padding: 9px;
@@ -878,7 +857,7 @@ details pre {
 }
 @media (max-width: 1200px) {
 	.project-rail {
-		--rail-width: 205px;
+		--rail-width: 220px;
 	}
 	.copilot {
 		width: 310px;
@@ -898,7 +877,7 @@ details pre {
 }
 @media (max-width: 850px) {
 	.project-rail {
-		--rail-width: 240px;
+		--rail-width: 244px;
 		position: fixed;
 		inset: 0 auto 0 0;
 		width: 240px;
@@ -937,9 +916,6 @@ details pre {
 	.header-title small {
 		display: none;
 	}
-	.workspace-tabs {
-		padding: 0 18px;
-	}
 	.copilot {
 		position: absolute;
 		inset: 0 0 0 auto;
@@ -966,57 +942,6 @@ details pre {
 	}
 }
 
-.contest-options {
-	border: 1px solid #ddd;
-	border-radius: 9px;
-	padding: 14px;
-	margin-bottom: 12px;
-	background: #fafafa;
-	font-size: 12px;
-	max-height: 36vh;
-	overflow: auto;
-}
-.contest-options header {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	margin-bottom: 10px;
-}
-.contest-fields {
-	display: flex;
-	gap: 18px;
-	margin-bottom: 12px;
-}
-.contest-fields input {
-	width: 75px;
-}
-.contest-fields input,
-.contest-fields select {
-	background: white;
-	border: 1px solid #ddd;
-	padding: 5px;
-	border-radius: 4px;
-	margin-left: 6px;
-}
-.contest-options textarea {
-	width: 100%;
-	height: 70px;
-	resize: vertical;
-	padding: 8px;
-	border: 1px solid #ddd;
-	border-radius: 5px;
-	font: inherit;
-	background: white;
-}
-.contest-options small {
-	display: block;
-	color: #777;
-	margin: 8px 0;
-}
-.contest-options a {
-	text-decoration: underline;
-	color: #666;
-}
 
 .project-row:hover .project-more,
 .project-row:focus-within .project-more {
@@ -1024,18 +949,6 @@ details pre {
 }
 .project-search:focus {
 	background: #eee;
-}
-.display-options {
-	position: absolute;
-	top: 48px;
-	right: 16px;
-	z-index: 60;
-	width: 210px;
-	padding: 16px;
-	background: #fff;
-	border: 1px solid var(--line);
-	border-radius: 9px;
-	box-shadow: 0 8px 28px #00000014;
 }
 .message-tools {
 	display: flex;
@@ -1062,47 +975,7 @@ details pre {
 .markdown-body {
 	white-space: normal;
 }
-.adjustment-menu {
-	background: #fff;
-	border: 1px solid #e3e3e3;
-	box-shadow: 0 8px 30px #00000010;
-	border-radius: 10px;
-	padding: 7px;
-	margin-bottom: 8px;
-}
-.adjustment-menu header {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	padding: 2px 8px;
-	font-size: 12px;
-}
-.adjustment-menu > button {
-	display: flex;
-	flex-direction: column;
-	gap: 3px;
-	text-align: left;
-	width: 100%;
-	padding: 10px;
-	border-radius: 6px;
-	font-size: 13px;
-}
-.adjustment-menu > button:hover {
-	background: #f4f4f4;
-}
-.adjustment-menu small {
-	color: #777;
-	font-size: 12px;
-}
 @media (max-width: 850px) {
-	.workspace-tabs {
-		padding: 2px;
-		gap: 0;
-	}
-	.workspace-tabs button {
-		padding: 5px 7px;
-		font-size: 11px;
-	}
 	.header-title {
 		flex: 1;
 	}
@@ -1135,4 +1008,62 @@ details pre {
 }
 
 .role-heading,.role-name{display:flex;align-items:center;gap:8px}
-.role-heading{margin-bottom:9px;font-size:12px;font-weight:550;color:var(--text-muted,#666)}
+.role-heading{margin-bottom:9px;font-size:13px;font-weight:550;color:var(--ink)}
+
+/* Keep the existing palette; let task hierarchy carry the interface. */
+.project-search-field{display:flex;align-items:center;gap:9px;padding:0 11px;color:var(--muted);border-radius:7px}
+.project-search-field:focus-within{background:#eee}
+.project-search-field svg{flex-shrink:0}
+.new-chat.active{background:#ebebeb;color:var(--ink)}
+.new-chat{font-size:13px;padding:8px 10px;margin-bottom:2px}
+.new-project .composer-area{padding-top:0}
+.new-project .composer-hint{text-align:right;font-size:11px}
+@media(max-width:600px){
+ .conversation.new-project{padding-top:clamp(42px,13vh,100px)}
+ .new-project .composer-area{padding-left:20px;padding-right:20px}
+ .composer-options{gap:2px;flex-wrap:wrap}
+ .composer-options select{max-width:128px;font-size:12px}
+}
+@media(prefers-reduced-motion:reduce){.composer{transition:none}}
+
+/* A continuous application frame surrounds the document surface. */
+.workspace-header{background:#f7f7f7}
+.project-search-field{font-size:13px}
+.project-search{font-size:13px;padding:7px 0}
+.rail-navigation{display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;text-align:left;border-radius:7px;color:#626262;font-size:13px}
+.rail-navigation:hover,.rail-navigation.selected{background:#ebebeb;color:var(--ink)}
+.rail-empty p{color:#777}
+.rail-footer{padding-top:8px}
+.new-project .composer-area{max-width:880px}
+.composer-context{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:46px;margin:0 12px -12px;padding:5px 12px 17px;background:#f2f2f2;border:1px solid #ededed;border-bottom:0;border-radius:13px 13px 0 0;font-size:12px;color:#626262}
+.context-label{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.context-options{display:flex;align-items:center;gap:12px;min-width:0}
+.new-project .composer{position:relative;background:#fff;border-radius:18px;box-shadow:0 4px 20px #00000006}
+.new-project .composer textarea{height:80px;min-height:80px;padding:18px 19px 12px}
+.new-project .composer-toolbar{padding:4px 14px 12px}
+.composer-attachment-hint{font-size:12px;color:#858585}
+@media(max-width:850px){
+ .workspace-content{margin:0 6px 6px;border-radius:10px}
+ .project-rail{width:var(--rail-width);box-shadow:8px 0 30px #0000000a}
+ .sidebar-open .project-rail{padding-top:0}
+}
+@media(max-width:600px){
+ .conversation.new-project{padding-top:clamp(32px,9vh,70px)}
+ .composer-context{margin-left:8px;margin-right:8px;padding-left:10px;padding-right:8px;gap:6px}
+ .context-label{font-size:11px;gap:5px}
+ .context-options{gap:6px}
+ .context-options .icon-button{width:24px}
+ .new-project .composer-area{padding-left:12px;padding-right:12px}
+}
+
+/* Transient controls live in floating surfaces, never in the document flow. */
+.contest-popover-form{font-size:12px}.contest-name{color:#777;margin:0 0 10px;font-size:11px}
+.contest-setting-row{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:42px;border-bottom:1px solid #f1f1f1}
+.contest-setting-row input[type=number]{width:84px;padding:4px 8px;background:#f7f7f7;border:1px solid #e8e8e8;border-radius:7px;text-align:right}
+.contest-setting-row input[type=checkbox]{accent-color:#7d8e53;width:15px;height:15px}
+.contest-popover-form small{display:block;color:#858585;font-size:11px;line-height:1.6;margin:8px 0}
+.contest-notes{display:block;margin-top:15px}.contest-notes textarea{margin-top:7px}.contest-popover-form a{font-size:11px;color:#66754c;text-decoration:underline}
+.shared-board.floating-board{width:auto;max-width:none;border:0;padding:0;background:transparent;position:static;height:auto;box-shadow:none}
+.adjustment-choices{display:grid;gap:4px}.adjustment-choices button{display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:10px;border-radius:8px;text-align:left}.adjustment-choices button:hover{background:#f5f5f5}.adjustment-choices small{color:#888;font-size:11px}
+
+.conversation.copilot{position:absolute;inset:0 0 0 auto;width:min(420px,100%);z-index:25;box-shadow:-8px 0 28px #0000000d;border-left:1px solid #e7e7e7}

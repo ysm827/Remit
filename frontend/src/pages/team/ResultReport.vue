@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import OverlayDetails from "@/pages/team/OverlayDetails.vue";
 import { computed, ref, watch } from "vue";
 import ArtifactContent from "./ArtifactContent.vue";
 import { artifactLabel, asRecord } from "./artifactLabels";
@@ -58,7 +59,7 @@ const hasReport = computed(() => Object.keys(report.value).length > 0);
   <section v-for="[key, value] in (!section || section === 'checks' ? sections : [])" :key="key" class="report-section"><h3>{{ artifactLabel(key) }}</h3><ArtifactContent :value="value" :field="key" /></section>
   <section v-if="(!section || section === 'figures') && images.length" class="report-section"><h3>结果图表</h3><div class="figures"><figure v-for="file in visibleImages" :key="file.filename"><a :href="file.url" target="_blank" rel="noopener"><img :src="file.url" :alt="file.filename" loading="lazy" /></a><figcaption>{{ file.filename }}</figcaption></figure></div><nav v-if="figurePages > 1" class="figure-pages" aria-label="图表分页"><button :disabled="figurePage===1" @click="figurePage--">上一页</button><span>{{figurePage}} / {{figurePages}} · 共 {{images.length}} 张</span><button :disabled="figurePage===figurePages" @click="figurePage++">下一页</button></nav></section>
   <section v-if="(!section || section === 'checks') && record.modeler_review" class="report-section"><h3>建模复核</h3><ArtifactContent :value="record.modeler_review" /></section>
-  <details v-if="!section && hasReport && record.coder_response"><summary>计算过程</summary><ArtifactContent :value="record.coder_response" /></details>
+  <OverlayDetails title="计算过程" v-if="!section && hasReport && record.coder_response"><template #trigger>计算过程</template><ArtifactContent :value="record.coder_response" /></OverlayDetails>
   <ArtifactContent v-if="section === 'process' || (!section && !hasReport)" :value="record.coder_response ?? result" />
   <p v-if="section === 'figures' && !images.length" class="report-note">本步骤尚未登记结果图表。可在相关文件中查看其他产物。</p>
   <p v-if="section === 'checks' && !hasReport && !record.modeler_review" class="report-note">尚未保存核验报告，不能据此判断结果通过。</p>

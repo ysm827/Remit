@@ -1,9 +1,10 @@
+import "./helpers/stub-floating-panels";
 import UserMessage from "@/pages/team/UserMessage.vue";
 import { mount } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
 
 describe("长用户消息", () => {
-	it("默认折叠，展开和收起均保留完整内容", async () => {
+	it("正文预览高度不变，完整消息在浮窗阅读", async () => {
 		const content = Array.from(
 			{ length: 12 },
 			(_, index) => `第 ${index + 1} 行赛题要求`,
@@ -13,14 +14,15 @@ describe("长用户消息", () => {
 		expect(wrapper.get("p").classes()).toContain("message-collapsed");
 		expect(button.attributes("aria-expanded")).toBe("false");
 		expect(button.attributes("aria-controls")).toBe(
-			wrapper.get("p").attributes("id"),
+			`${wrapper.get("p").attributes("id")}-reader`,
 		);
 		await button.trigger("click");
-		expect(wrapper.get("p").classes()).not.toContain("message-collapsed");
+		expect(wrapper.get("p").classes()).toContain("message-collapsed");
 		expect(wrapper.get("p").text()).toBe(content);
-		expect(button.text()).toBe("收起");
-		await button.trigger("click");
-		expect(button.text()).toBe("展开全文");
+		expect(wrapper.get('[role="dialog"] p').text()).toBe(content);
+		await wrapper.get('[aria-label="关闭完整消息"]').trigger("click");
+		expect(button.attributes("aria-expanded")).toBe("false");
+		expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
 		expect(wrapper.get("p").text()).toBe(content);
 		wrapper.unmount();
 	});

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FloatingPanel from "./FloatingPanel.vue";
 import { type MarkdownContext, renderMarkdown } from "@/utils/markdown";
 import { computed, inject, ref, useId } from "vue";
 import { artifactLabel, asRecord, readableValue } from "./artifactLabels";
@@ -55,8 +56,8 @@ const long = computed(
   <dl v-else-if="entries.length" class="content-fields"><div v-for="[key, item] in entries" :key="key"><dt>{{ artifactLabel(key) }}</dt><dd><ArtifactContent :value="item" :field="key" /></dd></div></dl>
   <p v-else-if="value !== null && typeof value === 'object'" class="muted">暂无记录</p>
   <template v-else>
-   <div :id="id" class="reader" :class="{ clipped: long && !expanded }" v-html="renderMarkdown(text, {}, markdownContext())" />
-   <button v-if="long" class="expand" :aria-expanded="expanded" :aria-controls="id" @click="expanded = !expanded">{{ expanded ? '收起正文' : '展开全文' }}</button>
+   <div :id="id" class="reader" :class="{ clipped: long }" v-html="renderMarkdown(text, {}, markdownContext())" />
+   <button v-if="long" class="expand" :aria-expanded="expanded" :aria-controls="`${id}-reader`" aria-haspopup="dialog" @click="expanded = true">查看全文</button><FloatingPanel :id="`${id}-reader`" v-model:open="expanded" title="完整正文" :width="680"><div class="reader" v-html="renderMarkdown(text, {}, markdownContext())" /></FloatingPanel>
   </template>
  </div>
 </template>

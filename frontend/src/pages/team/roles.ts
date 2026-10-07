@@ -1,8 +1,8 @@
 export const roleLabels: Record<string, string> = {
-	coordinator: "团团 · 协调手",
-	modeler: "灵灵 · 建模手",
-	coder: "点点 · 代码手",
-	writer: "墨墨 · 论文手",
+	coordinator: "Remit",
+	modeler: "建模",
+	coder: "计算",
+	writer: "论文",
 	all: "全体角色",
 	user: "你",
 };

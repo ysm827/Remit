@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import OverlayDetails from "@/pages/team/OverlayDetails.vue";
 import type { TeamEvent, TeamState } from "@/apis/teamApi";
 import { computed, ref } from "vue";
 import RoleAvatar from "./RoleAvatar.vue";
@@ -9,7 +10,6 @@ const props = defineProps<{
 	expanded?: boolean;
 	state?: TeamState | null;
 }>();
-const rawOpen = ref(false);
 const limit = ref(30);
 const statuses: Record<string, string> = {
 	running: "进行中",
@@ -211,9 +211,7 @@ const time = (value: string) =>
 		hour: "2-digit",
 		minute: "2-digit",
 	});
-function toggleRaw(event: Event) {
-	rawOpen.value = (event.target as HTMLDetailsElement).open;
-}
+
 </script>
 
 <template>
@@ -223,13 +221,13 @@ function toggleRaw(event: Event) {
    <p v-if="completed.length" class="completed-line"><span class="detail-label">最近完成</span>{{ completed.map(s => s.label).join('、') }}</p>
    <p v-if="stage && useful.length" class="current-line"><span class="detail-label">当前进展</span>{{ short(currentDetail) }}</p>
    <p v-if="attention" class="attention-note" role="status">{{ attention }}</p>
-   <div v-if="warnings.length" class="warning-note"><p><span class="detail-label">仍需核验</span>{{ warnings.map(s => s.label + (s.status === 'skipped' ? '（已跳过，未验证）' : '')).join('、') }}<span v-if="warningIssues.length">（{{ warningIssues.length }} 项）</span></p><details v-if="warningIssues.length"><summary>查看待核验事项</summary><ul><li v-for="issue in warningIssues" :key="issue">{{ issue }}</li></ul></details></div>
+   <div v-if="warnings.length" class="warning-note"><p><span class="detail-label">仍需核验</span>{{ warnings.map(s => s.label + (s.status === 'skipped' ? '（已跳过，未验证）' : '')).join('、') }}<span v-if="warningIssues.length">（{{ warningIssues.length }} 项）</span></p><OverlayDetails title="待核验事项" v-if="warningIssues.length"><template #trigger>查看待核验事项</template><ul><li v-for="issue in warningIssues" :key="issue">{{ issue }}</li></ul></OverlayDetails></div>
    <ol v-if="milestones.length" class="milestones" aria-label="最近关键进展"><li v-for="event in milestones" :key="event.seq"><span>{{ short(progressText(event)) }}</span><time>{{ time(event.at) }}</time></li></ol>
    <p v-else-if="!stage" class="progress-empty">尚未收到阶段结果；工具调用次数不代表完成进度。</p>
    <footer class="progress-meta"><span v-if="latestAt">最近活动 {{ time(latestAt) }}</span><span v-if="calls">工具调用 {{ calls }} 次</span><span v-if="repairs">自动修复 {{ repairs }} 次</span></footer>
-   <details class="raw-log" :open="expanded" @toggle="toggleRaw"><summary>查看执行明细</summary>
-    <template v-if="rawOpen || expanded"><button v-if="events.length > limit" @click="limit += 50">加载更早的日志</button><div class="activity-list"><details v-for="event in raw" :key="event.seq" class="activity-entry"><summary><span>{{ short(event.content,160) }}</span><time>{{ time(event.at) }}</time></summary><pre>{{ event.content }}</pre><pre>{{ JSON.stringify(event.data,null,2) }}</pre></details></div></template>
-   </details>
+   <OverlayDetails class="raw-log" title="执行明细"><template #trigger>查看执行明细</template>
+    <button v-if="events.length > limit" @click="limit += 50">加载更早的日志</button><div class="activity-list"><OverlayDetails title="执行记录" v-for="event in raw" :key="event.seq" class="activity-entry"><template #trigger><span>{{ short(event.content,160) }}</span><time>{{ time(event.at) }}</time></template><pre>{{ event.content }}</pre><pre>{{ JSON.stringify(event.data,null,2) }}</pre></OverlayDetails></div>
+   </OverlayDetails>
   </div>
  </section>
 </template>

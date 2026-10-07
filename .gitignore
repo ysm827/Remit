@@ -31,6 +31,7 @@ node_modules/
 
 # 临时调试脚本
 backend/*_tmp.py
+backend/.capability-*.json
 # 运行时产物与本地依赖
 backend/project/repair_backups/
 backend/project/paper_library/

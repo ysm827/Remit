@@ -18,6 +18,7 @@ from app.routers.files_router import _resolve_task_directory
 from app.schemas.request import Problem
 from app.services import team_state as team
 from app.services.call_ledger import scope as call_scope
+from app.services.conversation_errors import explain as explain_conversation_error
 from app.services.redis_manager import redis_manager
 
 router = APIRouter(prefix="/api/team", tags=["team"])
@@ -767,12 +768,7 @@ async def _process(task_id: str, body: ChatRequest, root: Path) -> None:
             )
         raise
     except Exception as exc:
-        detail = (
-            str(exc.detail)
-            if isinstance(exc, HTTPException)
-            else (str(exc) or type(exc).__name__)
-        )
-        result = {"message": f"未能完成本次调度：{detail[:1500]}"}
+        result = {"message": explain_conversation_error(exc)}
         await asyncio.to_thread(
             team.record, root, "coordinator", "error", result["message"]
         )

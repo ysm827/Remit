@@ -1,3 +1,4 @@
+import "./helpers/stub-floating-panels";
 import RuntimePanel from "@/pages/team/RuntimePanel.vue";
 import ChapterPlan from "@/pages/writing/ChapterPlan.vue";
 import { flushPromises, mount } from "@vue/test-utils";
@@ -8,12 +9,18 @@ vi.mock("@/utils/request", () => ({ default: api }));
 beforeEach(() => vi.clearAllMocks());
 
 it("环境检查仅由用户启动，并阻止重复请求", async () => {
- const wrapper = mount(RuntimePanel);
+ const wrapper = mount(RuntimePanel, {
+  props: { open: true },
+  global: { stubs: {
+   PopoverPortal: { template: "<div><slot /></div>" },
+   PopoverContent: { template: "<div><slot /></div>" },
+  } },
+ });
+ await flushPromises();
  expect(api.post).not.toHaveBeenCalled();
- await wrapper.get("button").trigger("click");
  let finish: (value: unknown) => void = () => {};
  api.post.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
- const run = wrapper.findAll("button").find(node => node.text() === "运行本地自检案例");
+ const run = wrapper.get('[aria-label="运行本地自检案例"]');
  if (!run) throw new Error("缺少自检按钮");
  await run.trigger("click");
  await run.trigger("click");

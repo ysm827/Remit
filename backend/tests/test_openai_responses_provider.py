@@ -484,6 +484,26 @@ class OpenAIResponsesProviderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(provider.calls, 2)
 
+    async def test_explicit_attempt_limit_caps_gateway_retries(self):
+        class GatewayError(RuntimeError):
+            status_code = 500
+
+        for limit in (1, 2):
+            with self.subTest(limit=limit):
+                llm = LLM(api_type=ApiType.OPENAI_RESPONSES, api_key="fixture", model="fixture")
+                provider = SimpleNamespace(call=AsyncMock(side_effect=GatewayError("upstream error")))
+                llm.provider = provider
+                with (
+                    patch.object(settings, "GATEWAY_MAX_RETRIES", 4),
+                    patch.object(settings, "LLM_HARD_RETRY_LIMIT", 4),
+                    patch.object(settings, "FALLBACK_ENABLED", False),
+                    patch("app.core.llm.llm.asyncio.sleep", new_callable=AsyncMock) as sleep,
+                ):
+                    with self.assertRaises(GatewayError):
+                        await llm.chat(history=[], publish=False, max_retries=limit)
+                self.assertEqual(provider.call.await_count, limit)
+                self.assertEqual(sleep.await_count, limit - 1)
+
     async def test_gateway_retry_uses_extended_limit_and_honors_retry_after(self):
         class GatewayError(RuntimeError):
             status_code = 502

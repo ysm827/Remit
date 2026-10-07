@@ -440,6 +440,10 @@ class LLM:
                 retry_limit_now = self._handle_failure(
                     error, agent_name, attempt, retry_limit
                 )
+                # Explicit per-call limits must also cap gateway retries. Default
+                # long-running jobs retain the configured extended retry policy.
+                if max_retries is not None:
+                    retry_limit_now = min(retry_limit_now, retry_limit)
                 if attempt >= retry_limit_now:
                     if await self._switch_to_fallback_quietly(
                         messages, tools, max_tokens

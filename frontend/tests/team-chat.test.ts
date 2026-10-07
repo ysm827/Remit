@@ -1,6 +1,8 @@
+import "./helpers/stub-floating-panels";
 import * as markdown from "@/utils/markdown";
 import { type TeamEvent, mergeTeamEvents } from "@/apis/teamApi";
 import TeamChat from "@/pages/team/TeamChat.vue";
+import ComposerSelect from "@/pages/team/ComposerSelect.vue";
 import ActivitySummary from "@/pages/team/ActivitySummary.vue";
 import MessageContent from "@/pages/team/MessageContent.vue";
 import { flushPromises, mount } from "@vue/test-utils";
@@ -335,20 +337,6 @@ describe("团队对话调度与恢复", () => {
 			vi.useRealTimers();
 		}
 	});
-	it("小队入口填写草稿，不擅自发送或启动建模", async () => {
-		const wrapper = mount(TeamChat);
-		await flushPromises();
-		expect(wrapper.text()).toContain("嗨，我是 Remit");
-		const buttons = wrapper.findAll(".crew button");
-		expect(buttons).toHaveLength(4);
-		await buttons[2].trigger("click");
-		expect(
-			(wrapper.get(".composer textarea").element as HTMLTextAreaElement).value,
-		).toContain("点点");
-		expect(api.sendTeamMessage).not.toHaveBeenCalled();
-		expect(api.submitModelingTask).not.toHaveBeenCalled();
-		wrapper.unmount();
-	});
 
 	it("大量重复心跳不挤掉默认可见的关键进展", async () => {
 		const wrapper = mount(TeamChat, { props: { task_id: "project-1" } });
@@ -485,10 +473,10 @@ describe("团队对话调度与恢复", () => {
 		await flushPromises();
 		const headings = wrapper.findAll(".role-heading");
 		expect(headings.slice(0, 4).map((node) => node.text())).toEqual([
-			"团团 · 协调手",
-			"灵灵 · 建模手",
-			"点点 · 代码手",
-			"墨墨 · 论文手",
+			"Remit",
+			"建模",
+			"计算",
+			"论文",
 		]);
 		expect(
 			new Set(headings.slice(0, 4).map((node) => node.get("svg").html())).size,
@@ -524,6 +512,30 @@ describe("团队对话调度与恢复", () => {
 		});
 	});
 	afterEach(() => vi.unstubAllGlobals());
+	it("首页提供独立工作区入口，文件目录按项目打开且不发送模型请求", async () => {
+		api.route.query = { view: "files", browse: "1" };
+		api.getTaskHistory.mockResolvedValue({ data: [{ task_id: "project-1", title: "预测项目", archived: false, status: "chat", updated_at: "2026-10-07T08:00:00Z" }] });
+		const wrapper = mount(TeamChat);
+		await flushPromises();
+		expect(wrapper.get('[aria-label="工作区导航"]').text()).toContain("文件与结果");
+		expect(wrapper.find(".workspace-tabs").exists()).toBe(false);
+		expect(wrapper.get('[aria-label="文件与结果项目目录"] a').attributes("href")).toBe("/project/project-1?view=files");
+		expect(wrapper.get(".conversation").isVisible()).toBe(false);
+		expect(wrapper.get(".new-chat").classes()).not.toContain("active");
+		expect(api.getTeamState).not.toHaveBeenCalled();
+		expect(api.sendTeamMessage).not.toHaveBeenCalled();
+		wrapper.unmount();
+	});
+	it("论文视图切换侧栏项目时保留板块，目录入口始终可见", async () => {
+		api.route.query = { view: "paper" };
+		api.getTaskHistory.mockResolvedValue({ data: [{ task_id: "project-2", title: "另一项目", archived: false, status: "chat", updated_at: "2026-10-07T08:00:00Z" }] });
+		const wrapper = mount(TeamChat, { props: { task_id: "project-1" } });
+		await flushPromises();
+		expect(wrapper.get('.project-row a').attributes("href")).toBe("/project/project-2?view=paper");
+		expect(wrapper.get('[aria-label="工作区导航"] [aria-current="page"]').text()).toBe("论文");
+		expect(wrapper.get('.header-library-link').attributes("href")).toBe("/home?view=paper&browse=1");
+		wrapper.unmount();
+	});
 	it("解释成果仅发送通俗解释请求，不附带批准动作", async () => {
 		api.getTeamState.mockResolvedValue({
 			data: {
@@ -698,7 +710,7 @@ describe("团队对话调度与恢复", () => {
 			attachTo: document.body,
 		});
 		await flushPromises();
-		await wrapper.get(".rail-caption button").trigger("click");
+		await wrapper.get('[aria-label="切换归档项目"]').trigger("click");
 		await wrapper
 			.get('button[aria-label="管理项目 待删除项目"]')
 			.trigger("click");
@@ -731,7 +743,7 @@ describe("团队对话调度与恢复", () => {
 		api.deleteProject.mockRejectedValueOnce(new Error("文件正在使用"));
 		const wrapper = mount(TeamChat, { attachTo: document.body });
 		await flushPromises();
-		await wrapper.get(".rail-caption button").trigger("click");
+		await wrapper.get('[aria-label="切换归档项目"]').trigger("click");
 		await wrapper
 			.get('button[aria-label="管理项目 保留项目"]')
 			.trigger("click");
@@ -762,7 +774,7 @@ describe("团队对话调度与恢复", () => {
 		});
 		expect(api.sendTeamMessage.mock.calls[0][1].timing).toBeUndefined();
 		expect(api.sendTeamMessage.mock.calls[0][1].action).toBeUndefined();
-		expect(wrapper.find('[aria-label="选择调整时机"]').exists()).toBe(false);
+		expect(wrapper.find('[aria-label="调整任务"]').exists()).toBe(false);
 		wrapper.unmount();
 	});
 	it("仅主动调整任务时选择时机，普通发送保持对话", async () => {
@@ -777,8 +789,8 @@ describe("团队对话调度与恢复", () => {
 			.find((button) => button.text() === "调整任务")
 			?.trigger("click");
 		expect(api.sendTeamMessage).not.toHaveBeenCalled();
-		expect(wrapper.find('[aria-label="选择调整时机"]').exists()).toBe(true);
-		await wrapper.findAll(".adjustment-menu > button")[1]?.trigger("click");
+		expect(wrapper.find('[aria-label="调整任务"]').exists()).toBe(true);
+		await wrapper.findAll(".adjustment-choices > button")[1]?.trigger("click");
 		await flushPromises();
 		expect(api.sendTeamMessage.mock.calls[0][1]).toMatchObject({
 			content: "换个方法试试",
@@ -841,13 +853,8 @@ describe("团队对话调度与恢复", () => {
 		await flushPromises();
 		expect(wrapper.findAll(".activity-group")).toHaveLength(1);
 		expect(wrapper.get(".activity-group").attributes("open")).toBeUndefined();
-		await wrapper.get('button[aria-label="对话显示选项"]').trigger("click");
-		await wrapper.get(".timeline-filters input").setValue(true);
-		expect(wrapper.get(".raw-log").attributes("open")).toBeDefined();
-		expect(wrapper.text()).toContain("print(42)");
-		const raw = wrapper.get(".raw-log");
-		(raw.element as HTMLDetailsElement).open = true;
-		await raw.trigger("toggle");
+		await wrapper.get('.raw-log > button').trigger('click');
+		await wrapper.get('.activity-entry > button').trigger('click');
 		expect(wrapper.text()).toContain("print(42)");
 		expect(wrapper.text()).toContain("正在写摘要");
 		wrapper.unmount();
@@ -922,6 +929,20 @@ describe("团队对话调度与恢复", () => {
 		expect(api.push).toHaveBeenCalledWith("/project/new-project");
 		wrapper.unmount();
 	});
+	it("菜单选择的赛事与计算环境随提交生效，环境诊断只保留一个入口", async () => {
+		api.submitModelingTask.mockResolvedValue({ data: { task_id: "selected-project" } });
+		const wrapper = mount(TeamChat);
+		await flushPromises();
+		const selectors = wrapper.findAllComponents(ComposerSelect);
+		selectors[0].vm.$emit("update:modelValue", "gmcm");
+		selectors[1].vm.$emit("update:modelValue", "matlab");
+		await wrapper.get("textarea").setValue("分析这组数据");
+		await wrapper.get('[aria-label="发送"]').trigger("click");
+		await flushPromises();
+		expect(api.submitModelingTask.mock.calls[0][0]).toMatchObject({ competition_id: "gmcm", execution_backend: "matlab" });
+		expect(wrapper.findAll('[data-runtime-trigger]')).toHaveLength(1);
+		wrapper.unmount();
+	});
 	it("关闭建模前文献检索会随新项目一起提交", async () => {
 		api.submitModelingTask.mockResolvedValue({
 			data: { task_id: "no-literature" },
@@ -930,9 +951,7 @@ describe("团队对话调度与恢复", () => {
 		await flushPromises();
 		await wrapper.get('button[aria-label="赛事设置"]').trigger("click");
 		await wrapper.get('input[aria-label="建模前检索文献"]').setValue(false);
-		await wrapper
-			.get('select[aria-label="任务目标"]')
-			.setValue("numerical_verification");
+		wrapper.findAllComponents(ComposerSelect).find(component => component.props('label') === '任务目标')?.vm.$emit('update:modelValue', 'numerical_verification');
 		await wrapper.get(".composer textarea").setValue("用已有方法核对数据");
 		await wrapper.get('button[aria-label="发送"]').trigger("click");
 		await flushPromises();

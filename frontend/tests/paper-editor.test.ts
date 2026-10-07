@@ -1,3 +1,5 @@
+import ComposerSelect from "@/pages/team/ComposerSelect.vue";
+import "./helpers/stub-floating-panels";
 import PaperEditor from "@/pages/writing/PaperEditor.vue";
 import { flushPromises, mount } from "@vue/test-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -203,7 +205,7 @@ describe("论文编辑器保存与编译", () => {
 				compile: { ...workspace.compile, pdf_mode: "full_paper" },
 			},
 		});
-		await wrapper.get('[aria-label="新草稿模式"]').setValue("short_report");
+		wrapper.findAllComponents(ComposerSelect).find(component => component.props('label') === '新草稿模式')?.vm.$emit('update:modelValue', 'short_report');
 		await flushPromises();
 		expect(api.setPaperMode).toHaveBeenCalledWith("test", "short_report", "v1");
 		expect(wrapper.get("textarea").element.value).toBe("unsaved content");

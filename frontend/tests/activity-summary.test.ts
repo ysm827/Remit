@@ -1,3 +1,4 @@
+import "./helpers/stub-floating-panels";
 import type { TeamEvent, TeamState } from "@/apis/teamApi";
 import ActivitySummary from "@/pages/team/ActivitySummary.vue";
 import { mount } from "@vue/test-utils";
@@ -29,12 +30,12 @@ it("数百条心跳只显示当前进度，原始日志延迟加载且分页", a
 	expect(wrapper.text()).not.toContain("390");
 	expect(wrapper.findAll(".activity-entry")).toHaveLength(0);
 	expect(wrapper.text()).not.toContain("sensitive-debug");
-	const raw = wrapper.get(".raw-log");
-	(raw.element as HTMLDetailsElement).open = true;
-	await raw.trigger("toggle");
+	await wrapper.get(".raw-log > button").trigger("click");
 	expect(wrapper.findAll(".activity-entry")).toHaveLength(30);
+	expect(wrapper.text()).not.toContain("sensitive-debug");
+	await wrapper.findAll(".activity-entry > button").at(-1)?.trigger("click");
 	expect(wrapper.text()).toContain("sensitive-debug");
-	await wrapper.get(".raw-log button").trigger("click");
+	await wrapper.findAll("button").find(button => button.text() === "加载更早的日志")?.trigger("click");
 	expect(wrapper.findAll(".activity-entry")).toHaveLength(80);
 });
 it("失败与恢复都保留，摘要不把工具成功当作任务完成", () => {
@@ -65,13 +66,14 @@ const snapshot: TeamState = {
 		{ id: 'modeler', label: '总体建模方案', role: 'modeler', status: 'running' },
 	],
 };
-it('跳过的探索不进入最近完成，并一直保留未验证提醒', () => {
+it('跳过的探索不进入最近完成，并一直保留未验证提醒', async () => {
  const state = { ...snapshot, steps: [
   { id: 'pilot', label: '候选探索', role: 'coder', status: 'skipped', issues: ['候选结果不完整，沿用原方案'] },
   { id: 'solve:ques1', label: '第一问', role: 'coder', status: 'running' },
  ], current_node: 'solve:ques1' };
  const wrapper = mount(ActivitySummary, { props: { events: [], state } });
  expect(wrapper.get('.warning-note').text()).toContain('已跳过，未验证');
+ await wrapper.get('.warning-note .overlay-details-trigger').trigger('click');
  expect(wrapper.get('.warning-note').text()).toContain('沿用原方案');
  expect(wrapper.text()).not.toContain('最近完成');
 });
@@ -80,7 +82,7 @@ it('默认展示阶段、已完成与未核验项，心跳不会挤掉关键结�
 		...Array.from({length: 390}, (_, i) => event(i + 3, '协调手正在输出…'))];
 	const wrapper = mount(ActivitySummary, { props: { events, state: snapshot } });
 	expect(wrapper.get('.progress-label').text()).toBe('总体建模方案');
-	expect(wrapper.get('.progress-role').text()).toBe('灵灵 · 建模手');
+	expect(wrapper.get('.progress-role').text()).toBe('建模');
 	expect(wrapper.get('.completed-line').text()).toContain('题意识别与问题拆解');
 	expect(wrapper.get('.completed-line').text()).not.toContain('数据核验');
 	expect(wrapper.get('.warning-note').text()).toContain('仍需核验');

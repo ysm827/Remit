@@ -1,10 +1,6 @@
 <script setup lang="ts">
 import { Button } from "@/components/ui/button";
-import {
-	Collapsible,
-	CollapsibleContent,
-	CollapsibleTrigger,
-} from "@/components/ui/collapsible";
+import FloatingPanel from "./FloatingPanel.vue";
 import CsvPreviewTable from "@/pages/team/CsvPreviewTable.vue";
 import type {
 	ApprovalMessage,
@@ -22,7 +18,7 @@ import {
 	MessageCircleQuestion,
 	RotateCcw,
 } from "lucide-vue-next";
-import { computed } from "vue";
+import { computed, ref } from "vue";
 
 const props = defineProps<{
 	approval: ApprovalMessage;
@@ -36,6 +32,7 @@ defineEmits<{
 	veto: [feedback: string];
 }>();
 
+const open = ref(false);
 const explain = computed(() => props.approval.explain ?? {});
 type AnalysisListKey = Exclude<keyof StructuredQuestionAnalysis, "objective">;
 const analysisFields: Array<{ key: AnalysisListKey; label: string }> = [
@@ -95,7 +92,7 @@ function vetoFeedback(candidate: {
     aria-label="人工审核"
     aria-live="assertive"
   >
-    <Collapsible v-slot="{ open }" :default-open="structuredAnalyses.length > 0">
+    <div>
       <div class="relative overflow-hidden rounded-xl border border-amber-200 bg-white shadow-[0_8px_24px_-20px_rgba(15,23,42,0.55)]">
         <div class="absolute inset-y-0 left-0 w-1 bg-amber-400" aria-hidden="true" />
 
@@ -126,13 +123,13 @@ function vetoFeedback(candidate: {
               </p>
             </div>
 
-            <CollapsibleTrigger as-child>
+
               <Button
                 type="button"
                 variant="ghost"
                 size="sm"
                 class="h-8 shrink-0 px-2 text-xs text-slate-500 hover:text-slate-900"
-                data-testid="toggle-approval-details"
+                data-testid="toggle-approval-details" :aria-expanded="open" @click="open = true"
               >
                 {{ open ? "收起" : "详情" }}
                 <ChevronDown
@@ -141,7 +138,7 @@ function vetoFeedback(candidate: {
                   aria-hidden="true"
                 />
               </Button>
-            </CollapsibleTrigger>
+
           </div>
 
           <div class="mt-2.5 flex items-center justify-end gap-2">
@@ -184,7 +181,7 @@ function vetoFeedback(candidate: {
           </div>
         </div>
 
-        <CollapsibleContent>
+        <FloatingPanel v-model:open="open" title="审核详情" :width="660">
           <div class="border-t border-slate-100 bg-slate-50/70 px-4 py-3">
             <template v-if="hasExplain">
               <div v-if="explain.what_happened" data-testid="approval-what-happened">
@@ -313,8 +310,8 @@ function vetoFeedback(candidate: {
               </span>
             </div>
           </div>
-        </CollapsibleContent>
+        </FloatingPanel>
       </div>
-    </Collapsible>
+    </div>
   </aside>
 </template>

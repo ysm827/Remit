@@ -1,10 +1,11 @@
+import "./helpers/stub-floating-panels";
 import ArtifactContent from "@/pages/team/ArtifactContent.vue";
 import ResultReport from "@/pages/team/ResultReport.vue";
 import { mount } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
 
 describe("项目成果阅读视图", () => {
-	it("不将内部数字核对集合冒充计算依据", () => {
+	it("不将内部数字核对集合冒充计算依据", async () => {
 		const wrapper = mount(ResultReport, {
 			props: {
 				result: {
@@ -17,6 +18,7 @@ describe("项目成果阅读视图", () => {
 		});
 		expect(wrapper.text()).not.toContain("33845");
 		expect(wrapper.text()).not.toContain("计算依据");
+		await wrapper.get(".overlay-details-trigger").trigger("click");
 		expect(wrapper.text()).toContain("可读计算说明");
 	});
 	it("展开嵌套方案和历史JSON字符串，不丢失零值或否定结果", () => {
@@ -48,7 +50,7 @@ describe("项目成果阅读视图", () => {
 		expect(wrapper.text()).toContain("custom measure");
 		expect(wrapper.text()).toContain("未提供");
 	});
-	it("长正文可展开收起，并净化不可信HTML", async () => {
+	it("长正文浮窗不扩大预览，并净化不可信HTML", async () => {
 		const wrapper = mount(ArtifactContent, {
 			props: {
 				value: `${"正文内容".repeat(200)}<img src=x onerror=alert(1)><script>alert(1)</script>`,
@@ -58,7 +60,7 @@ describe("项目成果阅读视图", () => {
 		expect(wrapper.find("img").attributes("onerror")).toBeUndefined();
 		expect(wrapper.get(".reader").classes()).toContain("clipped");
 		await wrapper.get("button").trigger("click");
-		expect(wrapper.get(".reader").classes()).not.toContain("clipped");
+		expect(wrapper.get(".reader").classes()).toContain("clipped");
 		expect(wrapper.get("button").attributes("aria-expanded")).toBe("true");
 	});
 	it("检查表明确展示未通过项和零值，图表只引用匹配的项目文件", () => {

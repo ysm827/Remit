@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FloatingPanel from "./FloatingPanel.vue";
 import { useResizeObserver } from "@vueuse/core";
 import { nextTick, onMounted, ref, useId, watch } from "vue";
 
@@ -30,14 +31,14 @@ watch(
 
 <template>
 	<div class="user-message">
-		<p ref="text" :id="contentId" class="event-content" :class="{ 'message-collapsed': !expanded }">{{ content }}</p>
+		<p ref="text" :id="contentId" class="event-content message-collapsed">{{ content }}</p>
 		<button
 			v-if="collapsible"
 			class="message-toggle"
 			:aria-expanded="expanded"
-			:aria-controls="contentId"
-			@click="expanded = !expanded"
-		>{{ expanded ? "收起" : "展开全文" }}</button>
+			:aria-controls="`${contentId}-reader`" aria-haspopup="dialog"
+			@click="expanded = true"
+		>查看全文</button><FloatingPanel :id="`${contentId}-reader`" v-model:open="expanded" title="完整消息" :width="620"><p class="event-content">{{ content }}</p></FloatingPanel>
 	</div>
 </template>
 

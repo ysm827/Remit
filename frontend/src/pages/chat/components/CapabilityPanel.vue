@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ComposerSelect from "@/pages/team/ComposerSelect.vue";
 import request from "@/utils/request";
 import { computed, onMounted, ref, watch } from "vue";
 
@@ -104,8 +105,8 @@ async function verify() {
 	<section class="capability-panel space-y-3" aria-label="模型能力验证">
 		<h4 class="sr-only">验证已保存模型的实际能力</h4>
         <div class="capability-selectors">
-          <label>验证角色<select v-model="role" :disabled="busy" aria-label="验证角色"><option v-for="(name, key) in roles" :key="key" :value="key">{{ name }}</option></select></label>
-          <label>验证连接<select v-model="connection" :disabled="busy" aria-label="验证连接"><option value="primary">当前角色连接</option><option value="fallback">备用模型连接</option></select></label>
+          <label>验证角色<ComposerSelect :model-value="role" @update:model-value="role = $event as keyof typeof roles" :disabled="busy" label="验证角色" title="验证角色" :options="Object.entries(roles).map(([value,label])=>({value,label}))" /></label>
+          <label>验证连接<ComposerSelect v-model="connection" :disabled="busy" label="验证连接" title="验证连接" :options="[{value:'primary',label:'当前角色连接'},{value:'fallback',label:'备用模型连接'}]" /></label>
         </div>
         <p v-if="connection === 'fallback'" class="text-xs text-muted-foreground">按所选角色验证备用模型。含图片的请求还需通过“赛题识图”的备用验证；只有选择该角色时才发送测试图片。切换前会核对本次请求的能力与容量。</p>
         <p v-if="requirements" class="text-xs text-muted-foreground">本角色检查{{ requirements.structured_mode === 'json_text_and_tool_arguments' ? 'JSON 文本、工具参数与结果回传' : requirements.structured_mode === 'tool_arguments' ? '工具参数 JSON 与结果回传' : '提示词 JSON 文本' }}{{ requirements.needs_vision ? '及图片识别；仅发送本地生成的随机数字和彩色方块图片' : '' }}。最多 {{ requirements.max_calls }} 次请求，每次最多 {{ requirements.max_output_tokens }} 输出 token，按供应商计费。通过仅表示这组小样本可用。</p>

@@ -27,6 +27,7 @@ APP_USER_MODEL_ID = "Remit.Desktop"
 FRONTEND_URL = "http://127.0.0.1:15173/"
 BACKEND_URL = "http://127.0.0.1:18000/"
 MUTEX_NAME = "Local\\RemitDesktopApp"
+WINDOW_ID_PROPERTY = "Remit.Desktop.MainWindow"
 ERROR_ALREADY_EXISTS = 183
 ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = ROOT / "logs"
@@ -151,13 +152,13 @@ class DesktopApp:
         # the Remit application page.
         webview.settings["OPEN_EXTERNAL_LINKS_IN_BROWSER"] = True
         self.window = webview.create_window(
-            APP_TITLE,
+            "",
             html=LOADING_HTML,
             width=1440,
             height=900,
             min_size=(960, 640),
             maximized=True,
-            background_color="#f7f8fc",
+            background_color="#f7f7f7",
             text_select=True,
             zoomable=True,
         )
@@ -168,6 +169,8 @@ class DesktopApp:
         self.window.events.closed += self._on_window_closed
         self.window.events.loaded += self._install_external_link_guard
         self.window.events.loaded += self._enable_context_menu
+        self.window.events.loaded += self._style_window_frame
+        self.window.events.shown += self._style_window_frame
         try:
             webview.start(
                 self._on_webview_started,
@@ -185,6 +188,44 @@ class DesktopApp:
     def _on_webview_started(self) -> None:
         self._start_tray()
         threading.Thread(target=self._bootstrap_services, daemon=True).start()
+
+    def _style_window_frame(self) -> None:
+        """Blend the native caption into the app frame, retaining OS controls."""
+        if self.window is None or self.shutdown_event.is_set():
+            return
+        try:
+            from System import Action  # type: ignore[import-not-found]
+
+            native = self.window.native
+
+            def configure() -> None:
+                # Keep native dragging, resizing and window controls, without
+                # duplicating the brand already shown in the application.
+                native.Text = ""
+                native.ShowIcon = False
+                handle = wintypes.HWND(native.Handle.ToInt64())
+                marker = ctypes.windll.user32.SetPropW
+                marker.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.HANDLE]
+                marker.restype = wintypes.BOOL
+                marker(handle, WINDOW_ID_PROPERTY, wintypes.HANDLE(1))
+                logging.info(
+                    "Desktop caption applied: text_empty=%s show_icon=%s",
+                    native.Text == "", native.ShowIcon,
+                )
+                setter = ctypes.windll.dwmapi.DwmSetWindowAttribute
+                setter.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+                setter.restype = ctypes.c_long
+                # Windows 11 caption/text colors; older Windows can reject these
+                # cosmetic attributes without affecting drag, resize, or closing.
+                for attribute, color in ((35, 0x00F7F7F7), (36, 0x00626262)):
+                    value = wintypes.DWORD(color)
+                    result = setter(handle, attribute, ctypes.byref(value), ctypes.sizeof(value))
+                    if result != 0:
+                        logging.debug("Native frame color unsupported: %s", attribute)
+
+            native.Invoke(Action(configure))
+        except Exception:
+            logging.debug("Native frame styling unavailable", exc_info=True)
 
     def _enable_context_menu(self) -> None:
         """Enable native editing menus without enabling the debug interface."""
@@ -601,10 +642,15 @@ def _configure_windows_identity() -> None:
 
 def _activate_existing_window() -> None:
     user32 = ctypes.windll.user32
+    user32.GetPropW.argtypes = [wintypes.HWND, wintypes.LPCWSTR]
+    user32.GetPropW.restype = wintypes.HANDLE
     found: list[int] = []
     callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
     def callback(hwnd: int, _lparam: int) -> bool:
+        if user32.GetPropW(hwnd, WINDOW_ID_PROPERTY):
+            found.append(hwnd)
+            return False
         length = user32.GetWindowTextLengthW(hwnd)
         if length <= 0:
             return True
