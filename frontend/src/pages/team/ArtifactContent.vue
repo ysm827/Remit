@@ -44,6 +44,8 @@ const columns = computed(() => {
 		: [];
 });
 const text = computed(() => readableValue(value.value, props.field));
+// Preview and reader share one sanitized rendering, including expensive formulas.
+const html = computed(() => renderMarkdown(text.value, {}, markdownContext()));
 const long = computed(
 	() => text.value.length > 650 || text.value.split("\n").length > 10,
 );
@@ -56,8 +58,8 @@ const long = computed(
   <dl v-else-if="entries.length" class="content-fields"><div v-for="[key, item] in entries" :key="key"><dt>{{ artifactLabel(key) }}</dt><dd><ArtifactContent :value="item" :field="key" /></dd></div></dl>
   <p v-else-if="value !== null && typeof value === 'object'" class="muted">暂无记录</p>
   <template v-else>
-   <div :id="id" class="reader" :class="{ clipped: long }" v-html="renderMarkdown(text, {}, markdownContext())" />
-   <button v-if="long" class="expand" :aria-expanded="expanded" :aria-controls="`${id}-reader`" aria-haspopup="dialog" @click="expanded = true">查看全文</button><FloatingPanel :id="`${id}-reader`" v-model:open="expanded" title="完整正文" :width="680"><div class="reader" v-html="renderMarkdown(text, {}, markdownContext())" /></FloatingPanel>
+   <div :id="id" class="reader" :class="{ clipped: long }" v-html="html" />
+   <button v-if="long" class="expand" :aria-expanded="expanded" :aria-controls="`${id}-reader`" aria-haspopup="dialog" @click="expanded = true">查看全文</button><FloatingPanel :id="`${id}-reader`" v-model:open="expanded" title="完整正文" :width="680"><div class="reader" v-html="html" /></FloatingPanel>
   </template>
  </div>
 </template>

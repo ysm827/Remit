@@ -331,7 +331,7 @@ class DesktopApp:
             if not self._launch_services():
                 return
             self._set_status("后端服务初始化中…", 55)
-            if not self._wait_until_ready(BACKEND_URL, timeout=120):
+            if not self._wait_until_ready(BACKEND_URL + "status", timeout=120, backend=True):
                 if self.shutdown_event.is_set():
                     return
                 raise RuntimeError("后端在 120 秒内没有就绪")
@@ -368,19 +368,26 @@ class DesktopApp:
         except Exception:
             logging.debug("Loading page is not ready for status update", exc_info=True)
 
-    def _wait_until_ready(self, url: str, timeout: float) -> bool:
+    def _wait_until_ready(self, url: str, timeout: float, *, backend: bool = False) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline and not self.shutdown_event.is_set():
             try:
                 with urllib.request.urlopen(url, timeout=2) as response:
-                    if response.status < 500:
+                    if response.status != 200:
+                        raise ValueError("Service has not returned a ready response")
+                    if not backend:
                         return True
-            except urllib.error.HTTPError as exc:
-                if exc.code < 500:
-                    return True
-            except (OSError, urllib.error.URLError):
+                    # A port or a 404 page is not proof that the API is ready.
+                    payload = json.load(response)
+                    if (
+                        isinstance(payload, dict)
+                        and isinstance(payload.get("backend"), dict)
+                        and payload["backend"].get("status") == "running"
+                    ):
+                        return True
+            except (OSError, urllib.error.URLError, ValueError):
                 pass
-            time.sleep(0.4)
+            self.shutdown_event.wait(0.4)
         return False
 
     def _on_window_closing(self) -> bool:

@@ -130,7 +130,12 @@ async def test_http_creation_and_start_preserve_choice(
     assert meta["problem"]["task_purpose"] == purpose
     meta.update(
         status="ready",
-        preflight={"id": "approved-plan", "steps": ["核验数据"], "questions": []},
+        preflight={
+            "id": "approved-plan",
+            "steps": ["核验数据"],
+            "questions": [],
+            "configuration_digest": project_router.configuration_digest(meta),
+        },
     )
     write_json(root / ".project.json", meta)
     try:

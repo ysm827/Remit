@@ -84,11 +84,16 @@ def describe(error: Exception, root: Path, *, retrying: bool, attempts: int) -> 
         "stage": state.get("current_node"),
         "reason": reason,
         "technical_detail": name,
+        "budget_phase": getattr(error, "phase", None),
         "retryable": retryable,
         "retrying": retrying,
         "attempts_used": getattr(error, "used_calls", attempts),
         "checkpoint": (state.get("completed_nodes") or [None])[-1],
         "saved_result_count": len(state.get("solution_results") or {}),
-        "actions": ["settings", "results", "paper", "diagnostics"]
-        + ([] if retrying else ["resume"]),
+        "actions": (
+            ["model_budget", "results", "diagnostics"]
+            if code == "MODEL_STAGE_BUDGET"
+            else ["settings", "results", "paper", "diagnostics"]
+        )
+        + ([] if retrying or code == "MODEL_STAGE_BUDGET" else ["resume"]),
     }

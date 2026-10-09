@@ -138,6 +138,9 @@ class Settings(BaseSettings):
     LLM_HARD_RETRY_LIMIT: int = 4
     LLM_STAGE_CALL_LIMIT: int = 24
     LLM_STAGE_API_SECONDS: float = 900.0
+    LLM_REVIEW_RESERVED_CALLS: int = Field(default=4, ge=0)
+    LLM_REVIEW_RESERVED_SECONDS: float = Field(default=240.0, ge=0)
+    LLM_MIN_REQUEST_SECONDS: float = Field(default=60.0, gt=0)
     LLM_RETRY_AFTER_MAX_SECONDS: float = 60.0
     E2B_API_KEY: str | None = None
     CODE_EXECUTION_BACKEND: str = "matlab"

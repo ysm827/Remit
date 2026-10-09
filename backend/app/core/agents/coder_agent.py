@@ -14,6 +14,7 @@ from collections.abc import Callable
 
 from app.config.setting import settings
 from app.core.activity import publish_activity
+from app.core.deliverable_contract import DeliverableValidationError
 from app.core.agents.agent import Agent, _message_tokens
 from app.core.functions import get_coder_tools
 from app.core.llm.llm import LLM
@@ -266,19 +267,36 @@ class CoderAgent(Agent):
                         and file_version(name) != initial_files[name]
                         for name in required_files
                     )
-                    and completion_check()
                 ):
-                    await publish_activity(
-                        self.task_id,
-                        f"{subtask_title} 的产物记录已齐全，进入结果核验",
-                        category="gate",
-                    )
-                    return CoderToWriter(
-                        code_response="规定产物已更新并通过结构校验，实际指标仍由后续审查和用户验收。",
-                        created_images=await interpreter.get_created_images(
-                            subtask_title
-                        ),
-                    )
+                    try:
+                        complete = await run_blocking(completion_check)
+                    except DeliverableValidationError as exc:
+                        complete = False
+                        await self.append_chat_history(
+                            {
+                                "role": "user",
+                                "content": f"本次执行后的独立交付检查未通过：{exc}\n"
+                                "先修复生成源码和受影响产物，再重新写入质量报告。禁止只修改 pass 标记。",
+                            }
+                        )
+                        await publish_activity(
+                            self.task_id,
+                            "产物独立检查发现问题，已反馈给代码手修复",
+                            category="repair",
+                            detail=str(exc)[:160],
+                        )
+                    if complete:
+                        await publish_activity(
+                            self.task_id,
+                            f"{subtask_title} 的产物记录已齐全，进入结果核验",
+                            category="gate",
+                        )
+                        return CoderToWriter(
+                            code_response="规定产物已更新并通过结构校验，实际指标仍由后续审查和用户验收。",
+                            created_images=await interpreter.get_created_images(
+                                subtask_title
+                            ),
+                        )
                 remaining_executions = execution_limit - self.current_code_executions
                 if 0 < remaining_executions <= 2:
                     # 不能等预算归零后才要求总结：质量报告等契约文件必须由

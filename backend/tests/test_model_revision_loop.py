@@ -521,7 +521,7 @@ class WorkflowModelRevisionTests(unittest.IsolatedAsyncioTestCase):
                 "accept",
             )
 
-    async def test_unfinished_review_revision_rolls_back_to_passing_artifacts(
+    async def test_unfinished_review_revision_resumes_without_reauditing_rejected_artifacts(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -601,7 +601,14 @@ class WorkflowModelRevisionTests(unittest.IsolatedAsyncioTestCase):
 
             contract = build_question_contract("ques1", "建立预测模型")
             coder_agent = MagicMock()
-            coder_agent.run = AsyncMock()
+            async def finish_revision(**kwargs):
+                path = root / "ques1_quality_report.json"
+                report = json.loads(path.read_text(encoding="utf-8"))
+                report["selected_model"] = "new_gee_model"
+                path.write_text(json.dumps(report), encoding="utf-8")
+                return CoderToWriter(code_response="真实运行修订模型并保存对应结果")
+
+            coder_agent.run = AsyncMock(side_effect=finish_revision)
             modeler_agent = MagicMock()
             modeler_agent.review_execution_result = AsyncMock(
                 return_value=_accepted_review()
@@ -649,14 +656,16 @@ class WorkflowModelRevisionTests(unittest.IsolatedAsyncioTestCase):
                     user_output=user_output,
                 )
 
-            coder_agent.run.assert_not_awaited()
+            coder_agent.run.assert_awaited_once()
+            self.assertIn(revised_plan, coder_agent.run.await_args.kwargs["prompt"])
             review_call = modeler_agent.review_execution_result.await_args.kwargs
-            self.assertEqual(review_call["current_plan"], original_plan)
-            self.assertEqual(state["model_revision_history"]["ques1"], [])
+            self.assertEqual(review_call["current_plan"], revised_plan)
+            self.assertEqual(review_call["remaining_runs"], 1)
+            self.assertEqual(len(state["model_revision_history"]["ques1"]), 1)
             self.assertEqual(state["model_execution_reviews"]["ques1"][0]["attempt"], 1)
             self.assertEqual(
                 state["modeler_response"]["questions_solution"]["ques1"],
-                original_plan,
+                revised_plan,
             )
 
     async def test_poor_result_returns_to_modeler_and_persists_new_plan(self) -> None:
@@ -781,7 +790,7 @@ class WorkflowModelRevisionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsNone(
                 coder_agent.run.await_args_list[1].kwargs["max_code_executions"]
             )
-            self.assertIn("建模手根据真实运行结果发起换模", second_prompt)
+            self.assertIn("按已保存的结果复核意见继续返修", second_prompt)
             self.assertIn("GBRT", second_prompt)
             self.assertIn("禁止降低门槛", second_prompt)
             modeler_kwargs = modeler_agent.revise_after_execution.await_args.kwargs

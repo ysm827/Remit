@@ -17,6 +17,7 @@ from app.core.agents.coder_agent import (
 )
 from app.core.llm.errors import NonRetryableLLMError
 from app.core.llm.types import StandardResponse, ToolCall
+from app.core.deliverable_contract import ArtifactConsistencyValidationError
 
 
 def _tool_response(call_id: str, code: str) -> StandardResponse:
@@ -60,6 +61,57 @@ def _make_agent(
 
 
 class CoderAgentResilienceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_validation_feedback_repairs_in_same_run_before_exhausting_budget(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            agent = _make_agent(max_code_executions=3)
+            agent.work_dir = tmp
+            agent._inject_user_notes = AsyncMock()
+            path = Path(tmp, "eda_quality_report.json")
+            agent._chat = AsyncMock(
+                side_effect=[
+                    _tool_response("wrong", "wrong"),
+                    _tool_response("fixed", "fixed"),
+                ]
+            )
+
+            async def execute(code):
+                path.write_text(json.dumps({"valid": code == "fixed"}))
+                return ("executed", False, "")
+
+            def validate():
+                if not json.loads(path.read_text())["valid"]:
+                    raise ArtifactConsistencyValidationError("实体编号错位：007")
+                return True
+
+            agent.code_interpreter.execute_code.side_effect = execute
+            with (
+                patch(
+                    "app.core.agents.coder_agent.redis_manager.publish_message",
+                    new_callable=AsyncMock,
+                ),
+                patch(
+                    "app.core.agents.coder_agent.publish_activity",
+                    new_callable=AsyncMock,
+                ),
+                patch.object(
+                    agent, "append_chat_history", wraps=agent.append_chat_history
+                ) as history,
+            ):
+                await agent.run(
+                    "verify",
+                    "eda",
+                    required_files=(path.name,),
+                    completion_check=validate,
+                )
+            feedback = [
+                call.args[0].get("content", "") for call in history.call_args_list
+            ]
+            self.assertTrue(any("实体编号错位：007" in text for text in feedback))
+            self.assertEqual(agent._chat.await_count, 2)
+            self.assertEqual(agent.current_code_executions, 2)
+
     async def test_delivery_check_stops_calls_only_after_new_valid_artifact(self):
         with tempfile.TemporaryDirectory() as tmp:
             agent = _make_agent()

@@ -436,6 +436,24 @@ class LLM:
                 elapsed_seconds = time.perf_counter() - started
                 finished_at = datetime.now(timezone.utc).isoformat()
                 await record_attempt("failed_outcome_unknown", error=error)
+                if (
+                    isinstance(error, TimeoutError)
+                    and stage_seconds is not None
+                    and elapsed_seconds >= stage_seconds - 0.05
+                ):
+                    # Our stage timer fired: pause as a budget event rather than
+                    # blaming the provider and starting an impossible retry.
+                    from app.services.model_budget import for_task
+                    from app.services.call_ledger import budget_phase
+
+                    budget = await asyncio.to_thread(
+                        for_task, self.task_id, f"{agent_name}:{sub_title or 'default'}"
+                    )
+                    if budget is not None:
+                        snapshot = await asyncio.to_thread(
+                            budget.snapshot, budget_phase(self.task_id)
+                        )
+                        budget.require(snapshot)
                 attempt += 1
                 retry_limit_now = self._handle_failure(
                     error, agent_name, attempt, retry_limit

@@ -339,6 +339,19 @@ NUMERICAL_CODER_PROMPT = (
 )
 
 
+DATA_IDENTITY_RULES = """
+【通用数据身份与交付纪律】
+- 筛选、排序、reset_index、去重后，行位置不再代表原始实体。矩阵查值必须用保留的字符串编号映射，
+  用 loc 或显式 id_to_index，不得用新行号/iterrows 的 .name 索引原数组。连接时验证键唯一性、覆盖率和行数。
+- 距离、海拔、时间等派生量必须声明单位；从同一底表提取的字段，逐编号回读导出值与源值比较。
+  不只抽首行，不只看汇总，不用主实现自身的同一索引重复计算来冒充独立检查。
+- 部分产物完成后就保存真实质量报告与 artifact_relations，让系统尽早检查；未完成项如实标注，
+  不等执行额度耗尽才写报告。系统反馈的技术错误优先修源代码和下游依赖，再继续计算。
+- .mat 扩展名不代表 HDF5：先识别文件头；Python 中 v5 用 scipy.io.loadmat，v7.3/HDF5 用 h5py；MATLAB 使用原生 load。
+  读取失败不代表附件损坏，不得凭一次错误声称数据不可用；恢复读取后验证 shape、单位及缺失标记。
+"""
+
+
 def get_coder_prompt(language: str, task_purpose: TaskPurpose = "modeling") -> str:
     """按执行后端返回对应语言的系统提示词。"""
     from app.core.prompts.persona import remit_voice
@@ -347,8 +360,13 @@ def get_coder_prompt(language: str, task_purpose: TaskPurpose = "modeling") -> s
         raise ValueError("未知任务目标")
     if task_purpose == "numerical_verification":
         return (
-            remit_voice("coder") + f"执行语言：{language}。\n" + NUMERICAL_CODER_PROMPT
+            remit_voice("coder")
+            + f"执行语言：{language}。\n"
+            + NUMERICAL_CODER_PROMPT
+            + DATA_IDENTITY_RULES
         )
-    return remit_voice("coder") + (
-        MATLAB_CODER_PROMPT if language == "matlab" else CODER_PROMPT
+    return (
+        remit_voice("coder")
+        + (MATLAB_CODER_PROMPT if language == "matlab" else CODER_PROMPT)
+        + DATA_IDENTITY_RULES
     )

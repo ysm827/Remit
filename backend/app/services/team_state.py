@@ -261,7 +261,20 @@ def snapshot(root: Path) -> dict:
     from app.services.work_timing import summary as work_summary
 
     timing = work_summary(resolved_root, state=state)
-    failure = read_json(root / ".runtime-failure.json") if status == "failed" else None
+    failure = (
+        read_json(root / ".runtime-failure.json")
+        if status in {"failed", "stopped"}
+        else None
+    )
+    if (
+        status == "stopped"
+        and failure
+        and (
+            failure.get("code") not in {"MODEL_STAGE_BUDGET", "EXECUTION_BUDGET"}
+            or failure.get("run_id") != state.get("execution_id")
+        )
+    ):
+        failure = None
     steps.extend(
         [
             {

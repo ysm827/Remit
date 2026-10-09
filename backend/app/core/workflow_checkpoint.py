@@ -587,6 +587,9 @@ class WorkflowCheckpoint:
         preserve_pilot = node_id == "pilot" and (
             preserve_selected_artifacts or recover_skipped_pilot
         )
+        if not preserve_selected_artifacts:
+            state.pop("model_stage_phase", None)
+            state.pop("pending_model_review", None)
 
         # 兼容升级前已经执行过 Fable、但尚未记录独立预算字段的任务。
         # 只要评审结论已经落盘，就视为本任务额度已使用，避免续跑再次扣费。
@@ -752,60 +755,16 @@ class WorkflowCheckpoint:
                 results.pop(key, None)
             state["solution_results"] = results
             revision_history = dict(state.get("model_revision_history", {}))
-            if preserve_selected_artifacts:
-                selected_history = revision_history.get(selected_key, [])
-                if isinstance(selected_history, list) and selected_history:
-                    pending_revision = selected_history[-1]
-                    revision_plan = pending_revision.get("revision_plan", {})
-                    revised_model = (
-                        str(revision_plan.get("selected_model", "")).strip()
-                        if isinstance(revision_plan, dict)
-                        else ""
-                    )
-                    quality_path = self.work_dir / f"{selected_key}_quality_report.json"
-                    try:
-                        quality_report = json.loads(
-                            quality_path.read_text(encoding="utf-8-sig")
-                        )
-                    except (OSError, json.JSONDecodeError):
-                        quality_report = {}
-                    recovered_model = (
-                        str(quality_report.get("selected_model", "")).strip()
-                        if isinstance(quality_report, dict)
-                        else ""
-                    )
-                    revised_normalized = "".join(
-                        character.casefold()
-                        for character in revised_model
-                        if character.isalnum()
-                    )
-                    recovered_normalized = "".join(
-                        character.casefold()
-                        for character in recovered_model
-                        if character.isalnum()
-                    )
-                    if (
-                        pending_revision.get("trigger") == "modeler_review"
-                        and revised_normalized
-                        and recovered_normalized
-                        and revised_normalized not in recovered_normalized
-                    ):
-                        previous_plan = str(
-                            pending_revision.get("previous_plan", "")
-                        ).strip()
-                        modeler_response = state.get("modeler_response")
-                        if previous_plan and isinstance(modeler_response, dict):
-                            questions_solution = dict(
-                                modeler_response.get("questions_solution", {})
-                            )
-                            questions_solution[selected_key] = previous_plan
-                            modeler_response["questions_solution"] = questions_solution
+            # Resume preserves the current review decision and its unfinished
+            # revision. Only an explicit upstream redo invalidates that history.
             for key in invalid_solution_keys:
-                revision_history.pop(key, None)
+                if not (preserve_selected_artifacts and key == selected_key):
+                    revision_history.pop(key, None)
             state["model_revision_history"] = revision_history
             execution_reviews = dict(state.get("model_execution_reviews", {}))
             for key in invalid_solution_keys:
-                execution_reviews.pop(key, None)
+                if not (preserve_selected_artifacts and key == selected_key):
+                    execution_reviews.pop(key, None)
             state["model_execution_reviews"] = execution_reviews
             state["write_results"] = {}
         elif node_id.startswith("write:"):

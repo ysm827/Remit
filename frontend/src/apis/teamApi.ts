@@ -10,6 +10,31 @@ export interface ExecutionBudgetSnapshot {
 	node_id: string;
 	label: string;
 }
+export interface ModelBudgetSnapshot extends ExecutionBudgetSnapshot {
+    phase: "work" | "review";
+    elapsed_seconds: number;
+    seconds_limit: number;
+    remaining_seconds: number;
+    can_resume: boolean;
+}
+export interface ModelBudgetExtension {
+    confirmed: true;
+    request_id: string;
+    stage_key: string;
+    expected_used: number;
+    expected_limit: number;
+    expected_seconds: number;
+    additional_calls: number;
+    additional_seconds: number;
+}
+export function getModelBudget(id: string) {
+    return request.get<ModelBudgetSnapshot>(`/modeling/${encodeURIComponent(id)}/model-budget`);
+}
+export function resumeWithModelBudget(id: string, nodeId: string, extension?: ModelBudgetExtension) {
+    return request.post(`/modeling/${encodeURIComponent(id)}/resume`, {
+        node_id: nodeId, ...(extension ? { model_budget_extension: extension } : {}),
+    });
+}
 export interface ExecutionBudgetExtension {
 	confirmed: true;
 	request_id: string;

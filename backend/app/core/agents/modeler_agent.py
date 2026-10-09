@@ -842,6 +842,7 @@ class ModelerAgent(Agent):
                 "检查代码是否用端点、平均值或稀疏采样替代全区间约束，是否将抽样验证冒充完整证明；不确定时说明证据缺口",
                 "分清每张原始表、有效实体与跨表总行数，不把分段标题/结构性空白误作数据缺失；没有证据时不要归因误差来源",
                 "只能引用 execution_evidence 中真实存在的指标，不得编造数值",
+                "结合 supporting_artifact_previews 中直接读取的文件内容审查，不得只因 executed_code_preview 没打印同一张表就要求代码手重新打印；artifact_preview_coverage 或 truncated 表示传递范围有限，须明确区分未展示、真实缺失和数值错误",
                 "不得把 quality_report.key_inference 或 supporting_artifact_previews 中已经存在的系数、置信区间、显著性检验误判为缺失",
                 "若复杂预测模型的增益不稳定，但现有简单关系模型已完整报告效应量、聚类稳健或Bootstrap区间、校正后检验和局限，应优先 accept 并如实写明局限，不得仅为追求复杂度而 refine",
                 "机器门禁通过不等于模型已经充分；若有明确可执行的改进且仍有运行次数，选择 refine",

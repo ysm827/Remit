@@ -107,6 +107,23 @@ const event: TeamEvent = {
 };
 
 describe("团队对话调度与恢复", () => {
+	it("浏览器禁止存储时仍可打开项目、切换导航和发送消息", async () => {
+		const denied = () => { throw new DOMException("Storage blocked", "SecurityError"); };
+		const read = vi.spyOn(Storage.prototype, "getItem").mockImplementation(denied);
+		const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(denied);
+		const remove = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(denied);
+		const wrapper = mount(TeamChat, { props: { task_id: "project-1" } });
+		try {
+			await flushPromises();
+			await wrapper.get('button[aria-label="切换项目导航"]').trigger("click");
+			await wrapper.get(".composer textarea").setValue("继续讨论");
+			await wrapper.get(".composer textarea").trigger("keydown", { key: "Enter" });
+			await flushPromises();
+			expect(api.sendTeamMessage).toHaveBeenCalledOnce();
+			expect((wrapper.get(".composer textarea").element as HTMLTextAreaElement).value).toBe("");
+			expect(wrapper.text()).not.toContain("Storage blocked");
+		} finally { wrapper.unmount(); read.mockRestore(); write.mockRestore(); remove.mockRestore(); }
+	});
  it("仅阶段状态改变时保留历史分组，同时更新当前进度和新事件", async () => {
   const wrapper = mount(TeamChat, { props: { task_id: "project-1" } });
   try {

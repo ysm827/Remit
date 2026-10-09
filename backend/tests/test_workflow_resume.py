@@ -322,7 +322,7 @@ class WorkflowResumeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(root.joinpath("ques1_evidence.csv").is_file())
             self.assertEqual(resumed["current_node"], "solve:ques1")
 
-    def test_resume_restores_plan_when_review_revision_never_materialized(
+    def test_resume_preserves_plan_when_review_revision_never_materialized(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -335,6 +335,10 @@ class WorkflowResumeTests(unittest.IsolatedAsyncioTestCase):
             original_plan = "使用稳健线性关系模型"
             revised_plan = "改用GEE重新建模"
             state["modeler_response"]["questions_solution"]["ques1"] = revised_plan
+            state["model_execution_reviews"] = {
+                "ques1": [{"attempt": 1, "review": {"verdict": "refine"}}]
+            }
+            state["model_stage_phase"] = {"node": "solve:ques1", "phase": "work"}
             state["model_revision_history"] = {
                 "ques1": [
                     {
@@ -362,9 +366,11 @@ class WorkflowResumeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(
                 resumed["modeler_response"]["questions_solution"]["ques1"],
-                original_plan,
+                revised_plan,
             )
-            self.assertNotIn("ques1", resumed["model_revision_history"])
+            self.assertEqual(resumed["model_revision_history"]["ques1"][0]["previous_plan"], original_plan)
+            self.assertEqual(resumed["model_execution_reviews"]["ques1"][0]["review"]["verdict"], "refine")
+            self.assertEqual(resumed["model_stage_phase"]["phase"], "work")
 
     async def test_resume_start_message_overrides_old_stopped_status(self) -> None:
         manager = RedisManager(messages_dir=Path(tempfile.mkdtemp()))

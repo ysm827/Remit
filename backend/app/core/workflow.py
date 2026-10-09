@@ -1740,7 +1740,7 @@ class RemitWorkFlow(WorkFlow):
                                 if recovered_report.manual_review_required
                                 else "且已通过质量门禁的"
                             )
-                            + "产物，本次续跑直接恢复证据，不再调用代码手重复计算"
+                            + "产物，将结合待办返修意见恢复当前步骤"
                         ),
                         type=(
                             "warning"
@@ -1751,7 +1751,7 @@ class RemitWorkFlow(WorkFlow):
                 )
             except DeliverableValidationError as interrupted_error:
                 repair_execution_limit = get_repair_execution_limit(
-                    self.work_dir, contract
+                    self.work_dir, contract, interrupted_error
                 )
                 repair_prompt = build_repair_prompt(
                     contract,
@@ -1816,36 +1816,24 @@ class RemitWorkFlow(WorkFlow):
                 and revised_normalized not in recovered_normalized
             )
             if revision_not_materialized:
-                previous_plan = str(pending_revision.get("previous_plan", "")).strip()
-                if previous_plan:
-                    # 恢复的旧产物虽通过确定性门禁，但对应的建模手审核曾要求换模；
-                    # 未落地的换模被回滚后，必须重新审核旧方案，不能静默自动接收。
-                    model_plan = previous_plan
-                    revision_history.pop()
-                    if execution_reviews:
-                        execution_reviews.pop()
-                    saved_modeler = state.get("modeler_response")
-                    if isinstance(saved_modeler, dict):
-                        saved_solutions = dict(
-                            saved_modeler.get("questions_solution", {})
-                        )
-                        saved_solutions[key] = previous_plan
-                        saved_modeler["questions_solution"] = saved_solutions
-                    self.checkpoint.save(state)
-                    await redis_manager.publish_message(
-                        self.task_id,
-                        SystemMessage(
-                            content=(
-                                f"检测到 {key} 的换模计划尚未生成对应产物，"
-                                "已回退到现有通过门禁的模型证据重新复核"
-                            ),
-                            type="warning",
-                        ),
-                    )
-        for gate_attempt in range(1, 4):
+                # A technical pause does not revoke a scientific review. Resume
+                # its saved work instead of reviewing the same rejected evidence.
+                recovered_gate_report = None
+                model_plan = str(revision_plan.get("revised_strategy", model_plan))
+                coder_prompt = self._build_model_revision_coder_prompt(
+                    question_text=question_text,
+                    gate_error=str(pending_revision.get("gate_error", "继续未完成的结果补件")),
+                    revision_plan=revision_plan,
+                    contract_prompt=contract.prompt_block(),
+                )
+                repair_execution_limit = None
+        first_gate_attempt = min(3, 1 + sum(
+            item.get("trigger") == "modeler_review" for item in revision_history
+        ))
+        for gate_attempt in range(first_gate_attempt, 4):
             if contract is None:
                 raise RuntimeError(f"{key} 缺少强制质量契约")
-            if gate_attempt == 1 and recovered_gate_report is not None:
+            if gate_attempt == first_gate_attempt and recovered_gate_report is not None:
                 coder_response = CoderToWriter(
                     code_response=(
                         f"已从 {contract.quality_filename} 恢复真实执行产物；"
@@ -1868,11 +1856,22 @@ class RemitWorkFlow(WorkFlow):
                     )
                 except OSError:
                     previous_report_version = None
+
+                def check_current_deliverables() -> bool:
+                    # A manual-review result also ends coding, but still goes
+                    # through the existing human gate below. Never auto-accept it.
+                    validate_question_deliverables(self.work_dir, contract)
+                    return True
+
+                state.pop("pending_model_review", None)
+                state["model_stage_phase"] = {"node": node_id, "phase": "work"}
+                self.checkpoint.save(state)
                 coder_response = await coder_agent.run(
                     prompt=coder_prompt,
                     subtask_title=key,
                     max_code_executions=repair_execution_limit,
                     required_files=(contract.quality_filename,),
+                    completion_check=check_current_deliverables,
                 )
                 await publish_activity(
                     self.task_id,
@@ -2031,7 +2030,7 @@ class RemitWorkFlow(WorkFlow):
                             task_context=f"{question_text}\n{model_plan}\n{revision_feedback or ''}",
                         )
                         repair_execution_limit = get_repair_execution_limit(
-                            self.work_dir, contract
+                            self.work_dir, contract, error
                         )
                     continue
 
@@ -2083,20 +2082,28 @@ class RemitWorkFlow(WorkFlow):
             review_rejected_models = list(dict.fromkeys(rejected_models))
             # 恢复磁盘产物仅能省掉重复计算，不能凭结构检查捏造建模手 accept。
             # 完整完成的节点由外层检查点跳过；走到这里的未完成节点仍须实际复核。
-            execution_review = await modeler_agent.review_execution_result(
-                question_key=key,
-                question_text=question_text,
-                current_plan=model_plan,
-                evidence=final_evidence,
-                rejected_models=review_rejected_models,
-                remaining_runs=3 - gate_attempt,
-                task_purpose=(state.get("problem") or {}).get(
-                    "task_purpose", "modeling"
-                ),
-                task_constraints=str(
-                    (state.get("problem") or {}).get("user_requirements", "")
-                ),
-            )
+            state["pending_model_review"] = node_id
+            state["model_stage_phase"] = {"node": node_id, "phase": "review"}
+            self.checkpoint.save(state)
+            from app.services.call_ledger import scope as model_call_scope
+
+            with model_call_scope(self.task_id, budget_phase="review"):
+                execution_review = await modeler_agent.review_execution_result(
+                    question_key=key,
+                    question_text=question_text,
+                    current_plan=model_plan,
+                    evidence=final_evidence,
+                    rejected_models=review_rejected_models,
+                    remaining_runs=3 - gate_attempt,
+                    task_purpose=(state.get("problem") or {}).get(
+                        "task_purpose", "modeling"
+                    ),
+                    task_constraints=str(
+                        (state.get("problem") or {}).get("user_requirements", "")
+                    ),
+                )
+            state.pop("pending_model_review", None)
+
             execution_reviews.append(
                 {
                     "attempt": gate_attempt,
@@ -2106,6 +2113,7 @@ class RemitWorkFlow(WorkFlow):
             )
 
             if execution_review.verdict == "refine":
+                state["model_stage_phase"] = {"node": node_id, "phase": "work"}
                 revision_plan = execution_review.revision_plan
                 if revision_plan is None:
                     raise RuntimeError(
@@ -2356,7 +2364,7 @@ class RemitWorkFlow(WorkFlow):
             str(item) for item in revision_plan.get("rejected_models", [])
         )
         return f"""
-【建模手根据真实运行结果发起换模，必须重新执行代码】
+【按已保存的结果复核意见继续返修】
 问题：{question_text}
 上轮门禁失败：{gate_error}
 失败诊断：{revision_plan.get("diagnosis", "")}
@@ -2370,7 +2378,7 @@ class RemitWorkFlow(WorkFlow):
 验证方案：{revision_plan.get("validation_plan", "")}
 验收标准：{revision_plan.get("acceptance_criteria", "")}
 
-禁止复用上轮失败指标，禁止降低门槛，禁止仅修改 JSON。必须重新训练/求解、重新生成产物，并让程序独立复核。
+禁止复用上轮失败指标，禁止降低门槛，禁止仅修改 JSON。按上述方案执行并独立复核相关步骤；若仅要求补件，保留已通过核验的计算，只读取、补齐和核验缺失证据，不重训或重算无关部分。若要求更换模型，则必须真实运行新模型并生成对应产物。
 
 {contract_prompt}
 """.strip()

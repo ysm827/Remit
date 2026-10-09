@@ -47,6 +47,101 @@ def _planning_state(checkpoint: WorkflowCheckpoint) -> dict:
 
 
 class WorkflowRevisionExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_interrupted_result_review_resumes_without_reexecuting_valid_code(
+        self,
+    ):
+        from app.core.llm.errors import ModelStageBudgetExceeded
+        from app.services.call_ledger import budget_phase
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checkpoint = WorkflowCheckpoint(root)
+            state = _planning_state(checkpoint)
+            workflow = RemitWorkFlow()
+            workflow.task_id = "revision-execution"
+            workflow.work_dir = tmp
+            workflow.checkpoint = checkpoint
+            workflow.code_interpreter = SimpleNamespace(get_code_output=lambda _: "")
+            root.joinpath("eda_cleaned.csv").write_text("x\n1\n")
+            report = {
+                "status": "pass",
+                "problem_type": "eda",
+                "selected_model": "cleaning",
+                "candidate_models": [],
+                "robustness_checks": [{"name": "rows", "passed": True}],
+                "artifacts": ["eda_cleaned.csv"],
+                "paper_ready_images": [],
+                "type_specific": {
+                    "raw_rows": 1,
+                    "cleaned_rows": 1,
+                    "missingness_checked": True,
+                    "duplicates_checked": True,
+                    "outliers_assessed": True,
+                    "independent_unit_identified": True,
+                },
+            }
+            root.joinpath("eda_quality_report.json").write_text(json.dumps(report))
+            coder = SimpleNamespace(run=AsyncMock())
+            accepted = ModelExecutionReview(
+                verdict="accept",
+                summary="实际落盘的数据检查与质量报告均已通过核验，可以继续后续阶段。",
+                evidence=["数据已核验"],
+                strengths=["数据完整"],
+                weaknesses=[],
+                writer_guidance="仅按实际已经核验的数据结果写作，保留证据局限。",
+            )
+            phases = []
+
+            async def review(**kwargs):
+                phases.append(budget_phase(workflow.task_id))
+                if len(phases) == 1:
+                    raise ModelStageBudgetExceeded(
+                        used_calls=24,
+                        call_limit=24,
+                        elapsed_seconds=900,
+                        seconds_limit=900,
+                    )
+                return accepted
+
+            modeler = SimpleNamespace(
+                review_execution_result=AsyncMock(side_effect=review)
+            )
+            flows = MagicMock()
+            flows.get_writer_prompt.return_value = "write actual evidence"
+            arguments = dict(
+                key="eda",
+                value={
+                    "contract": build_stage_contract("eda"),
+                    "question_text": "核验数据",
+                    "model_plan": "核验",
+                    "coder_prompt": "计算",
+                },
+                flows=flows,
+                config_template={},
+                modeler_agent=modeler,
+                coder_agent=coder,
+                writer_agent=SimpleNamespace(run=AsyncMock()),
+                user_output=UserOutput(tmp, 1),
+            )
+            with (
+                patch.object(settings, "HIL_ENABLED", False),
+                patch.object(
+                    workflow_module.redis_manager, "publish_message", new=AsyncMock()
+                ),
+            ):
+                with self.assertRaises(ModelStageBudgetExceeded):
+                    await workflow._solution_node(state=state, **arguments)
+                self.assertEqual(checkpoint.load()["pending_model_review"], "solve:eda")
+                self.assertNotIn("solve:eda", checkpoint.load()["completed_nodes"])
+                checkpoint.mark_status("stopped")
+                resumed = checkpoint.prepare_resume(checkpoint.load(), "solve:eda")
+                await workflow._solution_node(state=resumed, **arguments)
+            coder.run.assert_not_awaited()
+            self.assertEqual(phases, ["review", "review"])
+            self.assertEqual(budget_phase(workflow.task_id), "work")
+            self.assertIn("solve:eda", checkpoint.load()["completed_nodes"])
+            self.assertNotIn("pending_model_review", checkpoint.load())
+
     async def test_pilot_config_error_is_not_skipped_as_completed(self):
         error = workflow_module.NonRetryableLLMError("missing workspaceid")
         workflow = RemitWorkFlow()

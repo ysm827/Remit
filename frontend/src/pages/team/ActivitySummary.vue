@@ -105,6 +105,8 @@ const latest = computed(() => {
 	return last ? progressText(last) : "等待新的阶段进展";
 });
 const currentDetail = computed(() => {
+	if (props.state?.failure && ["failed", "stopped"].includes(props.state.status))
+		return props.state.failure.reason;
 	const last = useful.value.at(-1);
 	if (
 		last &&
@@ -144,12 +146,13 @@ const headline = computed(() =>
 			? "建模已完成，待生成论文初稿"
 			: short(latest.value, 110),
 );
-const stageStatus = computed(
-	() =>
-		stage.value?.status ||
-		(waitingForPaper.value ? "ready" : props.state?.status) ||
-		"",
-);
+const stageStatus = computed(() => {
+	// The task's terminal state overrides a stale running step or replayed log.
+	const status = props.state?.status;
+	if (status && ["failed", "stopped", "interrupted", "cancelled", "awaiting_approval", "awaiting_review"].includes(status))
+		return status;
+	return stage.value?.status || (waitingForPaper.value ? "ready" : status) || "";
+});
 const completed = computed(() =>
 	(props.state?.steps || []).filter((s) => s.status === "completed").slice(-2),
 );
@@ -192,6 +195,8 @@ const milestones = computed(() => {
 	return [...unique.values()].slice(-3);
 });
 const attention = computed(() => {
+	if (props.state?.failure && ["MODEL_STAGE_BUDGET", "EXECUTION_BUDGET"].includes(props.state.failure.code) && ["failed", "stopped"].includes(stageStatus.value))
+		return "额度已暂停，成果已保留。请在下方查看额度并选择是否继续。";
 	if (stageStatus.value === "awaiting_review")
 		return "返修提案已生成，接受后才写入并编译。";
 	if (stageStatus.value === "awaiting_approval")
@@ -219,7 +224,7 @@ const time = (value: string) =>
   <header class="progress-heading"><RoleAvatar :role="latestRole" compact /><span class="progress-role">{{ roleLabels[latestRole] || 'Remit' }}</span><strong class="progress-label">{{ headline }}</strong><span v-if="statuses[stageStatus]" class="stage-status" :class="{attention: ['failed','warning','awaiting_approval','interrupted'].includes(stageStatus)}">{{ statuses[stageStatus] }}</span></header>
   <div class="progress-detail">
    <p v-if="completed.length" class="completed-line"><span class="detail-label">最近完成</span>{{ completed.map(s => s.label).join('、') }}</p>
-   <p v-if="stage && useful.length" class="current-line"><span class="detail-label">当前进展</span>{{ short(currentDetail) }}</p>
+   <p v-if="stage && (useful.length || state?.failure)" class="current-line"><span class="detail-label">当前进展</span>{{ short(currentDetail) }}</p>
    <p v-if="attention" class="attention-note" role="status">{{ attention }}</p>
    <div v-if="warnings.length" class="warning-note"><p><span class="detail-label">仍需核验</span>{{ warnings.map(s => s.label + (s.status === 'skipped' ? '（已跳过，未验证）' : '')).join('、') }}<span v-if="warningIssues.length">（{{ warningIssues.length }} 项）</span></p><OverlayDetails title="待核验事项" v-if="warningIssues.length"><template #trigger>查看待核验事项</template><ul><li v-for="issue in warningIssues" :key="issue">{{ issue }}</li></ul></OverlayDetails></div>
    <ol v-if="milestones.length" class="milestones" aria-label="最近关键进展"><li v-for="event in milestones" :key="event.seq"><span>{{ short(progressText(event)) }}</span><time>{{ time(event.at) }}</time></li></ol>

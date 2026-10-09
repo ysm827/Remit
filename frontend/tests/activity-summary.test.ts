@@ -66,6 +66,25 @@ const snapshot: TeamState = {
 		{ id: 'modeler', label: '总体建模方案', role: 'modeler', status: 'running' },
 	],
 };
+it.each(['stopped', 'failed', 'interrupted', 'cancelled'])('任务 %s 时不能被旧阶段的进行中覆盖', (status) => {
+ const state = { ...snapshot, status, failure: { code: 'MODEL_STAGE_BUDGET', layer: 'model', reason: '当前补件额度不足，成果已保存', technical_detail: '', retrying: false, attempts_used: 27, saved_result_count: 0 } };
+ const wrapper = mount(ActivitySummary, { props: { state, events: [event(1, '任务执行失败：旧预算24/24'), event(2, '正在校验交付质量')] } });
+ expect(wrapper.get('.stage-status').text()).not.toBe('进行中');
+ if (['stopped', 'failed'].includes(status)) {
+  expect(wrapper.get('.current-line').text()).toContain('当前补件额度不足');
+  expect(wrapper.get('.current-line').text()).not.toContain('24/24');
+  expect(wrapper.get('.attention-note').text()).toContain('查看额度');
+ }
+});
+it('状态先于日志到达时也显示暂停原因，恢复后更新当前进度', async () => {
+ const failure = { code: 'MODEL_STAGE_BUDGET', layer: 'model', reason: '补件额度不足', technical_detail: '', retrying: false, attempts_used: 27, saved_result_count: 0 };
+ const wrapper = mount(ActivitySummary, { props: { state: { ...snapshot, status: 'stopped', failure }, events: [] } });
+ expect(wrapper.get('.current-line').text()).toContain('补件额度不足');
+ await wrapper.setProps({ state: snapshot, events: [event(3, '正在补齐已保存结果的证据')] });
+ expect(wrapper.get('.stage-status').text()).toBe('进行中');
+ expect(wrapper.get('.current-line').text()).toContain('正在补齐');
+ expect(wrapper.text()).not.toContain('补件额度不足');
+});
 it('跳过的探索不进入最近完成，并一直保留未验证提醒', async () => {
  const state = { ...snapshot, steps: [
   { id: 'pilot', label: '候选探索', role: 'coder', status: 'skipped', issues: ['候选结果不完整，沿用原方案'] },

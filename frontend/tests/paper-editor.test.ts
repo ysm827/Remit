@@ -53,6 +53,39 @@ describe("论文编辑器保存与编译", () => {
 		api.compilePaper.mockResolvedValue({ data: { status: "completed" } });
 	});
 	afterEach(() => vi.useRealTimers());
+	it("慢请求不堆积轮询，离开页面后不再安排刷新", async () => {
+		const response = await api.getPaperWorkspace();
+		api.getPaperWorkspace.mockClear();
+		const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
+		try {
+			await flushPromises();
+			let finish: (value: unknown) => void = () => {};
+			api.getPaperWorkspace.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+			await vi.advanceTimersByTimeAsync(16000);
+			expect(api.getPaperWorkspace).toHaveBeenCalledTimes(2);
+			finish(response);
+			await flushPromises();
+			await vi.advanceTimersByTimeAsync(4000);
+			expect(api.getPaperWorkspace).toHaveBeenCalledTimes(3);
+		} finally { wrapper.unmount(); }
+		await vi.advanceTimersByTimeAsync(16000);
+		expect(api.getPaperWorkspace).toHaveBeenCalledTimes(3);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+	it("首次加载完成前离开，不读取源码也不遗留轮询计时器", async () => {
+		const response = await api.getPaperWorkspace();
+		api.getPaperWorkspace.mockClear();
+		let finish: (value: unknown) => void = () => {};
+		api.getPaperWorkspace.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+		const wrapper = mount(PaperEditor, { props: { task_id: "test" } });
+		wrapper.unmount();
+		finish(response);
+		await flushPromises();
+		await vi.advanceTimersByTimeAsync(16000);
+		expect(api.getPaperWorkspace).toHaveBeenCalledOnce();
+		expect(api.getPaperSource).not.toHaveBeenCalled();
+		expect(vi.getTimerCount()).toBe(0);
+	});
 	it("章节提案保留手工编辑，接受冲突后仍可拒绝", async () => {
 		const workspace = (await api.getPaperWorkspace()).data;
 		api.getPaperWorkspace.mockResolvedValue({

@@ -110,7 +110,7 @@ const savedAt = ref("");
 const busy = ref(false);
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let compileTimer: ReturnType<typeof setTimeout> | undefined;
-let pollTimer: ReturnType<typeof setInterval> | undefined;
+let pollTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingSave: Promise<boolean> | null = null;
 let disposed = false;
 let refreshSequence = 0;
@@ -571,30 +571,38 @@ watch(autoCompile, (enabled) => {
 	else clearTimeout(compileTimer);
 });
 onBeforeRouteLeave(async () => await save());
+function scheduleRefresh() {
+	if (disposed) return;
+	pollTimer = setTimeout(async () => {
+		if (disposed) return;
+		try {
+			await refresh();
+		} catch {
+			/* 编辑内容留在本地，下次轮询重试。 */
+		} finally {
+			// Wait for the previous request, so slow services cannot stack polls.
+			scheduleRefresh();
+		}
+	}, 4000);
+}
 onMounted(async () => {
 	window.addEventListener("beforeunload", preventLoss);
 	try {
 		await refresh();
+		if (disposed) return;
 		await loadFile(project.value?.main || "main.tex");
 	} catch (cause) {
 		error.value = message(cause);
 	} finally {
 		loading.value = false;
 	}
-	pollTimer = setInterval(async () => {
-		if (disposed) return;
-		try {
-			await refresh();
-		} catch {
-			/* 编辑内容留在本地，下次轮询重试。 */
-		}
-	}, 4000);
+	scheduleRefresh();
 });
 onUnmounted(() => {
 	disposed = true;
 	clearTimeout(saveTimer);
 	clearTimeout(compileTimer);
-	clearInterval(pollTimer);
+	clearTimeout(pollTimer);
 	window.removeEventListener("beforeunload", preventLoss);
 });
 </script>

@@ -128,7 +128,8 @@ def test_owned_compiler_children_exit_and_unrelated_process_survives(tmp_path, m
     script.write_text(
         "import subprocess,sys,time,json,os\nfrom pathlib import Path\n"
         "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'])\n"
-        "Path('owned.json').write_text(json.dumps([os.getpid(),child.pid]))\n"
+        "Path('owned.tmp').write_text(json.dumps([os.getpid(),child.pid]))\n"
+        "Path('owned.tmp').replace('owned.json')\n"
         "time.sleep(30)\n",
         encoding="utf-8",
     )

@@ -167,59 +167,25 @@ def model_stage_limits(state: dict) -> tuple[int, float]:
     return settings.LLM_STAGE_CALL_LIMIT * units, settings.LLM_STAGE_API_SECONDS * units
 
 
-def reserve(task_id: str, purpose: str, call_id: str, attempt_id: str) -> float | None:
-    """在实际调用前原子预占阶段预算；重启与技术恢复不能重置次数。"""
-    if not task_id:
-        return
-    from app.utils.common_utils import get_work_dir
-    from app.services.writing_workspace import read_json
-    from app.core.llm.errors import ModelStageBudgetExceeded
-
-    try:
-        root = Path(get_work_dir(task_id))
-    except FileNotFoundError:
-        return
-    state = read_json(root / "workflow_state.json")
-    paper = (
-        read_json(root / "paper/input.json")
-        if purpose.startswith("WriterAgent")
-        else {}
+def budget_phase(task_id: str) -> str:
+    current = _scope.get()
+    return (
+        "review"
+        if current.get("task_id") == task_id and current.get("budget_phase") == "review"
+        else "work"
     )
-    identity = {
-        "node": state.get("current_node") or purpose,
-        "revisions": state.get("revision_counts") or {},
-        "paper": paper.get("revision"),
-    }
-    key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    call_limit, seconds_limit = model_stage_limits(state)
-    with closing(sqlite3.connect(root / ".calls.sqlite3", timeout=3)) as db:
-        db.execute(
-            "CREATE TABLE IF NOT EXISTS reservations (attempt_id TEXT PRIMARY KEY, call_id TEXT, stage_key TEXT)"
-        )
-        db.execute("BEGIN IMMEDIATE")
-        used = db.execute(
-            "SELECT COUNT(*) FROM reservations WHERE stage_key=?", (key,)
-        ).fetchone()[0]
-        elapsed = 0.0
-        if db.execute("SELECT 1 FROM sqlite_master WHERE name='calls'").fetchone():
-            elapsed = db.execute(
-                "SELECT COALESCE(SUM(c.elapsed_seconds),0) FROM calls c JOIN reservations r ON c.attempt_id=r.attempt_id WHERE r.stage_key=?",
-                (key,),
-            ).fetchone()[0]
-        remaining = seconds_limit - elapsed
-        if used >= call_limit or remaining <= 0:
-            raise ModelStageBudgetExceeded(
-                used_calls=used,
-                call_limit=call_limit,
-                elapsed_seconds=elapsed,
-                seconds_limit=seconds_limit,
-            )
-        db.execute(
-            "INSERT OR IGNORE INTO reservations VALUES(?,?,?)",
-            (attempt_id, call_id, key),
-        )
-        db.commit()
-        return remaining
+
+
+def reserve(task_id: str, purpose: str, call_id: str, attempt_id: str) -> float | None:
+    """Atomically reserve work/review allowance without resetting legacy usage."""
+    if not task_id:
+        return None
+    from app.services.model_budget import for_task
+
+    budget = for_task(task_id, purpose)
+    if budget is None:
+        return None
+    return budget.reserve(call_id, attempt_id, budget_phase(task_id))
 
 
 class ExecutionBudgetExceeded(RuntimeError):

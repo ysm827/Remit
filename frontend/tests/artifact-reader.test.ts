@@ -1,10 +1,23 @@
 import "./helpers/stub-floating-panels";
 import ArtifactContent from "@/pages/team/ArtifactContent.vue";
 import ResultReport from "@/pages/team/ResultReport.vue";
+import * as markdown from "@/utils/markdown";
 import { mount } from "@vue/test-utils";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 describe("项目成果阅读视图", () => {
+	it("长公式正文打开浮窗不重复排版，内容变化仍重新净化", async () => {
+		const render = vi.spyOn(markdown, "renderMarkdown");
+		const wrapper = mount(ArtifactContent, { props: { value: `${"正文".repeat(400)} $x^2$` } });
+		try {
+			expect(render).toHaveBeenCalledOnce();
+			await wrapper.get("button").trigger("click");
+			expect(render).toHaveBeenCalledOnce();
+			await wrapper.setProps({ value: "修改后的正文<script>alert(1)</script>" });
+			expect(render).toHaveBeenCalledTimes(2);
+			expect(wrapper.find("script").exists()).toBe(false);
+		} finally { wrapper.unmount(); render.mockRestore(); }
+	});
 	it("不将内部数字核对集合冒充计算依据", async () => {
 		const wrapper = mount(ResultReport, {
 			props: {

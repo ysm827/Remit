@@ -2,6 +2,7 @@ import "katex/dist/katex.min.css";
 import DOMPurify from "dompurify";
 import katex from "katex";
 import { Marked, type MarkedOptions } from "marked";
+import { readBrowserStorage } from "./browserStorage";
 
 const BASE_OPTIONS: MarkedOptions = {
 	breaks: true,
@@ -79,7 +80,7 @@ function resolveLocalImages(
 	const apiBase =
 		import.meta.env.VITE_API_BASE_URL?.trim() || window.location.origin;
 	const taskId =
-		context.taskId ?? window.localStorage.getItem("currentTaskId") ?? "";
+		context.taskId ?? readBrowserStorage("localStorage", "currentTaskId") ?? "";
 	return markdown.replace(
 		/!\[([^\]]*)\]\(([^)]+)\)(?:\{[^}\n]*\})?/g,
 		(_raw, alt: string, source: string) => {

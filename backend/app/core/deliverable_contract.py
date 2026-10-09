@@ -11,6 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from app.core.artifact_integrity import (
+    ArtifactIntegrityError,
+    validate_artifact_integrity,
+)
 from app.core.paper_quality import audit_paper_style
 from app.core.task_purpose import TaskPurpose
 from app.utils.notebook_text import notebook_output_text
@@ -141,6 +145,10 @@ class ModelQualityValidationError(DeliverableValidationError):
     """模型性能、可行性或稳定性不达标，必须交回建模手换模。"""
 
 
+class ArtifactConsistencyValidationError(DeliverableValidationError):
+    """产物计算不一致，应修源码重算，不能按补报告或换模型处理。"""
+
+
 @dataclass(frozen=True)
 class QuestionDeliverableContract:
     """Machine-checkable output contract for one workflow stage."""
@@ -219,6 +227,7 @@ class QuestionDeliverableContract:
         common = f"""
 【交付检查：未通过时禁止写论文、禁止进入下一问】
 1. 本阶段类型固定为 `{self.problem_type}`，必须在工作目录根目录生成 `{self.quality_filename}`。
+   `problem_type` 是工作流协议枚举，必须逐字填写 `{self.problem_type}`；机理/数据驱动等学科分类另放 `domain_type`，不能覆盖阶段类型。
 2. 质量报告必须包含：
    - `status`（{status_rule}）、`problem_type`、`selected_model`；
    - `candidate_models`：{candidate_rule}；
@@ -234,6 +243,12 @@ class QuestionDeliverableContract:
    只有观测差异但没有规定阈值时，报告实测差异、对计算的影响和未决问题；不能自行设阈值再要求用户批准放宽。
    代码错误、文件未保存、旧报告和表头读取错误属于技术返修，不能包装为科学冲突交用户裁决。
 7. 报告对数据来源与计算口径的描述必须与实际导出字段一致；每个 passed 应从真实检查推导，不能为了结束任务直接赋 true。
+8. 结果表若从另一张表或矩阵提取数值，在 `artifact_relations` 声明按编号的精确对应关系，供后端独立逐行回读。
+   表对表例：{{"kind":"keyed_column","table":"result.csv","key":"id","value":"distance_m","unit":"m","reference":"source.csv","reference_key":"id","reference_value":"distance_m","reference_unit":"m"}}。
+   矩阵例：{{"kind":"matrix_lookup","table":"result.csv","key":"id","value":"distance_m","unit":"m","reference":"distance_matrix_m.csv","reference_key":"id","anchor":"实际起点编号","reference_unit":"m"}}。
+   不同口径的估算不能声明为精确复制；关系没有覆盖的计算仍需独立验证。默认单位 1 表示无量纲，长度支持 m/km/cm/mm。
+   默认要求完整编号覆盖；确实只导出子集时显式声明 `coverage: "subset"`，并在验证说明中解释子集范围。
+   所有编号保持字符串，禁止把 reset_index 后的行号当原矩阵索引。核验后回读文件，修复生成源码并重算受影响下游产物。
 """.strip()
 
         if self.problem_type == "eda":
@@ -374,6 +389,7 @@ class DeliverableValidationReport:
     paper_ready_images: tuple[str, ...] = ()
     manual_review_required: bool = False
     manual_review_reason: str | None = None
+    artifact_checks: tuple[dict, ...] = ()
 
 
 def _question_number(question_key: str) -> int | None:
@@ -605,7 +621,9 @@ def _raise_collected(errors: list[DeliverableValidationError]) -> None:
     if len(errors) == 1:
         raise errors[0]
     error_type = (
-        ModelQualityValidationError
+        ArtifactConsistencyValidationError
+        if any(isinstance(item, ArtifactConsistencyValidationError) for item in errors)
+        else ModelQualityValidationError
         if any(isinstance(item, ModelQualityValidationError) for item in errors)
         else DeliverableValidationError
     )
@@ -1500,10 +1518,16 @@ def validate_question_deliverables(
         # 避免把格式错误误诊为需要换模的质量失败。
         report_readable = bool(quality_report)
     manual_review = quality_report.get("status") == "manual_review"
+    artifact_checks = ()
+    try:
+        artifact_checks = validate_artifact_integrity(root, quality_report)
+    except ArtifactIntegrityError as exc:
+        errors.append(ArtifactConsistencyValidationError(str(exc)))
     if not contract.requires_prediction_values:
         _raise_collected(errors)
         return DeliverableValidationReport(
             passed=not manual_review,
+            artifact_checks=artifact_checks,
             paper_ready_images=images,
             manual_review_required=manual_review,
             manual_review_reason=(
@@ -1522,6 +1546,7 @@ def validate_question_deliverables(
     _raise_collected(errors)
     return DeliverableValidationReport(
         passed=not manual_review,
+        artifact_checks=artifact_checks,
         prediction_rows=rows,
         primary_metric_name=name,
         model_value=model,
@@ -1663,6 +1688,7 @@ def collect_model_quality_evidence(
                 "key_inference",
                 "validation_summary",
                 "artifacts",
+                "artifact_relations",
                 "paper_ready_images",
             }
             evidence[label] = {
@@ -1673,6 +1699,18 @@ def collect_model_quality_evidence(
             evidence[label] = payload
 
     if quality_payload is not None:
+        try:
+            independent_checks = validate_artifact_integrity(root, quality_payload)
+            evidence["independent_artifact_checks"] = {
+                "status": "checked" if independent_checks else "not_covered",
+                "checks": list(independent_checks),
+                "scope": "仅验证列出的编号对应、有限数值、单位和复制一致性；不证明源模型或全部公式正确。",
+            }
+        except ArtifactIntegrityError as exc:
+            evidence["independent_artifact_checks"] = {
+                "status": "failed",
+                "error": str(exc),
+            }
         artifact_names = quality_payload.get("artifacts", [])
         if isinstance(artifact_names, list):
             previews: dict[str, Any] = {}
@@ -1689,8 +1727,8 @@ def collect_model_quality_evidence(
                 "structure",
             )
             for raw_name in artifact_names:
-                if len(previews) >= 8 or not isinstance(raw_name, str):
-                    break
+                if len(previews) >= 64 or not isinstance(raw_name, str):
+                    continue
                 name = raw_name.strip()
                 if not name or not name.casefold().endswith(
                     (".csv", ".json", ".py", ".m")
@@ -1746,18 +1784,40 @@ def collect_model_quality_evidence(
                         newline="",
                     ) as handle:
                         reader = csv.DictReader(handle)
-                        columns = list(reader.fieldnames or [])[:20]
+                        all_columns = list(reader.fieldnames or [])
+                        columns = all_columns[:20]
                         rows = [
                             {column: row.get(column) for column in columns}
-                            for _, row in zip(range(20), reader, strict=False)
+                            for _, row in zip(range(21), reader, strict=False)
                         ]
                 except (OSError, csv.Error, UnicodeError):
                     continue
+                truncated = len(rows) > 20 or len(all_columns) > 20
+                rows = rows[:20]
+                while rows and len(json.dumps(rows, ensure_ascii=False)) > 6000:
+                    rows.pop()
+                    truncated = True
                 previews[name] = {
                     "columns": columns,
                     "rows": rows,
                     "preview_limited_to_rows": 20,
+                    "truncated": truncated,
                 }
+            # Many stages have >8 small tables. Share those actual files rather
+            # than causing another model/code round just to print their contents.
+            remaining_chars = 48000
+            for name, preview in list(previews.items()):
+                size = len(json.dumps(preview, ensure_ascii=False)) + len(name)
+                if size > remaining_chars:
+                    del previews[name]
+                else:
+                    remaining_chars -= size
+            evidence["artifact_preview_coverage"] = {
+                "omitted": [name for name in artifact_names if isinstance(name, str)
+                            and name not in previews and name not in
+                            {contract.quality_filename, contract.metrics_filename}],
+                "note": "预览来自磁盘文件，有文件数、行列数与长度限制；未预览或截断不等于产物缺失，也不能作为已核验的证明。",
+            }
             if previews:
                 evidence["supporting_artifact_previews"] = previews
     return evidence
@@ -2337,7 +2397,9 @@ def _latest_stage_failure(root: Path, stage: str) -> str:
 
 
 def get_repair_execution_limit(
-    work_dir: str | Path, contract: QuestionDeliverableContract
+    work_dir: str | Path,
+    contract: QuestionDeliverableContract,
+    error: DeliverableValidationError | None = None,
 ) -> int:
     """Separate unfinished computation from a small report-format repair."""
     root = Path(work_dir)
@@ -2348,7 +2410,13 @@ def get_repair_execution_limit(
     needs_review_repair = (
         _peek_quality_report(root, contract).get("status") == "manual_review"
     )
-    return 4 if needs_review_repair or not has_evidence else 2
+    return (
+        4
+        if isinstance(error, ArtifactConsistencyValidationError)
+        or needs_review_repair
+        or not has_evidence
+        else 2
+    )
 
 
 def build_repair_prompt(
@@ -2382,7 +2450,7 @@ def build_repair_prompt(
             "当前需要完成或修正实质计算，不能按只补报告处理。最多四次执行（仍受全局上限约束）："
             "只读取原任务必要的数据，分步实现并保存真实结果；至少预留一次报错修复和回读核验。"
             "复用已执行的正确步骤，不要求把读取、全部处理、制图、报告挤进一次调用。"
-            if get_repair_execution_limit(root, contract) == 4
+            if get_repair_execution_limit(root, contract, error) == 4
             else "不要枚举目录、统计文件数量或重新探索原始数据。第一次 execute_code 只读取报错直接涉及的最少文件，"
             "并在同一次执行中生成或修复全部缺失文件；第二次 execute_code（如确有必要）用于修错或回读校验。"
         )

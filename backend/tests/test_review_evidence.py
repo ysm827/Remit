@@ -123,3 +123,27 @@ async def test_review_sends_current_scope_not_earlier_stage_transcripts():
         request["execution_evidence"]["stage_scope"]["requires_prediction_values"]
         is False
     )
+
+
+def test_small_eda_tables_after_eighth_artifact_are_visible_to_reviewer(tmp_path):
+    names = [f"table_{i}.csv" for i in range(10)] + ["comm_link_params.csv", "hand_anchor_time.csv"]
+    for name in names:
+        (tmp_path / name).write_text("id,value\n" + "".join(f"{i},{i*2}\n" for i in range(15)), encoding="utf-8")
+    (tmp_path / "eda_quality_report.json").write_text(json.dumps({"artifacts": names}))
+    result = collect_model_quality_evidence(tmp_path, build_stage_contract("eda"))
+    for name in names[-2:]:
+        preview = result["supporting_artifact_previews"][name]
+        assert len(preview["rows"]) == 15 and not preview["truncated"]
+    assert result["artifact_preview_coverage"]["omitted"] == []
+
+
+def test_artifact_evidence_stays_bounded_and_marks_truncation(tmp_path):
+    names = [f"table_{i}.csv" for i in range(70)]
+    for name in names:
+        (tmp_path / name).write_text("id,value\n" + "".join(f"{i},{'x'*200}\n" for i in range(30)))
+    (tmp_path / "eda_quality_report.json").write_text(json.dumps({"artifacts": names}))
+    result = collect_model_quality_evidence(tmp_path, build_stage_contract("eda"))
+    previews = result["supporting_artifact_previews"]
+    assert all(p["truncated"] for p in previews.values())
+    assert sum(len(json.dumps(p, ensure_ascii=False)) + len(n) for n,p in previews.items()) <= 48000
+    assert result["artifact_preview_coverage"]["omitted"]

@@ -16,6 +16,11 @@ from app.core.prompts.persona import remit_voice
 from app.routers.files_router import _resolve_task_directory
 from app.services import team_state as team
 from app.services.call_ledger import scope as call_scope
+from app.services.project_configuration import (
+    configuration_digest,
+    explicit_competition_request,
+    update_configuration,
+)
 from app.services.task_intake import parse_upload_paths, persist_uploads
 from app.services.writing_workspace import now, write_json
 from app.utils.common_utils import create_task_id, create_work_dir
@@ -70,6 +75,21 @@ def _intake_summary(value, depth=0):
 async def prepare(root: Path, request: str) -> dict:
     """协调者只预读和提问，所有附件内容仅作为不可信证据。"""
     meta = metadata(root)
+    selected = explicit_competition_request(request)
+    if selected and selected != meta.get("competition", {}).get("id"):
+        try:
+            update_configuration(root, meta, {"competition_id": selected})
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        meta["updated_at"] = now()
+        write_json(root / ".project.json", meta)
+        team.record(
+            root,
+            "coordinator",
+            "activity",
+            f"赛事配置已更新为 {meta['competition']['name']}，正在重新准备计划。",
+        )
+    planned_configuration = configuration_digest(meta)
     data_profile = await asyncio.to_thread(build_data_profile, root)
     parsed = {item["file"]: item for item in data_profile["files"]}
     profiles = []
@@ -189,9 +209,13 @@ async def prepare(root: Path, request: str) -> dict:
                     "content": "上一份回复未通过完整性校验。请重新输出一个完整的JSON对象；保持原有用户要求和所有尚未解决的问题，简短回答，不重复赛题，不启动建模。",
                 },
             ]
-    plan.update(id=uuid4().hex, attachments=profiles)
+    plan.update(
+        id=uuid4().hex, attachments=profiles, configuration_digest=planned_configuration
+    )
     # 保留预读期间用户改过的名称与归档字段。
     meta = metadata(root)
+    if configuration_digest(meta) != planned_configuration:
+        raise HTTPException(409, "准备期间配置已变化，请按最新配置重新准备计划。")
     meta.update(
         preflight=plan,
         status="needs_info" if plan["questions"] else "ready",
@@ -310,6 +334,13 @@ async def create_project(
 class ProjectUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=100)
     archived: bool | None = None
+    competition_id: str | None = Field(default=None, min_length=1, max_length=60)
+    competition_year: int | None = Field(default=None, ge=2000, le=2100)
+    paper_language: Literal["", "zh", "en"] | None = None
+    competition_requirements: str | None = Field(default=None, max_length=12000)
+    execution_backend: Literal["python", "matlab"] | None = None
+    task_purpose: Literal["modeling", "numerical_verification"] | None = None
+    literature_enabled: bool | None = None
 
 
 class ProjectDelete(BaseModel):
@@ -440,6 +471,16 @@ async def update_project(task_id: str, body: ProjectUpdate) -> dict:
         ):
             raise HTTPException(409, "项目仍在执行，请停止后再归档")
         meta = metadata(root)
+        changes = body.model_dump(exclude_none=True, exclude={"title", "archived"})
+        try:
+            update_configuration(root, meta, changes)
+        except ValueError as exc:
+            raise HTTPException(
+                409
+                if (root / "workflow_state.json").exists() or meta.get("archived")
+                else 422,
+                str(exc),
+            ) from exc
         if body.title is not None:
             if not body.title.strip():
                 raise HTTPException(422, "项目名称不能为空")
@@ -464,6 +505,7 @@ async def start(root: Path, plan_id: str | None, background: BackgroundTasks) ->
         or not plan_id
         or plan_id != plan.get("id")
         or plan.get("questions")
+        or plan.get("configuration_digest") != configuration_digest(meta)
     ):
         raise HTTPException(409, "计划已变化或还有未回答的问题，请检查当前计划后确认。")
     if (root / "workflow_state.json").exists():

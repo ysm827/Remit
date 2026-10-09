@@ -25,7 +25,7 @@ from app.utils.common_utils import (
     ensure_safe_task_id,
 )
 from app.core.llm.llm_factory import LLMFactory
-from app.core.llm.errors import TransientLLMError
+from app.core.llm.errors import TransientLLMError, ModelStageBudgetExceeded
 from app.core.problem_vision import (
     VisionResult,
     build_vision_supplement,
@@ -663,8 +663,17 @@ async def run_modeling_task_async(
         await redis_manager.publish_message(task_id, stopped)
     except Exception as e:
         error_message = _exception_message(e)
-        logger.exception(f"任务 {task_id} 执行失败: {error_message}")
-        workflow.mark_status("failed")
+        from app.core.llm.errors import ModelStageBudgetExceeded
+
+        budget_pause = isinstance(
+            e, (ModelStageBudgetExceeded, call_ledger.ExecutionBudgetExceeded)
+        )
+        task_status = "stopped" if budget_pause else "failed"
+        if budget_pause:
+            logger.warning(f"任务 {task_id} 额度暂停: {error_message}")
+        else:
+            logger.exception(f"任务 {task_id} 执行失败: {error_message}")
+        workflow.mark_status(task_status)
         attempt = _auto_resume_counts.get(task_id, 0) + 1
         transient = _is_transient_task_failure(e)
         will_retry = transient and attempt <= _AUTO_RESUME_LIMIT
@@ -683,20 +692,22 @@ async def run_modeling_task_async(
             task_id,
             SystemMessage(
                 content=(
-                    f"任务执行失败: {error_message}"
+                    f"{'任务额度暂停' if budget_pause else '任务执行失败'}: {error_message}"
                     + (
                         f"；将在 {delay_seconds} 秒后从检查点自动续跑"
                         f"（第 {attempt}/{_AUTO_RESUME_LIMIT} 次）"
                         if will_retry
                         else (
-                            "；已停止自动重试，请查看错误原因后续跑"
+                            "；请查看额度与已保存成果后继续"
+                            if budget_pause
+                            else "；已停止自动重试，请查看错误原因后续跑"
                             if not transient
                             else "；自动续跑次数已用完，请人工在页面上续跑或退回"
                         )
                     )
                 ),
-                type="error",
-                task_status="failed",
+                type="warning" if budget_pause else "error",
+                task_status=task_status,
             ),
         )
         if will_retry:
@@ -834,11 +845,23 @@ class ExecutionBudgetExtension(BaseModel):
     additional: int = Field(ge=1, le=48, strict=True)
 
 
+class ModelBudgetExtension(BaseModel):
+    confirmed: Literal[True]
+    request_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    stage_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_used: int = Field(ge=0, strict=True)
+    expected_limit: int = Field(ge=1, strict=True)
+    expected_seconds: float = Field(gt=0, allow_inf_nan=False)
+    additional_calls: int = Field(ge=1, le=24, strict=True)
+    additional_seconds: int = Field(ge=60, le=1800, strict=True)
+
+
 class ResumeTaskRequest(BaseModel):
     """从指定节点继续任务。"""
 
     node_id: str
     execution_budget_extension: ExecutionBudgetExtension | None = None
+    model_budget_extension: ModelBudgetExtension | None = None
 
 
 class ResumeTaskResponse(BaseModel):
@@ -1043,6 +1066,24 @@ async def get_execution_budget(task_id: str):
         raise HTTPException(409, str(exc)) from exc
 
 
+@router.get("/modeling/{task_id}/model-budget")
+async def get_model_budget(task_id: str):
+    from app.services.model_budget import for_task, resume_phase
+
+    checkpoint, state = _load_workflow_checkpoint(task_id)
+    if state.get("status") not in {"stopped", "failed"}:
+        raise HTTPException(409, "任务状态已变化，请刷新后查看")
+    budget = await run_blocking(for_task, task_id)
+    if budget is None or not state.get("current_node"):
+        raise HTTPException(409, "没有可恢复的模型阶段")
+    phase = resume_phase(budget.root, state)
+    return {
+        **await run_blocking(budget.snapshot, phase),
+        "node_id": state["current_node"],
+        "label": checkpoint.node_label(state["current_node"], state),
+    }
+
+
 @router.post(
     "/modeling/{task_id}/resume",
     response_model=ResumeTaskResponse,
@@ -1076,12 +1117,34 @@ async def resume_task(
     _scheduled_tasks.add(task_id)
     try:
         extension = request.execution_budget_extension
+        model_extension = request.model_budget_extension
+        if extension and model_extension:
+            raise HTTPException(422, "请分别确认执行额度或模型额度")
         same_stage = request.node_id == state.get(
             "current_node"
         ) and request.node_id not in state.get("completed_nodes", [])
-        if extension and not same_stage:
+        if (extension or model_extension) and not same_stage:
             raise HTTPException(409, "只能为当前未完成阶段追加执行次数")
         if same_stage:
+            from app.services.model_budget import for_task, resume_phase
+
+            model_budget = await run_blocking(for_task, task_id)
+            phase = resume_phase(model_budget.root, state) if model_budget else "work"
+            if model_extension:
+                if model_budget is None:
+                    raise HTTPException(409, "模型额度不可用")
+                await run_blocking(
+                    model_budget.extend,
+                    model_extension.request_id,
+                    model_extension.stage_key,
+                    model_extension.expected_used,
+                    model_extension.expected_limit,
+                    model_extension.expected_seconds,
+                    model_extension.additional_calls,
+                    model_extension.additional_seconds,
+                )
+            if model_budget:
+                model_budget.require(await run_blocking(model_budget.snapshot, phase))
             budget = await run_blocking(
                 call_ledger.execution_budget, task_id, request.node_id
             )
@@ -1095,11 +1158,22 @@ async def resume_task(
                         extension.expected_limit,
                         extension.additional,
                     )
-                await run_blocking(budget.remaining)
+                if phase != "review":
+                    await run_blocking(budget.remaining)
             elif extension:
                 raise HTTPException(409, "任务执行额度不可用")
         await redis_manager.clear_cancellation_request(task_id)
         _auto_resume_counts.pop(task_id, None)
+        if model_extension and not await run_blocking(
+            model_budget.mark_resume_scheduled, model_extension.request_id
+        ):
+            _scheduled_tasks.discard(task_id)
+            return ResumeTaskResponse(
+                success=True,
+                task_id=task_id,
+                node_id=request.node_id,
+                message="该模型额度确认已提交恢复，请查看当前进度。",
+            )
         if extension and not await run_blocking(
             budget.mark_resume_scheduled, extension.request_id
         ):
@@ -1121,6 +1195,7 @@ async def resume_task(
             execution_backend=problem.execution_backend,
         )
     except (
+        ModelStageBudgetExceeded,
         call_ledger.ExecutionBudgetExceeded,
         call_ledger.ExecutionBudgetConflict,
         call_ledger.ExecutionBudgetUnavailable,

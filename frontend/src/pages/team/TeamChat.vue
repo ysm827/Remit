@@ -21,7 +21,6 @@ import {
 	mergeTeamEvents,
 	prepareProject,
 	sendTeamMessage,
-	teamStreamUrl,
 	updateProject,
 	uploadProjectAttachments,
 } from "@/apis/teamApi";
@@ -70,7 +69,9 @@ import {
 	watch,
 } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
+import { readBrowserStorage, writeBrowserStorage } from "@/utils/browserStorage";
 import ActivitySummary from "./ActivitySummary.vue";
+import { useTeamStream } from "./useTeamStream";
 import { explainConversationError } from "./conversationErrors";
 import MessageContent from "./MessageContent.vue";
 import RoleAvatar from "./RoleAvatar.vue";
@@ -169,10 +170,10 @@ async function confirmDelete() {
 		history.value = history.value.filter(
 			(item) => item.task_id !== project.task_id,
 		);
-		sessionStorage.removeItem(`team-draft:${project.task_id}`);
+		writeBrowserStorage("sessionStorage", `team-draft:${project.task_id}`, null);
 		deleteTarget.value = null;
 		if (project.task_id === props.task_id) {
-			stream?.close();
+			closeStream();
 			await router.push("/home");
 		}
 	} catch (cause) {
@@ -269,58 +270,27 @@ const events = shallowRef<TeamEvent[]>([]);
 const draft = ref("");
 const sending = ref(false);
 const error = ref("");
-const connection = ref("连接中");
+const { connection, open: openStream, close: closeStream } = useTeamStream(
+	(incoming, nextState) => {
+		if (incoming.length) events.value = mergeTeamEvents(events.value, incoming);
+		state.value = nextState;
+		const entry = history.value.find((item) => item.task_id === props.task_id);
+		if (entry) {
+			entry.title = nextState.title;
+			entry.status = nextState.status;
+		}
+		if (incoming.some((event) => ["proposal", "review"].includes(event.kind)))
+			void refreshProposals().catch(() => {});
+	},
+	() => { void router.push("/home"); },
+);
 const CONNECTION_HINT =
 	"页面与本地服务之间的实时同步状态。中断期间后台计算与写作照常进行，恢复后自动补齐消息；长时间未恢复请检查本地服务是否仍在运行。";
-let connectionWasInterrupted = false;
-let disconnectNoticeTimer: ReturnType<typeof setTimeout> | undefined;
-let reconnectFlashTimer: ReturnType<typeof setTimeout> | undefined;
-let longDisconnectTimer: ReturnType<typeof setTimeout> | undefined;
-
-function clearConnectionTimers() {
-	clearTimeout(disconnectNoticeTimer);
-	clearTimeout(reconnectFlashTimer);
-	clearTimeout(longDisconnectTimer);
-}
-
-function handleStreamOpen() {
-	clearConnectionTimers();
-	if (connectionWasInterrupted) {
-		connectionWasInterrupted = false;
-		connection.value = "已重新连接";
-		reconnectFlashTimer = setTimeout(() => {
-			connection.value = "实时同步";
-		}, 3000);
-	} else {
-		connection.value = "实时同步";
-	}
-}
-
-/** 瞬时断线由 EventSource 自动恢复；延迟确认仍中断才提示，避免状态栏闪烁。 */
-function handleStreamError() {
-	clearConnectionTimers();
-	if (stream?.readyState === EventSource.CLOSED) {
-		stream.close();
-		connection.value =
-			"页面同步已停止，请确认项目仍存在、本地服务可用后刷新页面；此状态不会停止后台任务";
-		return;
-	}
-	disconnectNoticeTimer = setTimeout(() => {
-		connectionWasInterrupted = true;
-		connection.value =
-			"页面同步暂时断开，正在自动重连；建模与写作在后台照常进行，恢复后自动补齐消息";
-		longDisconnectTimer = setTimeout(() => {
-			connection.value =
-				"同步仍未恢复：后台任务不受影响；如持续数分钟，请确认本地服务在运行后刷新页面";
-		}, 30000);
-	}, 4000);
-}
-
 const settingsOpen = ref(false);
 const sidebarOpen = ref(false);
 const narrowScreen = useMediaQuery("(max-width: 850px)");
 const sidebarCollapsed = ref(
-	localStorage.getItem("remit-sidebar-collapsed") === "true",
+	readBrowserStorage("localStorage", "remit-sidebar-collapsed") === "true",
 );
 const sidebarVisible = computed(() =>
 	narrowScreen.value ? sidebarOpen.value : !sidebarCollapsed.value,
@@ -330,7 +300,8 @@ function toggleSidebar() {
 	if (narrowScreen.value) sidebarOpen.value = !sidebarOpen.value;
 	else {
 		sidebarCollapsed.value = !sidebarCollapsed.value;
-		localStorage.setItem(
+		writeBrowserStorage(
+			"localStorage",
 			"remit-sidebar-collapsed",
 			String(sidebarCollapsed.value),
 		);
@@ -374,7 +345,6 @@ const scrollArea = ref<HTMLElement | null>(null);
 const following = ref(true);
 const visibleCount = ref(120);
 const filter = ref("all");
-let stream: EventSource | null = null;
 let disposed = false;
 let pendingRequest: {
 	id: string;
@@ -663,7 +633,7 @@ async function send(
 					...(problemDocument.value ? [problemDocument.value] : []),
 				],
 			);
-			sessionStorage.removeItem("team-draft:home");
+			writeBrowserStorage("sessionStorage", "team-draft:home", null);
 			await router.push(`/project/${response.data.task_id}`);
 			return;
 		}
@@ -729,7 +699,7 @@ function handleKey(event: KeyboardEvent) {
 }
 
 watch(draft, (value) =>
-	sessionStorage.setItem(`team-draft:${props.task_id || "home"}`, value),
+	writeBrowserStorage("sessionStorage", `team-draft:${props.task_id || "home"}`, value),
 );
 watch(draft, async () => {
 	await nextTick();
@@ -745,47 +715,9 @@ watch(
 		if (following.value) void scrollToLatest();
 	},
 );
-// Backlog pages arrive in a burst. Keep every sequence but publish one update
-// once caught up, or within 50 ms if the stream is slow. Live updates stay immediate.
-let streamUpdateTimer: ReturnType<typeof setTimeout> | undefined;
-let pendingStreamState: TeamState | null = null;
-const pendingStreamEvents = new Map<number, TeamEvent>();
-function flushStreamUpdate() {
-	clearTimeout(streamUpdateTimer);
-	streamUpdateTimer = undefined;
-	const nextState = pendingStreamState;
-	pendingStreamState = null;
-	const incoming = [...pendingStreamEvents.values()];
-	pendingStreamEvents.clear();
-	if (disposed || !nextState) return;
-	if (incoming.length) events.value = mergeTeamEvents(events.value, incoming);
-	state.value = nextState;
-	const entry = history.value.find((item) => item.task_id === props.task_id);
-	if (entry) {
-		entry.title = nextState.title;
-		entry.status = nextState.status;
-	}
-	if (incoming.some((event) => ["proposal", "review"].includes(event.kind)))
-		void refreshProposals().catch(() => {});
-}
-function queueStreamUpdate(incoming: TeamEvent[], nextState: TeamState) {
-	for (const event of incoming) pendingStreamEvents.set(event.seq, event);
-	pendingStreamState = nextState;
-	let latest = 0;
-	for (const seq of pendingStreamEvents.keys()) latest = Math.max(latest, seq);
-	if (
-		!incoming.length ||
-		!Number.isFinite(nextState.sequence) ||
-		latest >= nextState.sequence
-	) {
-		flushStreamUpdate();
-	} else if (streamUpdateTimer === undefined) {
-		streamUpdateTimer = setTimeout(flushStreamUpdate, 50);
-	}
-}
 onMounted(async () => {
 	draft.value =
-		sessionStorage.getItem(`team-draft:${props.task_id || "home"}`) || "";
+		readBrowserStorage("sessionStorage", `team-draft:${props.task_id || "home"}`) || "";
 	void loadHistory();
 	if (!props.task_id) {
 		try {
@@ -799,29 +731,7 @@ onMounted(async () => {
 		await refreshState();
 		void refreshProposals().catch(() => {});
 		if (disposed) return;
-		stream = new EventSource(teamStreamUrl(props.task_id));
-		stream.addEventListener("deleted", () => {
-			stream?.close();
-			if (!disposed) void router.push("/home");
-		});
-		stream.onopen = () => {
-			handleStreamOpen();
-		};
-		stream.onerror = () => {
-			handleStreamError();
-		};
-		stream.onmessage = (message) => {
-			if (disposed) return;
-			try {
-				const data = JSON.parse(message.data) as {
-					events: TeamEvent[];
-					state: TeamState;
-				};
-				queueStreamUpdate(data.events, data.state);
-			} catch {
-				connection.value = "同步数据异常，请刷新";
-			}
-		};
+		openStream(props.task_id);
 	} catch (cause) {
 		error.value = explainModelingSubmissionFailure(cause);
 		connection.value = "未连接";
@@ -829,11 +739,6 @@ onMounted(async () => {
 });
 onBeforeUnmount(() => {
 	disposed = true;
-	clearTimeout(streamUpdateTimer);
-	pendingStreamEvents.clear();
-	pendingStreamState = null;
-	clearConnectionTimers();
-	stream?.close();
 });
 </script>
 
@@ -896,7 +801,7 @@ onBeforeUnmount(() => {
      </section>
     </div>
     <div class="composer-area">
-     <TaskFailureNotice v-if="state?.status === 'failed'" :state="state" :sending="sending || conversationPending || !!state.archived" @resume="send('重试当前失败步骤','resume')" @resumed="refreshState" @settings="settingsOpen = true" @view="value => router.replace({ query: { ...route.query, view: value } })" />
+     <TaskFailureNotice v-if="state && (state.status === 'failed' || (state.status === 'stopped' && state.failure))" :state="state" :sending="sending || conversationPending || !!state.archived" @resume="send('重试当前失败步骤','resume')" @resumed="refreshState" @settings="settingsOpen = true" @view="value => router.replace({ query: { ...route.query, view: value } })" />
      <button v-if="!following" class="latest-button" @click="scrollToLatest">回到最新 ↓</button>
      <FloatingPanel v-model:open="uploadsOpen" :anchor="attachmentTrigger" title="赛题文档" :width="460"><ProblemPdfDropzone @parsed="acceptProblemDocument" @cleared="() => { problemDocument = null; problemText = ''; }" /></FloatingPanel>
      <div v-if="!task_id" class="attachment-list"><span v-if="problemDocument"><FileText :size="13" />{{ problemDocument.name }}<button aria-label="移除赛题文档" @click="problemDocument = null; problemText = ''"><X :size="12" /></button></span><span v-for="group in attachmentGroups" :key="group.key"><FolderOpen v-if="group.folder" :size="13" /><Paperclip v-else :size="13" />{{ group.label }}<small v-if="group.folder">{{ group.count }} 个文件</small><button :aria-label="'移除 ' + group.label" @click="removeAttachmentGroup(group.key)"><X :size="12" /></button></span></div>
@@ -929,7 +834,7 @@ onBeforeUnmount(() => {
     </div>
 
    </section>
-   <FloatingPanel v-if="task_id" v-model:open="boardOpen" :anchor="boardTrigger" side="bottom" title="项目进度" :width="390"><aside class="shared-board floating-board" aria-label="共享全局状态表"><div class="role-grid"><div v-for="role in ['coordinator','modeler','coder','writer']" :key="role"><span class="role-name"><RoleAvatar :role="role" compact />{{ labels[role] }}</span><small>{{ statusLabel(roleStatus(role)) }}</small></div></div><ol class="step-list"><li v-for="step in state?.steps" :key="step.id"><Check v-if="step.status === 'completed'" :size="14" /><span v-else class="step-dot" /><div>{{ step.label }}<small>{{ statusLabel(step.status) }}</small></div></li></ol><button v-if="state?.status === 'completed'" class="primary-button" @click="send('用已验收成果生成论文初稿','write')">开始论文写作</button><button v-if="['stopped','failed'].includes(state?.status || '') && state?.failure?.code !== 'EXECUTION_BUDGET'" class="primary-button" @click="send('继续建模','resume')">继续建模</button><div v-for="item in state?.directives" :key="item.id" class="directive"><p>{{ item.content }}</p><small>{{ item.seen.map(role => labels[role]).join('、') || '等待角色读取' }}</small></div></aside></FloatingPanel>
+   <FloatingPanel v-if="task_id" v-model:open="boardOpen" :anchor="boardTrigger" side="bottom" title="项目进度" :width="390"><aside class="shared-board floating-board" aria-label="共享全局状态表"><div class="role-grid"><div v-for="role in ['coordinator','modeler','coder','writer']" :key="role"><span class="role-name"><RoleAvatar :role="role" compact />{{ labels[role] }}</span><small>{{ statusLabel(roleStatus(role)) }}</small></div></div><ol class="step-list"><li v-for="step in state?.steps" :key="step.id"><Check v-if="step.status === 'completed'" :size="14" /><span v-else class="step-dot" /><div>{{ step.label }}<small>{{ statusLabel(step.status) }}</small></div></li></ol><button v-if="state?.status === 'completed'" class="primary-button" @click="send('用已验收成果生成论文初稿','write')">开始论文写作</button><button v-if="['stopped','failed'].includes(state?.status || '') && !['EXECUTION_BUDGET','MODEL_STAGE_BUDGET'].includes(state?.failure?.code || '')" class="primary-button" @click="send('继续建模','resume')">继续建模</button><div v-for="item in state?.directives" :key="item.id" class="directive"><p>{{ item.content }}</p><small>{{ item.seen.map(role => labels[role]).join('、') || '等待角色读取' }}</small></div></aside></FloatingPanel>
   </div>
  </main>
  <input ref="fileInput" type="file" multiple hidden aria-label="选择数据附件" @change="addAttachments" /><input ref="folderInput" type="file" webkitdirectory multiple hidden aria-label="选择数据文件夹" @change="addAttachments" /><ApiDialog v-model:open="settingsOpen" />
